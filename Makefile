@@ -420,6 +420,16 @@ tests/test_cuda_shared: tests/test_cuda_shared.o ds4_cuda.o ds4_image.o $(MMQ_OB
 test-cuda-shared: tests/test_cuda_shared
 	./tests/test_cuda_shared
 
+tests/test_qwen4_cuda.o: tests/test_qwen4_cuda.cu ds4_gpu.h
+	$(NVCC) $(NVCCFLAGS) -std=c++17 -I. -c -o $@ $<
+
+tests/test_qwen4_cuda: tests/test_qwen4_cuda.o ds4_cuda.o ds4_image.o $(MMQ_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+.PHONY: test-qwen4-cuda
+test-qwen4-cuda: tests/test_qwen4_cuda
+	./tests/test_qwen4_cuda
+
 tests/test_deepseek41_prefill.o: tests/test_deepseek41_prefill.c ds4.c ds4_gpu.h ds4_engram.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
@@ -1024,7 +1034,7 @@ clean:
 	rm -f tests/test_metal_ssd_experts
 	rm -f tests/test_metal_command_memory
 	rm -f tests/test_deepseek41_metal
-	rm -f tests/test_deepseek41_cuda
+	rm -f tests/test_deepseek41_cuda tests/test_qwen4_cuda
 	rm -f tests/test_cuda_q8_rows
 	rm -f tests/test_cuda_reductions
 	rm -f tests/test_cuda_shared
