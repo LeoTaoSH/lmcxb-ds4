@@ -6,6 +6,54 @@ Qwen3.8-Flash-Next uses the `qwen4exp` GGUF architecture and a dedicated
 Metal graph with gated delta-net, gated GQA, block-sparse attention,
 hyper-connections, n-gram embeddings, MoE, and MTP.
 
+## Experimental upstream-native CUDA text port
+
+This implementation targets the current `antirez/ds4` graph and backend APIs.
+It was developed independently, but overlaps in scope with
+[Baekpica's earlier Qwen CUDA work](https://github.com/Baekpica/ds4/tree/feature/qwen38-ssd-ple-handoff).
+That fork has evolved into a broader, substantially divergent serving runtime
+with SSD-PLE caching, vision, embedded MTP, and multi-bank execution. The port
+here deliberately has a narrower scope: single-session text inference that can
+be reviewed and tested directly against upstream without importing that fork's
+serving architecture or source code.
+
+On NVIDIA GB10, build with `make cuda-spark` and run the downloaded Q4 model:
+
+```sh
+./ds4 --cuda -m gguf/Qwen3.8-Flash-Next-Q4.gguf \
+  -c 512 -n 128 --temp 0 --nothink -p 'Descrivi una città sul mare.'
+```
+
+Qwen CUDA Q8-weight projections retain float activations by default. This
+does not change model-weight quantization or DeepSeek/Metal defaults.
+`DS4_QWEN4_Q8_FLOAT_INPUT=0` restores the older, less precise Q8 activation
+path. CUDA prefill batches of at least eight tokens use a token-tiled Q8
+dense kernel by default. It preserves the scalar kernel's reduction order
+while sharing weight-cache traffic across eight tokens. Set
+`DS4_QWEN4_DENSE_TOK8=0` only to restore the scalar diagnostic path.
+
+Prefill MoE also groups up to eight tokens routed to the same expert in one
+CUDA block. The per-warp dot products and reduction trees are unchanged, but
+the quantized expert row stays hot while the block processes its route list.
+This is enabled for batches of at least eight tokens; set
+`DS4_QWEN4_MOE_TOK8=0` for the former one-warp-per-block path.
+
+CUDA sparse-attention prefill uses the parallel indexer top-k kernels by
+default. They preserve the selected block order and logits while avoiding the
+quadratic scalar selector at the 2048-token sparse-attention boundary. Set
+`DS4_QWEN4_CUDA_NAIVE_IDX_SELECT=1` only for diagnostic rollback.
+
+This port remains experimental: CUDA vision and end-to-end speculative MTP
+are not validated/supported here; do not apply the Metal MTP/vision guidance
+below to CUDA. Short numerical comparisons are not a long-context or model
+quality certification.
+
+```sh
+make test-qwen4-cuda CUDA_ARCH=sm_121
+python3 tests/test_qwen4_cuda_numerics.py \
+  --model gguf/Qwen3.8-Flash-Next-Q4.gguf
+```
+
 ## Download and run
 
 ```sh
