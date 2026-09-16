@@ -5018,7 +5018,10 @@ __global__ static void matmul_f16_pair_ordered_chunks_kernel(
 }
 
 /* Preserve the 256-thread halving tree: combine the eight warp partials
- * before reducing within the first warp. Only two block barriers are needed. */
+ * before reducing within the first warp.  The final barrier is required
+ * before a caller reuses partial for another reduction: without it, fast
+ * threads can overwrite partial[0] while slower threads are still reading
+ * the previous result. */
 __device__ __forceinline__ static float block_sum_f32_256(float v, float *partial) {
     const uint32_t t = threadIdx.x;
     partial[t] = v;
@@ -5033,7 +5036,9 @@ __device__ __forceinline__ static float block_sum_f32_256(float v, float *partia
         if (t == 0u) partial[0] = v;
     }
     __syncthreads();
-    return partial[0];
+    const float result = partial[0];
+    __syncthreads();
+    return result;
 }
 
 __global__ static void matmul_f32_kernel(
