@@ -101,6 +101,13 @@ void ds4_metrics_decode_progress(int tokens, bool thinking,
     pthread_mutex_unlock(&g_server_metrics.mu);
 }
 
+void ds4_metrics_prefill_tokens(int tokens_added) {
+    if (tokens_added <= 0) return;
+    pthread_mutex_lock(&g_server_metrics.mu);
+    g_server_metrics.prompt_tokens_total += (uint64_t)tokens_added;
+    pthread_mutex_unlock(&g_server_metrics.mu);
+}
+
 void ds4_metrics_prefill_progress(int interval_tokens, double chunk_tps,
                                   double avg_tps) {
     if (interval_tokens < 0) interval_tokens = 0;

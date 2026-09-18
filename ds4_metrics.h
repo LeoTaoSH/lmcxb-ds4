@@ -28,6 +28,12 @@ void ds4_metrics_decode_progress(int tokens, bool thinking,
 /* Prefill: evaluated tokens are accumulated per chunk (not in one jump at
  * prompt completion) so a long prompt never renders as an impossible
  * rate() spike between scrapes. */
+/* Account prefill tokens without touching the rate gauges.  The server feeds
+ * this from the per-chunk display callback so the token counter advances on a
+ * fine grid; rate() over ds4_prompt_tokens_total then tracks real prefill
+ * throughput instead of extrapolating rare sync-checkpoint jumps. */
+void ds4_metrics_prefill_tokens(int tokens_added);
+
 void ds4_metrics_prefill_progress(int interval_tokens, double chunk_tps,
                                   double avg_tps);
 

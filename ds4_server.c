@@ -12021,6 +12021,7 @@ typedef struct {
     double last_keepalive;
     job *request_job;
     int metrics_counted; /* evaluated tokens already added to the metrics counter */
+    int counted_pos;     /* absolute prefill position already accounted in the counter */
 } server_prefill_progress;
 
 static void request_ctx_span(char *buf, size_t len, int cached, int prompt) {
@@ -12603,7 +12604,27 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
             }
         }
     }
-    if (is_display) return;
+    if (is_display) {
+        /* The chunk callback only fires at session sync checkpoints, which can
+         * cover thousands of tokens at once; rate() over the token counter then
+         * overshoots (a single 20k step reads as ~370 t/s on a 1m window).
+         * The display callback fires per inner prefill chunk, so account the
+         * counter here too.  Both callbacks report absolute positions on the
+         * same grid, so the chunk path below adds only what this has not. */
+        if (current > p->counted_pos) {
+            int add = current - p->counted_pos;
+            const int evaluated_total = p->prompt_tokens - p->cached_tokens;
+            if (add > evaluated_total - p->metrics_counted)
+                add = evaluated_total - p->metrics_counted;
+            if (add < 0) add = 0;
+            if (add > 0) {
+                p->metrics_counted += add;
+                p->counted_pos = current;
+                ds4_metrics_prefill_tokens(add);
+            }
+        }
+        return;
+    }
     double elapsed = now - p->t0;
     if (p->seen && current == p->last_current) {
         if (p->srv && p->slot && current > p->cached_tokens) {
@@ -12630,7 +12651,9 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
     p->last_current = current;
     p->last_t = now;
     p->seen = true;
-    int metrics_add = interval_tokens;
+    /* Both callbacks report absolute positions: add only tokens the display
+     * path has not counted yet so nothing is double counted. */
+    int metrics_add = current > p->counted_pos ? current - p->counted_pos : 0;
     {
         /* Never let display-window resets count cached tokens as evaluated:
          * cap the per-request total at prompt_tokens - cached_tokens. */
@@ -12641,6 +12664,7 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
         if (metrics_add < 0) metrics_add = 0;
     }
     p->metrics_counted += metrics_add;
+    if (current > p->counted_pos) p->counted_pos = current;
     ds4_metrics_prefill_progress(metrics_add, chunk_tps, avg_tps);
     char flags[64];
     log_flags(flags, sizeof(flags), p->responses_protocol,

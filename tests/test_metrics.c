@@ -24,6 +24,9 @@ static void check_has(const char *text, const char *line) {
 
 int main(void) {
     ds4_metrics_prefill_progress(2748, 1900.0, 1900.0);
+    ds4_metrics_prefill_tokens(51); /* body handled in 51 chunks of 1,000 */
+    ds4_metrics_prefill_tokens(0);  /* no-op */
+    ds4_metrics_prefill_tokens(-5); /* never removes tokens */
     ds4_metrics_prompt_done(91, 0, "none", 60.872);
     ds4_metrics_prompt_done(100, 1900, "memory-rewind", 0.4);
     ds4_metrics_decode_progress(50, true, 14.0, 14.0);
@@ -44,7 +47,7 @@ int main(void) {
     CHECK(text != NULL);
     if (!text) return 1;
 
-    check_has(text, "ds4_prompt_tokens_total 2939\n");
+    check_has(text, "ds4_prompt_tokens_total 2990\n");
     check_has(text, "ds4_reused_tokens_total 1900\n");
     check_has(text, "ds4_kv_cache_hit_total{source=\"memory-rewind\"} 1\n");
     check_has(text, "ds4_reused_tokens_by_source_total{source=\"memory-rewind\"} 1900\n");
