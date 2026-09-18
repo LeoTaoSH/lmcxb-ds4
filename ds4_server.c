@@ -4,6 +4,7 @@
 #include "ds4_gpu_args.h"
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
+#include "ds4_metrics.h"
 #include "ds4_tp.h"
 #include "rax.h"
 
@@ -12019,6 +12020,8 @@ typedef struct {
     bool stream_failed;
     double last_keepalive;
     job *request_job;
+    int metrics_counted; /* evaluated tokens already added to the metrics counter */
+    int counted_pos;     /* absolute prefill position already accounted in the counter */
 } server_prefill_progress;
 
 static void request_ctx_span(char *buf, size_t len, int cached, int prompt) {
@@ -12073,6 +12076,7 @@ static void log_decode_progress(req_kind kind, int prompt_tokens, int completion
                chunk_tps,
                avg_tps,
                elapsed);
+    ds4_metrics_decode_progress(interval_tokens, thinking, chunk_tps, avg_tps);
     *last_t = now;
     *last_completion = completion;
 }
@@ -12600,7 +12604,27 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
             }
         }
     }
-    if (is_display) return;
+    if (is_display) {
+        /* The chunk callback only fires at session sync checkpoints, which can
+         * cover thousands of tokens at once; rate() over the token counter then
+         * overshoots (a single 20k step reads as ~370 t/s on a 1m window).
+         * The display callback fires per inner prefill chunk, so account the
+         * counter here too.  Both callbacks report absolute positions on the
+         * same grid, so the chunk path below adds only what this has not. */
+        if (current > p->counted_pos) {
+            int add = current - p->counted_pos;
+            const int evaluated_total = p->prompt_tokens - p->cached_tokens;
+            if (add > evaluated_total - p->metrics_counted)
+                add = evaluated_total - p->metrics_counted;
+            if (add < 0) add = 0;
+            if (add > 0) {
+                p->metrics_counted += add;
+                p->counted_pos = current;
+                ds4_metrics_prefill_tokens(add);
+            }
+        }
+        return;
+    }
     double elapsed = now - p->t0;
     if (p->seen && current == p->last_current) {
         if (p->srv && p->slot && current > p->cached_tokens) {
@@ -12627,6 +12651,21 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
     p->last_current = current;
     p->last_t = now;
     p->seen = true;
+    /* Both callbacks report absolute positions: add only tokens the display
+     * path has not counted yet so nothing is double counted. */
+    int metrics_add = current > p->counted_pos ? current - p->counted_pos : 0;
+    {
+        /* Never let display-window resets count cached tokens as evaluated:
+         * cap the per-request total at prompt_tokens - cached_tokens. */
+        const int evaluated_total = p->prompt_tokens - p->cached_tokens;
+        if (evaluated_total <= 0) metrics_add = 0;
+        else if (p->metrics_counted + metrics_add > evaluated_total)
+            metrics_add = evaluated_total - p->metrics_counted;
+        if (metrics_add < 0) metrics_add = 0;
+    }
+    p->metrics_counted += metrics_add;
+    if (current > p->counted_pos) p->counted_pos = current;
+    ds4_metrics_prefill_progress(metrics_add, chunk_tps, avg_tps);
     char flags[64];
     log_flags(flags, sizeof(flags), p->responses_protocol,
               p->has_tools, false, false, false);
@@ -13437,6 +13476,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                    old_pos, j->req.prompt.len, common,
                    live_vision_match ? "match" : "mismatch",
                    trace_cache_miss_reason(&cache_diag));
+        ds4_metrics_kv_miss(trace_cache_miss_reason(&cache_diag));
     }
     if (multimodal && cached > 0) {
         server_log(DS4_LOG_KVCACHE,
@@ -13646,6 +13686,11 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     ds4_session_set_progress(slot->session, NULL, NULL);
     ds4_session_set_display_progress(slot->session, NULL, NULL);
     if (!multimodal) kv_cache_maybe_store_continued(s, slot);
+    /* Chunk callbacks already accumulated progress.metrics_counted evaluated
+     * tokens; add only what they have not seen (small prompts may produce no
+     * chunk callbacks at all). */
+    ds4_metrics_prompt_done((prompt_tokens - cached) - progress.metrics_counted,
+                            cached, cache_source, now_sec() - t0);
     server_log(DS4_LOG_PREFILL,
                "ds4-server: %s ctx=%s%s%s prompt done %.3fs",
                j->req.kind == REQ_CHAT ? "chat" : "completion",
@@ -14390,6 +14435,7 @@ decode_again:
                  saw_tool_start, saw_tool_end,
                  parsed_content ? parsed_content : (text.ptr ? text.ptr : ""),
                  parsed_reasoning, &parsed_calls, now_sec() - t0);
+    ds4_metrics_request_finish(final_finish, now_sec() - t0);
 
     if (j->req.api == API_RESPONSES) {
         if (strcmp(final_finish, "error") && strcmp(final_finish, "length")) {
@@ -14937,6 +14983,28 @@ static bool send_model(server *s, int fd, const char *id) {
     return ok;
 }
 
+static bool send_metrics(server *s, int fd) {
+    /* Per-slot context reads are done without the inference lock: a torn
+     * read costs at most one stale gauge sample. */
+    int *slot_ctx = NULL;
+    if (s->slot_count > 0) {
+        slot_ctx = malloc((size_t)s->slot_count * sizeof(int));
+        if (slot_ctx) {
+            for (int i = 0; i < s->slot_count; i++) {
+                server_slot *slot = &s->slots[i];
+                slot_ctx[i] = slot->session ? ds4_session_pos(slot->session) : 0;
+            }
+        }
+    }
+    char *text = ds4_metrics_render(s->ctx_size, s->slot_count, slot_ctx);
+    free(slot_ctx);
+    if (!text) return http_error(fd, s->enable_cors, 500, "out of memory");
+    bool ok = http_response(fd, s->enable_cors, 200,
+                            "text/plain; version=0.0.4", text);
+    free(text);
+    return ok;
+}
+
 static bool send_models(server *s, int fd) {
     buf b = {0};
     buf_puts(&b, "{\"object\":\"list\",\"data\":[");
@@ -15086,6 +15154,11 @@ static void *client_main(void *arg) {
         goto done;
     }
 
+    if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/metrics")) {
+        send_metrics(s, fd);
+        http_request_free(&hr);
+        goto done;
+    }
     if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
         send_models(s, fd);
         http_request_free(&hr);
@@ -15147,7 +15220,9 @@ static void *client_main(void *arg) {
     pthread_mutex_init(&j.mu, NULL);
     pthread_cond_init(&j.cv, NULL);
 
+    ds4_metrics_job_begin();
     if (!enqueue(s, &j)) {
+        ds4_metrics_job_end();
         http_error(fd, s->enable_cors, 503, "server shutting down");
         pthread_cond_destroy(&j.cv);
         pthread_mutex_destroy(&j.mu);
@@ -15155,6 +15230,7 @@ static void *client_main(void *arg) {
         goto done;
     }
     wait_for_job_or_disconnect(s, &j);
+    ds4_metrics_job_end();
 
     pthread_cond_destroy(&j.cv);
     pthread_mutex_destroy(&j.mu);
@@ -15780,6 +15856,7 @@ int main(int argc, char **argv) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
     }
+    ds4_kvstore_set_metrics_fn(ds4_metrics_kv_stored);
     if (s.disable_exact_dsml_tool_replay) {
         server_log(DS4_LOG_DEFAULT,
                    "ds4-server: exact DSML tool replay disabled; tool history uses canonical JSON rendering");
