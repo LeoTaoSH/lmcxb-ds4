@@ -58,3 +58,11 @@ Published at: `https://antirez.github.io/ds4/`
 
 In the repository settings, set **Pages → Build and deployment → Source** to
 **GitHub Actions**.
+
+## Third-party logos
+
+The platform cards on the landing page use Apple, NVIDIA, AMD, and DeepSeek
+logos from [Simple Icons](https://simpleicons.org) (CC0 1.0). They are inlined
+as `currentColor` SVG in `index.md` so they follow the light and dark theme.
+Logos are used to identify the hardware and models DwarfStar supports; all
+trademarks belong to their respective owners.
