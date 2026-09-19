@@ -91,17 +91,38 @@
 .metric-table {
   width: 100%;
   border: none !important;
+  margin: 0.5rem 0 0 !important;
+  display: block;
+}
+
+.metric-table tbody {
+  display: block;
+}
+
+.metric-table tr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.2rem 0;
 }
 
 .metric-table td {
-  padding: 0.2rem 0 !important;
+  padding: 0 !important;
   border: none !important;
+  background: transparent !important;
+  display: block;
+}
+
+.metric-table td:first-child {
+  color: var(--vp-c-text-2);
+  font-size: 0.85rem;
 }
 
 .metric-table .metric-val {
   text-align: right;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--vp-c-text-1);
 }
 
 /* Chart containers */
@@ -123,7 +144,16 @@
   padding: 0.25rem 0;
 }
 
-/* Dark mode chart colors */
+/* Brand logos in feature cards */
+.VPFeature .icon img {
+  width: 32px;
+  height: 32px;
+}
+
+.VPFeature .icon svg {
+  width: 32px;
+  height: 32px;
+}
 .dark .chart-container {
   background: var(--vp-c-bg-soft);
 }
