@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <time.h>
 
+/* CUDA-only regression hook implemented in ds4_cuda.cu. */
+int ds4_gpu_test_q8_k_quantize_rows(uint32_t n_rows);
+
 static double monotonic_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -17,6 +20,18 @@ static double getenv_seconds(const char *name, double fallback) {
     char *end = NULL;
     const double v = strtod(s, &end);
     return end != s && v > 0.0 ? v : fallback;
+}
+
+static int check_q8_k_quantize_grid_rows(void) {
+    /* Laguna S 2.1 routes ten experts per token.  6,554 tokens already
+     * exceed CUDA's 65,535-block grid.y limit when pairs are mapped there. */
+    const uint32_t n_rows = 65536u;
+    if (!ds4_gpu_test_q8_k_quantize_rows(n_rows)) {
+        fprintf(stderr, "Q8_K quantize grid-row regression failed for %u rows\n",
+                n_rows);
+        return 1;
+    }
+    return 0;
 }
 
 static int check_large_topk(void) {
@@ -158,7 +173,8 @@ static int check_decode_attention_overflow_path(void) {
 
 int main(void) {
     if (!ds4_gpu_init()) return 1;
-    int rc = check_large_topk();
+    int rc = check_q8_k_quantize_grid_rows();
+    if (check_large_topk() != 0) rc = 1;
     if (check_decode_attention_overflow_path() != 0) rc = 1;
     ds4_gpu_cleanup();
     if (rc == 0) puts("cuda long-context regression: OK");
