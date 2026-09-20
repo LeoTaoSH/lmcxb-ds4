@@ -1101,3 +1101,7 @@ clean:
 
 # The active tokenizer includes generated Unicode classes.
 ds4.o ds4_cpu.o ds4_cpu_test_hooks.o: ds4_qwen4_unicode.inc
+
+# Rebuild model objects when the Qwen3-Next includes change.
+ds4.o ds4_cpu.o ds4_cpu_test_hooks.o ds4_cuda_test_hooks.o: ds4_qwen3next_loader.inc ds4_qwen3next_graph.inc ds4_qwen3next_gpu.h
+ds4_cuda.o: ds4_qwen3next_cuda.cuh ds4_qwen3next_gpu.h

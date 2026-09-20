@@ -56,6 +56,9 @@
 #define DS4_HAS_QWEN4_METAL 1
 #endif
 #endif
+#if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD) && !defined(__APPLE__)
+#define DS4_HAS_QWEN3NEXT_CUDA 1
+#endif
 #ifdef DS4_ROCM_BUILD
 #include "ds4_linux_memory.h"
 #endif
@@ -527,6 +530,7 @@ typedef enum {
     DS4_MODEL_FAMILY_GLM_DSA   = 1,
     DS4_MODEL_FAMILY_DEEPSEEK41 = 2,
     DS4_MODEL_FAMILY_QWEN4_EXP = 3,
+    DS4_MODEL_FAMILY_QWEN3_NEXT = 4,
 } ds4_model_family;
 
 typedef enum {
@@ -537,6 +541,7 @@ typedef enum {
     DS4_VARIANT_FLASH41 = 4,
     DS4_VARIANT_QWEN4_EXP = 5,
     DS4_VARIANT_QWEN4_MINI = 6,
+    DS4_VARIANT_QWEN3_NEXT = 7,
 } ds4_variant;
 
 typedef struct {
@@ -1004,6 +1009,10 @@ static bool ds4_glm53_layer_is_kda(uint32_t il) {
     return ds4_model_is_glm53() &&
            il + DS4_N_NEXTN_PREDICT < DS4_N_LAYER &&
            il % 4u != 3u;
+}
+
+static bool ds4_model_is_qwen3next(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_QWEN3_NEXT;
 }
 
 static bool ds4_model_is_qwen4(void) {
@@ -5340,7 +5349,7 @@ static void tensor_expect_routed_expert(
 }
 
 static bool weights_have_output_head(const ds4_weights *w) {
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+    if (ds4_model_is_qwen3next() || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
         return w && w->output_norm && w->output;
     }
@@ -5356,7 +5365,7 @@ static bool weights_have_output_head(const ds4_weights *w) {
 }
 
 static bool weights_have_partial_output_head(const ds4_weights *w) {
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+    if (ds4_model_is_qwen3next() || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
         return w && (w->output_norm || w->output);
     }
@@ -5636,6 +5645,14 @@ static void weights_validate_qwen4_layout(
 
 static bool weights_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
     if (!l) return false;
+    if (ds4_model_is_qwen3next()) {
+        bool attention = (il + 1) % 4 == 0 ?
+            l->attn_q && l->attn_k && l->attn_v && l->attn_q_norm && l->attn_k_norm && l->attn_output :
+            l->lin_qkv && l->lin_conv && l->lin_beta && l->lin_a && l->lin_dt_bias && l->lin_norm && l->lin_out;
+        return attention && l->attn_norm && l->ffn_norm && l->ffn_gate_inp &&
+               l->ffn_gate_exps && l->ffn_up_exps && l->ffn_down_exps &&
+               l->ffn_gate_inp_shexp && l->ffn_gate_shexp && l->ffn_up_shexp && l->ffn_down_shexp;
+    }
     if (ds4_model_is_qwen4()) {
         return weights_qwen4_layer_has_required(l, il);
     }
@@ -7147,6 +7164,8 @@ static void config_validate_qwen4_model(const ds4_model *m) {
     }
 }
 
+#include "ds4_qwen3next_loader.inc"
+
 static void config_validate_model(const ds4_model *m) {
     g_ds4_flash_vision_exp = false;
     ds4_str arch = {0};
@@ -7161,6 +7180,10 @@ static void config_validate_model(const ds4_model *m) {
         }
         if (ds4_streq(arch, "glm5-next")) {
             config_validate_glm53_model(m);
+            return;
+        }
+        if (ds4_streq(arch, "qwen3next")) {
+            config_validate_qwen3next_model(m);
             return;
         }
         if (ds4_streq(arch, "qwen4exp")) {
@@ -7905,6 +7928,10 @@ static void weights_bind(
         uint32_t         load_layer_end,
         bool             require_output,
         bool             optional_output) {
+    if (ds4_model_is_qwen3next()) {
+        weights_bind_qwen3next(w, m);
+        return;
+    }
     memset(w, 0, sizeof(*w));
 
     uint32_t executable_layers = DS4_N_LAYER;
@@ -39646,6 +39673,21 @@ ds4_context_memory ds4_context_memory_estimate_with_prefill_mode(
         bool        ssd_streaming) {
     ds4_context_memory m = {0};
     uint32_t ctx = ctx_size > 0 ? (uint32_t)ctx_size : 1u;
+    if (ds4_backend_uses_graph(backend) && ds4_model_is_qwen3next()) {
+        /* Twelve full-attention KV caches plus 36 fixed DeltaNet states.
+         * Include the largest per-device projections and attention workspace. */
+        m.prefill_cap = 1;
+        m.raw_cap = ctx;
+        m.raw_bytes = 12ull * ctx * 2u * 256u * 4u + 36ull * (32u*128*128 + 3u*8192) * 4u;
+        m.scratch_bytes = (3ull*2048 + 3ull*4096 + 2ull*512 + 512 + 20 +
+            11ull*(512+2048) + 151936 + 8192 + 12288 + 8192 + 4096 + 129 +
+            16ull*((ctx+255ull)/256)*(256+2)) * 4u;
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+        if (g_n_gpus > 1) m.scratch_bytes *= (uint64_t)g_n_gpus;
+#endif
+        m.total_bytes = m.raw_bytes + m.scratch_bytes;
+        return m;
+    }
     if (ds4_backend_uses_graph(backend) && ds4_model_is_qwen4()) {
         /* per-token f16 K/V and raw indexer keys per attention layer, pooled
          * block keys, rope positions; transients scale with the prefill chunk */
@@ -43073,8 +43115,10 @@ static qwen4_char_info qwen4_char_at(const char *s, uint64_t len, uint64_t pos) 
  * alternation
  *   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+ | \p{N} |
  *    ?[^\s\p{L}\p{M}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+
- * with the Unicode classes generated from the `regex` module. */
+ * with the Unicode classes generated from the `regex` module. Qwen3 Coder
+ * uses qwen2: the same rules with combining marks excluded from letter runs. */
 static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, token_vec *out) {
+    const bool marks = !ds4_model_is_qwen3next();
     const uint64_t len = strlen(text);
     uint64_t pos = 0;
 
@@ -43105,17 +43149,17 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
         /* an optional non-letter prefix, then a run of letters and marks */
         {
             uint64_t run = UINT64_MAX;
-            if (cur.letter || cur.mark) {
+            if (cur.letter || (marks && cur.mark)) {
                 run = cur.next;
             } else if (cur.cp != '\r' && cur.cp != '\n' && !cur.number) {
                 qwen4_char_info n1 = qwen4_char_at(text, len, cur.next);
-                if (n1.valid && (n1.letter || n1.mark)) run = n1.next;
+                if (n1.valid && (n1.letter || (marks && n1.mark))) run = n1.next;
             }
             if (run != UINT64_MAX) {
                 pos = run;
                 while (pos < len) {
                     qwen4_char_info scan = qwen4_char_at(text, len, pos);
-                    if (!scan.valid || !(scan.letter || scan.mark)) break;
+                    if (!scan.valid || !(scan.letter || (marks && scan.mark))) break;
                     pos = scan.next;
                 }
                 bpe_emit_piece(vocab, (ds4_str){ text + start, pos - start }, out);
@@ -43136,11 +43180,11 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
                 punct_pos = cur.next;
                 punct = qwen4_char_at(text, len, punct_pos);
             }
-            if (punct.valid && !punct.space && !punct.letter && !punct.mark && !punct.number) {
+            if (punct.valid && !punct.space && !punct.letter && !(marks && punct.mark) && !punct.number) {
                 pos = punct_pos;
                 while (pos < len) {
                     qwen4_char_info scan = qwen4_char_at(text, len, pos);
-                    if (!scan.valid || scan.space || scan.letter || scan.mark || scan.number) break;
+                    if (!scan.valid || scan.space || scan.letter || (marks && scan.mark) || scan.number) break;
                     pos = scan.next;
                 }
                 while (pos < len) {
@@ -43206,7 +43250,7 @@ static void bpe_tokenize_text(const ds4_vocab *vocab, const char *text, token_ve
         bpe_tokenize_text_glm4(vocab, text, out);
         return;
     }
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_qwen3next()) {
         bpe_tokenize_text_qwen35(vocab, text, out);
         return;
     }
@@ -43333,7 +43377,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     vocab->im_end_id = -1;
     vocab->endoftext_id = -1;
 
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_qwen3next()) {
         /* ChatML without BOS; <|endoftext|> is the document separator and a
          * second generation stop. */
         vocab->im_start_id = vocab_lookup(vocab, "<|im_start|>");
@@ -43448,6 +43492,7 @@ const char *ds4_deepseek41_reasoning_effort_text(ds4_think_mode mode) {
 static void chat_push_think_prefix(const ds4_vocab *vocab,
                                    ds4_think_mode   think_mode,
                                    token_vec       *out) {
+    if (ds4_model_is_qwen3next()) return;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         const char *effort = ds4_glm_reasoning_effort_text(think_mode);
         if (effort) {
@@ -43490,6 +43535,7 @@ static void qwen4_chat_close(const ds4_vocab *vocab, token_vec *out) {
 
 static void qwen4_chat_assistant_prefix(const ds4_vocab *vocab, ds4_think_mode think_mode, token_vec *out) {
     qwen4_chat_open(vocab, "assistant", out);
+    if (ds4_model_is_qwen3next()) return;
     token_vec_push(out, vocab->think_start_id);
     if (ds4_think_mode_enabled(think_mode)) {
         bpe_tokenize_text(vocab, "\n", out);
@@ -43501,7 +43547,7 @@ static void qwen4_chat_assistant_prefix(const ds4_vocab *vocab, ds4_think_mode t
 }
 
 static void qwen4_chat_system(const ds4_vocab *vocab, const char *system, ds4_think_mode think_mode, token_vec *out) {
-    const char *instruction = ds4_qwen4_reasoning_effort_text(think_mode);
+    const char *instruction = ds4_model_is_qwen3next() ? NULL : ds4_qwen4_reasoning_effort_text(think_mode);
     const bool have_system = system && system[0];
     if (!instruction && !have_system) return;
     qwen4_chat_open(vocab, "system", out);
@@ -43519,7 +43565,7 @@ static void encode_chat_prompt(
         const char      *prompt,
         ds4_think_mode   think_mode,
         token_vec       *out) {
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_qwen3next()) {
         if (vocab->im_start_id < 0 || vocab->im_end_id < 0 ||
             vocab->think_start_id < 0 || vocab->think_end_id < 0) {
             ds4_die("this tokenizer does not provide the Qwen chat markers; use raw prompt tokenization");
@@ -43716,12 +43762,12 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
     if (!role) role = "user";
     if (!content) content = "";
 
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_qwen3next()) {
         if (!strcmp(role, "tool") || !strcmp(role, "function")) {
             qwen4_chat_open(vocab, "user", tokens);
             bpe_tokenize_text(vocab, "<tool_response>\n", tokens);
             bpe_tokenize_tool_response_text(vocab, content, tokens);
-            bpe_tokenize_text(vocab, "\n</tool_response>", tokens);
+            bpe_tokenize_text(vocab, ds4_model_is_qwen3next() ? "\n</tool_response>\n" : "\n</tool_response>", tokens);
         } else {
             const char *name = (!strcmp(role, "system") || !strcmp(role, "developer")) ? "system" :
                                !strcmp(role, "assistant") ? "assistant" : "user";
@@ -43782,7 +43828,7 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
 }
 
 void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode think_mode) {
-    if (ds4_model_is_qwen4()) {
+    if (ds4_model_is_qwen4() || ds4_model_is_qwen3next()) {
         qwen4_chat_assistant_prefix(&e->vocab, think_mode, tokens);
         return;
     }
@@ -60218,7 +60264,14 @@ typedef struct {
     uint8_t fingerprint[32];
 } ds4_vision_identity;
 
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+#include "ds4_qwen3next_graph.inc"
+#endif
+
 struct ds4_session {
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    qwen3next_graph qwen3next;
+#endif
     ds4_engine *engine;
     ds4_dist_session *distributed;
     uint64_t tp_session_id;
@@ -61432,6 +61485,11 @@ uint64_t ds4_session_layer_payload_bytes(ds4_session *s,
 int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !fp || !s->checkpoint_valid ||
         !ds4_layer_payload_range_valid(layer_start, layer_end)) {
         payload_set_err(err, errlen, "invalid session layer payload save");
@@ -61700,6 +61758,11 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
                                    const int *tokens, uint32_t n_tokens,
                                    uint32_t layer_start, uint32_t layer_end,
                                    char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !fp || !tokens ||
         !ds4_layer_payload_range_valid(layer_start, layer_end)) {
         payload_set_err(err, errlen, "invalid session layer payload load");
@@ -62470,6 +62533,7 @@ static uint64_t qwen4_payload_tensor_bytes(uint32_t rows, uint32_t mtp_rows);
 #endif
 
 uint64_t ds4_session_payload_bytes(ds4_session *s) {
+    if (s && ds4_model_is_qwen3next()) return 0;
     if (s && !s->distributed && ds4_session_is_qwen4(s)) {
 #ifndef DS4_HAS_QWEN4_GPU
         return 0;
@@ -62855,6 +62919,11 @@ static int qwen4_session_load_payload(ds4_session *s, FILE *fp, const uint32_t *
 #endif
 
 int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !fp || !s->checkpoint_valid) {
         payload_set_err(err, errlen, "session has no valid checkpoint to save");
         return 1;
@@ -63206,6 +63275,11 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
 }
 
 int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !fp) {
         payload_set_err(err, errlen, "invalid session payload load");
         return 1;
@@ -63835,6 +63909,11 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
 }
 
 int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !snap) {
         payload_set_err(err, errlen, "invalid session snapshot save");
         return 1;
@@ -63881,6 +63960,11 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
 }
 
 int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, char *err, size_t errlen) {
+    if (s && ds4_model_is_qwen3next()) {
+        payload_set_err(err, errlen, "Qwen3-Next disk KV/snapshots are not implemented yet");
+        return 1;
+    }
+
     if (!s || !snap || !snap->ptr || snap->len == 0) {
         payload_set_err(err, errlen, "invalid session snapshot load");
         return 1;
@@ -64584,7 +64668,7 @@ static bool ds4_session_greedy_splitkv_replay_exact(
 
 int ds4_session_eval_argmax(ds4_session *s, int token, char *err, size_t errlen) {
     if (!s) return -1;
-    if (ds4_session_is_cpu(s) || ds4_session_is_glm(s) || ds4_session_is_ds41(s)) {
+    if (ds4_model_is_qwen3next() || ds4_session_is_cpu(s) || ds4_session_is_glm(s) || ds4_session_is_ds41(s)) {
         if (ds4_session_eval(s, token, err, errlen) != 0) return -1;
         return ds4_session_argmax(s);
     }
@@ -65063,7 +65147,7 @@ int ds4_engine_generate_argmax(
                     ds4_backend_name(e->backend));
             return 1;
         }
-        if (e->multi_tier || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        if (e->multi_tier || ds4_model_is_qwen3next() || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
             ds4_session *s = NULL;
             char err[256] = {0};
             const double t_prefill0 = now_sec();
@@ -70578,6 +70662,59 @@ static int ds4_engine_open_internal(ds4_engine **out,
         return 1;
     }
     config_validate_model(&e->model);
+    if (ds4_model_is_qwen3next()) {
+        if (!opt->inspect_only) {
+            bool supported = false;
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+            supported = e->backend == DS4_BACKEND_CUDA;
+#endif
+            if (!supported || e->ssd_streaming || opt->tp.role != DS4_TP_NONE ||
+                opt->cuda_tensor_parallel ||
+                (gpu_cfg && (gpu_cfg->n_gpus < 1 || gpu_cfg->n_gpus > DS4_MAX_GPUS)) ||
+                opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice ||
+                opt->dspark || opt->glm_mtp || (opt->mtp_path && opt->mtp_path[0]) ||
+                (opt->vision_path && opt->vision_path[0]) || e->power_percent != 100 ||
+                opt->first_token_test || opt->metal_graph_test ||
+                (opt->directional_steering_file && opt->directional_steering_file[0]) ||
+                (opt->context_size > 0 && (uint64_t)opt->context_size > g_ds4_shape.rope_orig_ctx)) {
+                fprintf(stderr, "ds4: initial Qwen3-Coder-Next support requires CUDA; "
+                    "SSD streaming, TP, distributed slices, MTP, vision, steering, power throttling "
+                    "and legacy diagnostics are unavailable\n");
+                ds4_engine_close(e); *out = NULL; return 1;
+            }
+        }
+        weights_bind_qwen3next(&e->weights, &e->model);
+        vocab_load(&e->vocab, &e->model);
+        e->prefill_chunk = 1;
+        if (!opt->inspect_only) {
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+            if (gpu_cfg) e->gpu_cfg = *gpu_cfg;
+            e->metal_ready = (gpu_cfg ? ds4_gpu_init_multi(gpu_cfg) : ds4_gpu_init()) != 0;
+            if (e->metal_ready) {
+                ds4_gpu_set_quality(e->quality);
+                ds4_gpu_set_glm_model(false);
+                ds4_gpu_set_ssd_streaming(false);
+            }
+            bool ready = e->metal_ready;
+            if (ready && gpu_cfg) {
+                ready = qwen3next_prepare_tiers(&e->model, &e->weights, gpu_cfg,
+                    opt->context_size > 0 ? (uint32_t)opt->context_size : 4096u,
+                    opt->placement_session_count_hint > 0 ? opt->placement_session_count_hint : 1);
+            }
+            if (ready && (!gpu_cfg || gpu_cfg->n_gpus == 1)) {
+                ready = ds4_gpu_set_model_map(e->model.map, e->model.size);
+                (void)ds4_gpu_set_model_fd_for_map(e->model.fd, e->model.map);
+                ready = ready && accelerator_prepare_model_tensor_spans(&e->model, NULL, NULL, 0, NULL);
+            }
+            if (!ready) {
+                fprintf(stderr, "ds4: Qwen3-Next CUDA model residency failed\n");
+                ds4_engine_close(e); *out = NULL; return 1;
+            }
+#endif
+        }
+        *out = e;
+        return 0;
+    }
     if (ds4_model_is_qwen4() && !opt->inspect_only) {
         const bool backend_ok =
 #ifdef DS4_HAS_QWEN4_GPU
@@ -71766,6 +71903,7 @@ int ds4_engine_power(ds4_engine *e) {
 
 int ds4_engine_set_power(ds4_engine *e, int power_percent) {
     if (!e || power_percent < 1 || power_percent > 100) return 1;
+    if (ds4_model_is_qwen3next() && power_percent != 100) return 1;
     e->power_percent = power_percent;
     return 0;
 }
@@ -71836,6 +71974,11 @@ bool ds4_engine_is_glm53(ds4_engine *e) {
     (void)e;
     return ds4_model_is_glm53();
 }
+
+bool ds4_engine_is_qwen3next(ds4_engine *e) {
+    return e && ds4_model_is_qwen3next();
+}
+
 
 bool ds4_engine_is_qwen4(ds4_engine *e) {
     (void)e;
@@ -72790,6 +72933,22 @@ static int ds4_session_tp_register(ds4_session *s) {
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
+    if (ds4_model_is_qwen3next()) {
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+        if (!e->metal_ready || e->backend != DS4_BACKEND_CUDA ||
+            (uint64_t)ctx_size > g_ds4_shape.rope_orig_ctx) return 1;
+        ds4_session *s = xcalloc(1, sizeof(*s));
+        s->engine = e; s->ctx_size = ctx_size; s->prefill_cap = 1;
+        if (!qwen3next_graph_alloc(&s->qwen3next, (uint32_t)ctx_size,
+                e->gpu_cfg.n_gpus > 0 ? e->gpu_cfg.n_gpus : 1)) { free(s); return 1; }
+        s->logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
+        s->sample_probs = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
+        *out = s;
+        return 0;
+#else
+        return 1;
+#endif
+    }
     if (e->backend == DS4_BACKEND_CPU) {
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
             fprintf(stderr, "ds4: GLM sessions currently require a graph backend\n");
@@ -73281,6 +73440,11 @@ void ds4_session_free(ds4_session *s) {
     }
 #ifndef DS4_NO_GPU
     else {
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+        if (ds4_model_is_qwen3next()) {
+            qwen3next_graph_free(&s->qwen3next);
+        } else
+#endif
 #ifdef DS4_HAS_DEEPSEEK41_GPU
         if (s->ds41_graph_ready) {
             s->engine->ds41_session_bytes -= s->ds41_graph.allocation_bytes;
@@ -73346,6 +73510,7 @@ bool ds4_session_is_distributed(ds4_session *s) {
 
 int ds4_session_set_power(ds4_session *s, int power_percent) {
     if (!s || !s->engine || power_percent < 1 || power_percent > 100) return 1;
+    if (ds4_model_is_qwen3next()) return power_percent == 100 ? 0 : 1;
     if (ds4_engine_is_deepseek41(s->engine)) {
         if (power_percent == 100) return 0;
         fprintf(stderr, "ds4: session power throttling is not supported for DeepSeek V4.1\n");
@@ -75258,6 +75423,23 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
         snprintf(err, errlen, "interrupted");
         return DS4_SESSION_SYNC_INTERRUPTED;
     }
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next()) {
+        int start = 0;
+        if (s->checkpoint_valid && s->qwen3next.pos == (uint32_t)s->checkpoint.len &&
+            prompt->len >= s->checkpoint.len && ds4_tokens_starts_with(prompt, &s->checkpoint))
+            start = s->checkpoint.len;
+        else { s->qwen3next.pos = 0; s->checkpoint.len = 0; s->checkpoint_valid = false; }
+        for (int i = start; i < prompt->len; i++) {
+            if (ds4_session_cancelled(s)) {
+                snprintf(err, errlen, "interrupted"); return DS4_SESSION_SYNC_INTERRUPTED;
+            }
+            if (ds4_session_eval_internal(s, prompt->v[i], false, err, errlen)) return 1;
+            if (s->progress) s->progress(s->progress_ud, "prefill_chunk", i + 1, prompt->len);
+        }
+        return 0;
+    }
+#endif
     if (s->distributed) {
         const ds4_tokens *checkpoint = s->checkpoint_valid ? &s->checkpoint : NULL;
         return ds4_dist_session_sync(s->distributed,
@@ -76439,13 +76621,34 @@ int ds4_session_common_prefix(ds4_session *s, const ds4_tokens *prompt) {
     return i;
 }
 
+/* Qwen3-Next greedy requests need only a token ID. Materialize its complete
+ * device logits for sampling, exclusions, probabilities, or explicit reads. */
+static bool ds4_session_require_host_logits(ds4_session *s) {
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next()) {
+        if (!s->checkpoint_valid) return false;
+        qwen3next_graph *g = &s->qwen3next;
+        if (g->logits_pending) {
+            if (!ds4_gpu_tensor_read(g->tier[g->n_tiers-1].logits,0,s->logits,(uint64_t)DS4_N_VOCAB*4)) return false;
+            g->logits_pending = false;
+        }
+    }
+#else
+    (void)s;
+#endif
+    return true;
+}
+
 int ds4_session_argmax(ds4_session *s) {
     if (!s || !s->checkpoint_valid || !s->logits) return -1;
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next() && s->qwen3next.logits_pending) return s->qwen3next.greedy_token;
+#endif
     return sample_argmax(s->logits, DS4_N_VOCAB);
 }
 
 int ds4_session_argmax_excluding(ds4_session *s, int excluded_id) {
-    if (!s || !s->checkpoint_valid || !s->logits) return -1;
+    if (!s || !s->checkpoint_valid || !s->logits || !ds4_session_require_host_logits(s)) return -1;
     if (getenv("DS4_CPU_DISABLE_UNROLLED_ARGMAX") == NULL) {
         return argmax_f32_excluding_unrolled8(
                 s->logits, DS4_N_VOCAB, excluded_id);
@@ -76465,7 +76668,7 @@ int ds4_session_argmax_excluding(ds4_session *s, int excluded_id) {
 
 int ds4_session_argmax_ignoring_eos(ds4_session *s,
                                     ds4_think_mode think_mode) {
-    if (!s || !s->checkpoint_valid || !s->logits) return -1;
+    if (!s || !s->checkpoint_valid || !s->logits || !ds4_session_require_host_logits(s)) return -1;
     int best = -1;
     float best_logit = DS4_NEG_INF;
     for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
@@ -76495,12 +76698,14 @@ int ds4_sample_logits(const float *logits, int n_vocab, float temperature,
 
 int ds4_session_sample(ds4_session *s, float temperature, int top_k, float top_p, float min_p, uint64_t *rng) {
     if (!s || !s->checkpoint_valid || !s->logits) return -1;
+    if (temperature <= 0.0f) return ds4_session_argmax(s);
+    if (!ds4_session_require_host_logits(s)) return -1;
     return sample_top_p_min_p(s->logits, DS4_N_VOCAB, temperature, top_k,
                               top_p, min_p, rng, s->sample_probs);
 }
 
 int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
-    if (!s || !out || k <= 0) return 0;
+    if (!s || !out || k <= 0 || !ds4_session_require_host_logits(s)) return 0;
     if (k > (int)DS4_N_VOCAB) k = (int)DS4_N_VOCAB;
     for (int i = 0; i < k; i++) {
         out[i].id = -1;
@@ -76537,7 +76742,7 @@ int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k) {
 }
 
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
-    if (!s || !out || token < 0 || token >= (int)DS4_N_VOCAB) return 0;
+    if (!s || !out || token < 0 || token >= (int)DS4_N_VOCAB || !ds4_session_require_host_logits(s)) return 0;
 
     float max_logit = DS4_NEG_INF;
     for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
@@ -76559,7 +76764,7 @@ int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out) {
 }
 
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap) {
-    if (!s || !out || cap < (int)DS4_N_VOCAB) return 0;
+    if (!s || !out || cap < (int)DS4_N_VOCAB || !ds4_session_require_host_logits(s)) return 0;
     memcpy(out, s->logits, (size_t)DS4_N_VOCAB * sizeof(out[0]));
     return (int)DS4_N_VOCAB;
 }
@@ -76567,6 +76772,9 @@ int ds4_session_copy_logits(ds4_session *s, float *out, int cap) {
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n) {
     if (!s || !logits || n != (int)DS4_N_VOCAB) return 1;
     memcpy(s->logits, logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next()) s->qwen3next.logits_pending = false;
+#endif
     return 0;
 }
 
@@ -77275,6 +77483,20 @@ static void ds4_session_prepare_support_draft(ds4_session *s,
 static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                                      char *err, size_t errlen) {
     if (!s) return 1;
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next()) {
+        if ((!s->checkpoint_valid && s->checkpoint.len != 0) ||
+            s->qwen3next.pos != (uint32_t)s->checkpoint.len ||
+            !qwen3next_graph_step(&s->qwen3next, &s->engine->model, &s->engine->weights, token)) {
+            s->checkpoint_valid = false;
+            if (errlen) snprintf(err, errlen, "Qwen3-Next decode failed; synchronize the prompt before retrying");
+            return 1;
+        }
+        token_vec_push(&s->checkpoint, token);
+        s->checkpoint_valid = true;
+        return 0;
+    }
+#endif
     if (s->distributed) {
         if (!s->checkpoint_valid) {
             if (errlen) snprintf(err, errlen, "distributed decode requires a valid checkpoint");
@@ -83949,7 +84171,7 @@ static int ds4_sessions_eval_batch_cuda(ds4_decode_item *items, int count,
 #endif
     if (e->backend == DS4_BACKEND_CUDA &&
         !ds4_session_is_glm(first) && !ds4_session_is_ds41(first) &&
-        !ds4_session_is_qwen4(first) &&
+        !ds4_session_is_qwen4(first) && !ds4_model_is_qwen3next() &&
         e->support_kind == DS4_SUPPORT_NONE) {
         bool ok = ds4_gpu_begin_commands() != 0;
         for (int i = 0; ok && i < count; i++) {
@@ -84079,7 +84301,7 @@ static int ds4_sessions_eval_batch_with_prefill_cuda(
         native_requested &&
         e->backend == DS4_BACKEND_CUDA &&
         !ds4_session_is_glm(prefill_session) && !ds4_session_is_ds41(prefill_session) &&
-        !ds4_session_is_qwen4(prefill_session) &&
+        !ds4_session_is_qwen4(prefill_session) && !ds4_model_is_qwen3next() &&
         e->support_kind == DS4_SUPPORT_NONE &&
         metal_graph_mixed_prefill_decode_supported(
                 prefill_session, prefill_prompt, start, prefill_rows,
@@ -84148,7 +84370,7 @@ static int ds4_session_eval_speculative_argmax_impl(
         accepted[0] = first_token;
         return 1;
     }
-    if (ds4_session_is_cpu(s)) {
+    if (ds4_model_is_qwen3next() || ds4_session_is_cpu(s)) {
         (void)max_tokens;
         (void)eos_token;
         if (!accepted || accepted_cap <= 0) return 0;
@@ -85021,7 +85243,7 @@ int ds4_session_eval_speculative(ds4_session *s, int first_token,
         return -1;
     }
     if (accepted_cap > max_tokens) accepted_cap = max_tokens;
-    if (s->distributed || ds4_session_is_cpu(s)) {
+    if (s->distributed || ds4_session_is_cpu(s) || ds4_model_is_qwen3next()) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
         accepted[0] = first_token;
         return 1;
@@ -85151,6 +85373,10 @@ int ds4_session_eval_speculative(ds4_session *s, int first_token,
 
 void ds4_session_invalidate(ds4_session *s) {
     if (!s) return;
+#ifdef DS4_HAS_QWEN3NEXT_CUDA
+    if (ds4_model_is_qwen3next()) s->qwen3next.pos = 0;
+#endif
+
     if (ds4_session_tp_leader(s) &&
         !ds4_tp_failed(s->engine->tp.ctx)) {
         (void)ds4_tp_send_invalidate(s->engine->tp.ctx, s->tp_session_id);

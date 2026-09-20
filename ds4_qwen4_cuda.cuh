@@ -7,7 +7,7 @@ namespace qwen4_cuda {
 
 __device__ __forceinline__ float sum(float x);
 __device__ __forceinline__ float sigmoid(float x);
-template<unsigned TYPE>
+template<unsigned TYPE, bool ROUND_PRODUCT = false, bool PACKED_SCALES = false>
 __device__ __forceinline__ float dot(const char *row, const float *x, unsigned n,
         const uint64_t *grid = NULL, const uint8_t *signs = NULL);
 __device__ float injection(const float *inj, unsigned hc, unsigned stream);
@@ -362,6 +362,8 @@ static uint64_t row_bytes(uint32_t type, uint64_t n) {
     case 39: return n % 32 ? 0 : n / 32 * 17;
     case 10: return n % 256 ? 0 : n / 256 * 84;
     case 12: return n % 256 ? 0 : n / 256 * 144;
+    case 13: return n % 256 ? 0 : n / 256 * 176;
+    case 14: return n % 256 ? 0 : n / 256 * 210;
     case 16: return n % 256 ? 0 : n / 256 * 66;
     default: return 0;
     }
@@ -369,7 +371,9 @@ static uint64_t row_bytes(uint32_t type, uint64_t n) {
 
 static const char *weight(const void *map, uint64_t size, uint64_t off, uint64_t bytes) {
     if (!map || !bytes || off > size || bytes > size - off) return NULL;
-    return cuda_resolve_weight_ptr(map, off, bytes, 0, "Qwen weights");
+    /* Qwen3 shares these readers and places contiguous layers on each tier. */
+    int tier = g_n_gpus > 1 ? g_current_logical_tier : 0;
+    return cuda_resolve_weight_ptr(map, off, bytes, tier, "Qwen weights");
 }
 
 static int launched(void) { return cuda_ok(cudaGetLastError(), "Qwen kernel"); }
@@ -441,6 +445,32 @@ __device__ __forceinline__ float value(const char *row, unsigned i,
         const unsigned q = (b->qs[j / 64 * 32 + j % 32] >> (4 * (group & 1))) & 15;
         return dev_f16_to_f32(b->d) * sc * q - dev_f16_to_f32(b->dmin) * mn;
     }
+    if (TYPE == 13) {
+        /* Q5_K shares Q4_K's packed scales/mins, followed by 32 high-bit
+         * bytes and 128 low-nibble bytes. Each high-bit byte spans 8 groups. */
+        const uint8_t *b = (const uint8_t *)row + (i / 256) * 176;
+        const uint8_t *scales = b + 4;
+        unsigned j = i % 256, group = j / 32, sc, mn;
+        if (group < 4) { sc = scales[group] & 63; mn = scales[group + 4] & 63; }
+        else {
+            sc = (scales[group + 4] & 15) | ((scales[group - 4] >> 6) << 4);
+            mn = (scales[group + 4] >> 4) | ((scales[group] >> 6) << 4);
+        }
+        unsigned q = (b[48 + j / 64 * 32 + j % 32] >> (4 * (group & 1))) & 15;
+        q |= ((b[16 + j % 32] >> group) & 1) << 4;
+        return __half2float(*(const __half *)b) * sc * q -
+               __half2float(*(const __half *)(b + 2)) * mn;
+    }
+    if (TYPE == 14) {
+        /* GGML Q6_K: 128 low-nibble bytes, 64 high-bit bytes, 16 signed
+         * scales, and one fp16 block multiplier (210 bytes per 256 values). */
+        const uint8_t *b = (const uint8_t *)row + (i / 256) * 210;
+        unsigned j = i % 256, half = j / 128, lane = j % 32, group = j % 128 / 32;
+        unsigned low = (b[half * 64 + (group & 1) * 32 + lane] >> (group / 2 * 4)) & 15;
+        unsigned high = (b[128 + half * 32 + lane] >> (group * 2)) & 3;
+        int q = (int)(low | (high << 4)) - 32;
+        return __half2float(*(const __half *)(b + 208)) * (float)((const int8_t *)(b + 192))[j / 16] * q;
+    }
     if (TYPE == 16) {
         const cuda_block_iq2_xxs *b = (const cuda_block_iq2_xxs *)row + i / 256;
         const unsigned j = i % 256, group = j / 32, sub = j % 32 / 8;
@@ -463,6 +493,11 @@ __device__ __forceinline__ float scalar(const char *row, unsigned i, unsigned ty
     case 1: return value<1>(row, i);
     case 2: return value<2>(row, i);
     case 8: return value<8>(row, i);
+    case 10: return value<10>(row, i);
+    case 12: return value<12>(row, i);
+    case 13: return value<13>(row, i);
+    case 14: return value<14>(row, i);
+    case 16: return value<16>(row, i);
     case 30: return value<30>(row, i);
     case 39: return value<39>(row, i);
     default: return 0;
@@ -553,62 +588,97 @@ static uint64_t expert_row_bytes(unsigned type, unsigned K) {
     return row_bytes(type, type == 10 ? ((uint64_t)K + 255) / 256 * 256 : K);
 }
 
+template<unsigned GATE_TYPE = UINT_MAX>
 __global__ void router(int *selected, float *weights, const float *logits,
         const float *x, const char *gate, float *shared_gate,
         unsigned NE, unsigned NS, unsigned K, unsigned type) {
     const unsigned t = blockIdx.x, tid = threadIdx.x;
     __shared__ float p[512], maxima[256], red[32];
-    __shared__ unsigned ids[256];
     float mx = -FLT_MAX;
     for (unsigned e = tid; e < NE; e += 256) mx = fmaxf(mx, logits[(uint64_t)t * NE + e]);
-    maxima[tid] = mx;
+    for (unsigned stride = 16; stride; stride /= 2)
+        mx = fmaxf(mx, __shfl_xor_sync(0xffffffff, mx, stride));
+    if (!(tid & 31)) maxima[tid / 32] = mx;
     __syncthreads();
-    for (unsigned stride = 128; stride; stride /= 2) {
-        if (tid < stride) maxima[tid] = fmaxf(maxima[tid], maxima[tid + stride]);
-        __syncthreads();
-    }
-    mx = maxima[0];
+    mx = -FLT_MAX;
+    for (unsigned warp = 0; warp < 8; warp++) mx = fmaxf(mx, maxima[warp]);
     float ps = 0;
     for (unsigned e = tid; e < NE; e += 256) { p[e] = expf(logits[(uint64_t)t * NE + e] - mx); ps += p[e]; }
     const float total = block_sum(ps, red);
     for (unsigned e = tid; e < NE; e += 256) p[e] /= total;
     if (K) {
         float v = 0;
-        for (unsigned i = tid; i < K; i += 256) v += scalar(gate, i, type) * x[(uint64_t)t * K + i];
+        if (GATE_TYPE == 0 && K == 2048) {
+            #pragma unroll
+            for (unsigned i=tid;i<2048;i+=256) v += ((const float *)gate)[i]*x[(uint64_t)t*K+i];
+        } else {
+            for (unsigned i=tid;i<K;i+=256)
+                v += (GATE_TYPE == 0 ? ((const float *)gate)[i] : scalar(gate,i,type))*x[(uint64_t)t*K+i];
+        }
         v = block_sum(v, red);
         if (!tid) shared_gate[t] = v;
     }
     __syncthreads();
-    for (unsigned s = 0; s < NS; s++) {
-        float best = -1;
-        unsigned id = UINT_MAX;
-        for (unsigned e = tid; e < NE; e += 256) if (p[e] > best) { best = p[e]; id = e; }
-        maxima[tid] = best; ids[tid] = id;
-        __syncthreads();
-        for (unsigned stride = 128; stride; stride /= 2) {
-            if (tid < stride && (maxima[tid + stride] > maxima[tid] ||
-                (maxima[tid + stride] == maxima[tid] && ids[tid + stride] < ids[tid]))) {
-                maxima[tid] = maxima[tid + stride]; ids[tid] = ids[tid + stride];
+    if (tid < 32) {
+        /* One warp holds all probabilities in registers. Repeated selection
+         * needs no block barriers or shared-memory reloads. The softmax sum
+         * above and selected-weight sum below retain their original order. */
+#if __CUDA_ARCH__ >= 800
+        /* Probability bits are ordered, with zero reserved for removed
+         * entries (even underflowed probabilities encode as one). A balanced
+         * maximum avoids sixteen dependent value/index comparisons. */
+        unsigned candidates[16];
+        float chosen = 0, denom = 0;
+        #pragma unroll
+        for (unsigned i = 0; i < 16; i++) candidates[i] = tid+i*32 < NE ? __float_as_uint(p[tid+i*32])+1 : 0;
+        for (unsigned s = 0; s < NS; s++) {
+            unsigned tree[8];
+            #pragma unroll
+            for (unsigned i = 0; i < 8; i++) tree[i] = max(candidates[2*i],candidates[2*i+1]);
+            #pragma unroll
+            for (unsigned stride = 4; stride; stride /= 2) {
+                #pragma unroll
+                for (unsigned i = 0; i < stride; i++) tree[i] = max(tree[2*i],tree[2*i+1]);
             }
-            __syncthreads();
+            const unsigned best = tree[0];
+            const unsigned maximum = __reduce_max_sync(0xffffffff, best);
+            unsigned id = UINT_MAX;
+            #pragma unroll
+            for (unsigned i = 0; i < 16; i++)
+                if (candidates[i] == maximum) id = min(id, tid+i*32);
+            id = __reduce_min_sync(0xffffffff, id);
+            const float probability = __uint_as_float(maximum-1);
+            if (tid == s) { selected[(uint64_t)t * NS + s] = id; chosen = probability; }
+            denom += probability;
+            #pragma unroll
+            for (unsigned i = 0; i < 16; i++) if (tid+i*32 == id) candidates[i] = 0;
         }
-        if (!tid) {
-            selected[(uint64_t)t * NS + s] = ids[0];
-            weights[(uint64_t)t * NS + s] = maxima[0];
-            p[ids[0]] = -1;
+#else
+        float candidates[16], chosen = 0, denom = 0;
+        #pragma unroll
+        for (unsigned i = 0; i < 16; i++) candidates[i] = tid+i*32 < NE ? p[tid+i*32] : -1;
+        for (unsigned s = 0; s < NS; s++) {
+            float best = -1;
+            unsigned id = UINT_MAX;
+            #pragma unroll
+            for (unsigned i = 0; i < 16; i++)
+                if (candidates[i] > best) { best = candidates[i]; id = tid+i*32; }
+            for (unsigned stride = 16; stride; stride /= 2) {
+                const float other = __shfl_xor_sync(0xffffffff, best, stride);
+                const unsigned oi = __shfl_xor_sync(0xffffffff, id, stride);
+                if (other > best || (other == best && oi < id)) { best = other; id = oi; }
+            }
+            if (tid == s) { selected[(uint64_t)t * NS + s] = id; chosen = best; }
+            denom += best;
+            #pragma unroll
+            for (unsigned i = 0; i < 16; i++) if (tid+i*32 == id) candidates[i] = -1;
         }
-        __syncthreads();
+#endif
+        if (tid < NS) weights[(uint64_t)t * NS + tid] = chosen / denom;
     }
-    if (tid < NS) {
-        float denom = 0;
-        for (unsigned s = 0; s < NS; s++) denom += weights[(uint64_t)t * NS + s];
-        red[tid] = denom;
-    }
-    __syncthreads();
-    if (tid < NS) weights[(uint64_t)t * NS + tid] /= red[tid];
 }
 
-template<unsigned TYPE, bool DOWN>
+template<unsigned TYPE, bool DOWN, bool PACKED_SCALES = false>
 __global__ void moe_mv(float *out, const float *x, const int *selected,
         const char *w0, const char *w1, const char *sh0, const char *sh1,
         unsigned shared_type, unsigned NE, unsigned NS, unsigned K, unsigned M,
@@ -628,11 +698,21 @@ __global__ void moe_mv(float *out, const float *x, const int *selected,
     const float *xt = x + (DOWN ? pair : t) * K;
     float a = 0, b = 0;
     if (shared) {
-        for (unsigned i = threadIdx.x & 31; i < K; i += 32) {
-            a += scalar(sh0 + row * srb, i, shared_type) * xt[i];
-            if (!DOWN) b += scalar(sh1 + row * srb, i, shared_type) * xt[i];
+        /* The single shared expert can otherwise outlive all routed blocks:
+         * dispatch its K formats once, rather than per weight element. */
+        if (shared_type == 13) {
+            a = dot<13, !DOWN, PACKED_SCALES>(sh0 + row*srb, xt, K);
+            if (!DOWN) b = dot<13, false, PACKED_SCALES>(sh1 + row*srb, xt, K);
+        } else if (shared_type == 14) {
+            a = dot<14, !DOWN>(sh0 + row*srb, xt, K);
+            if (!DOWN) b = dot<14>(sh1 + row*srb, xt, K);
+        } else {
+            for (unsigned i = threadIdx.x & 31; i < K; i += 32) {
+                a += scalar(sh0 + row * srb, i, shared_type) * xt[i];
+                if (!DOWN) b += scalar(sh1 + row * srb, i, shared_type) * xt[i];
+            }
+            a = sum(a); b = sum(b);
         }
-        a = sum(a); b = sum(b);
     } else {
         const int e = selected[(uint64_t)t * NS + slot];
         if (e >= 0 && (unsigned)e < NE) {
@@ -649,25 +729,101 @@ __global__ void moe_mv(float *out, const float *x, const int *selected,
                 }
                 a = sum(a); b = sum(b);
             } else {
-                a = dot<TYPE>(w0+off,xt,K,grid_table,sign_table);
-                if (!DOWN) b = dot<TYPE>(w1+off,xt,K,grid_table,sign_table);
+                a = dot<TYPE, false, PACKED_SCALES>(w0+off,xt,K,grid_table,sign_table);
+                if (!DOWN) b = dot<TYPE, false, PACKED_SCALES>(w1+off,xt,K,grid_table,sign_table);
             }
         }
     }
     if (!(threadIdx.x & 31)) out[pair * M + row] = DOWN ? a : silu(a) * b;
 }
 
+/* Give gate and up independent warps, then combine only their reduced
+ * scalars. This exposes both projection chains without changing the dot
+ * accumulation order or the shared gate's product-rounding boundary. */
+template<unsigned TYPE, unsigned SHARED_TYPE, unsigned ROWS = 2>
+__global__ void moe_gate_up(float *out, const float *x, const int *selected,
+        const char *w0, const char *w1, const char *sh0, const char *sh1,
+        unsigned NE, unsigned NS, unsigned K, unsigned M, uint64_t rb, uint64_t srb) {
+    const unsigned warp = threadIdx.x/32, lane = threadIdx.x&31;
+    const unsigned row = blockIdx.x*ROWS + warp/2, slot = blockIdx.y;
+    const bool up = warp&1, shared = slot == NS;
+    __shared__ float reduced[ROWS*2];
+    float v = 0;
+    if (row < M) {
+        if (shared) {
+            if (up) v = dot<SHARED_TYPE,false,SHARED_TYPE == 13>(sh1+row*srb,x,K);
+            else v = dot<SHARED_TYPE,true,SHARED_TYPE == 13>(sh0+row*srb,x,K);
+        } else {
+            const int e = selected[slot];
+            if (e >= 0 && (unsigned)e < NE)
+                v = dot<TYPE,false,TYPE == 13>((up ? w1 : w0)+((uint64_t)e*M+row)*rb,x,K);
+        }
+    }
+    if (!lane) reduced[warp] = v;
+    __syncthreads();
+    if (!lane && !up && row < M)
+        out[(uint64_t)slot*M+row] = silu(reduced[warp])*reduced[warp+1];
+}
+
+/* Single-token K-format down projections keep the shared format constant,
+ * avoiding the generic shared-expert scalar dispatcher. */
+template<unsigned TYPE, unsigned SHARED_TYPE>
+__global__ void moe_down(float *out, const float *x, const int *selected,
+        const char *w, const char *shared_w, unsigned NE, unsigned NS,
+        unsigned K, unsigned M, uint64_t rb, uint64_t srb) {
+    const unsigned row = blockIdx.x*4 + threadIdx.x/32, slot = blockIdx.y;
+    if (row >= M) return;
+    const float *input = x + (uint64_t)slot*K;
+    float v = 0;
+    if (slot == NS) v = dot<SHARED_TYPE,false,SHARED_TYPE == 13>(shared_w+row*srb,input,K);
+    else {
+        const int e = selected[slot];
+        if (e >= 0 && (unsigned)e < NE)
+            v = dot<TYPE,false,TYPE == 13>(w+((uint64_t)e*M+row)*rb,input,K);
+    }
+    if (!(threadIdx.x&31)) out[(uint64_t)slot*M+row] = v;
+}
+
 static int moe_mv_dispatch(float *out, const float *x, const int *sel,
         const char *w0, const char *w1, const char *s0, const char *s1,
         unsigned type, unsigned st, unsigned NE, unsigned T, unsigned NS, unsigned K, unsigned M, bool down) {
     const uint64_t rb = expert_row_bytes(type, K), srb = row_bytes(st, K);
+    if (down && T == 1 && (type == 13 || type == 14) && (st == 13 || st == 14) &&
+        !(((uintptr_t)w0 | (uintptr_t)s0)&3)) {
+        const dim3 down_grid((M+3)/4,NS+1);
+#define QWEN_DOWN(Q,S) moe_down<Q,S><<<down_grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,s0,NE,NS,K,M,rb,srb)
+        if (type == 13) { if (st == 13) { QWEN_DOWN(13,13); } else { QWEN_DOWN(13,14); } }
+        else { if (st == 13) { QWEN_DOWN(14,13); } else { QWEN_DOWN(14,14); } }
+#undef QWEN_DOWN
+        return launched();
+    }
+    if (!down && T == 1 && (type == 13 || type == 14) && (st == 13 || st == 14) &&
+        !(((uintptr_t)w0 | (uintptr_t)w1 | (uintptr_t)s0 | (uintptr_t)s1)&3)) {
+        if (type == 13 && st == 13 && K == 2048) {
+            moe_gate_up<13,13,1><<<dim3(M,NS+1),64,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,NE,NS,K,M,rb,srb);
+            return launched();
+        }
+        const dim3 split_grid((M+1)/2,NS+1);
+#define QWEN_GATE_UP(Q,S) moe_gate_up<Q,S><<<split_grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,NE,NS,K,M,rb,srb)
+        if (type == 13) { if (st == 13) { QWEN_GATE_UP(13,13); } else { QWEN_GATE_UP(13,14); } }
+        else { if (st == 13) { QWEN_GATE_UP(14,13); } else { QWEN_GATE_UP(14,14); } }
+#undef QWEN_GATE_UP
+        return launched();
+    }
     const dim3 grid((M + 3) / 4, NS + (st != UINT_MAX), T);
+    /* Q5 blocks and row strides are four-byte aligned in GGUF. Keep the
+     * byte-reader fallback for callers with only two-byte alignment. */
+    if (type == 13 && !(((uintptr_t)w0 | (uintptr_t)w1 | (uintptr_t)s0 | (uintptr_t)s1)&3)) {
+        if (down) moe_mv<13,true,true><<<grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,st,NE,NS,K,M,rb,srb);
+        else moe_mv<13,false,true><<<grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,st,NE,NS,K,M,rb,srb);
+        return launched();
+    }
 #define QWEN_MOE(TYPE) case TYPE: \
     if (down) moe_mv<TYPE, true><<<grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,st,NE,NS,K,M,rb,srb); \
     else moe_mv<TYPE, false><<<grid,128,0,cuda_decode_stream()>>>(out,x,sel,w0,w1,s0,s1,st,NE,NS,K,M,rb,srb); break
     switch (type) {
     QWEN_MOE(0); QWEN_MOE(1); QWEN_MOE(2); QWEN_MOE(8); QWEN_MOE(10);
-    QWEN_MOE(12); QWEN_MOE(16); QWEN_MOE(30); QWEN_MOE(39);
+    QWEN_MOE(12); QWEN_MOE(13); QWEN_MOE(14); QWEN_MOE(16); QWEN_MOE(30); QWEN_MOE(39);
     default: return 0;
     }
 #undef QWEN_MOE
@@ -1079,21 +1235,82 @@ static int matrix_dispatch(float *out, const float *x, const char *w0, const cha
     else matrix<TYPE,false,true><<<grid,256,0,cuda_decode_stream()>>>(out,x,w0,w1,lists,counts,T,NS,NO,K,M,cap,rb); break
     switch (type) {
     QWEN_MM(0); QWEN_MM(1); QWEN_MM(2); QWEN_MM(8); QWEN_MM(10);
-    QWEN_MM(12); QWEN_MM(16); QWEN_MM(30); QWEN_MM(39);
+    QWEN_MM(12); QWEN_MM(13); QWEN_MM(14); QWEN_MM(16); QWEN_MM(30); QWEN_MM(39);
     default: return 0;
     }
 #undef QWEN_MM
     return launched();
 }
 
-template<unsigned TYPE>
+template<unsigned TYPE, bool ROUND_PRODUCT, bool PACKED_SCALES>
 __device__ __forceinline__ float dot(const char *row, const float *x, unsigned n,
         const uint64_t *grid, const uint8_t *signs) {
     float acc = 0;
-    if (TYPE == 1 && !(n%4) && !((uintptr_t)x&15) && !((uintptr_t)row&7)) {
+    if (TYPE == 13 || TYPE == 14) {
+        /* One lane visits the same column in all eight 32-value groups.
+         * Unroll a whole K block so scales, packed bytes, and address math
+         * are reused, retaining the scalar path's accumulation order. Q6
+         * blocks are only two-byte aligned (210 bytes); use byte loads. */
+        const unsigned lane = threadIdx.x & 31;
+        for (unsigned base = 0; base < n; base += 256) {
+            const uint8_t *b = (const uint8_t *)row + (base / 256) * (TYPE == 13 ? 176 : 210);
+            const float d = __half2float(*(const __half *)(b + (TYPE == 13 ? 0 : 208)));
+            if (TYPE == 13) {
+                const float dm = __half2float(*(const __half *)(b + 2));
+                const unsigned high = b[16 + lane];
+                /* Three aligned words replace twelve byte loads; extraction
+                 * and floating-point arithmetic stay unchanged. */
+                const unsigned p0 = PACKED_SCALES ? *(const unsigned *)(b+4) : 0;
+                const unsigned p1 = PACKED_SCALES ? *(const unsigned *)(b+8) : 0;
+                const unsigned p2 = PACKED_SCALES ? *(const unsigned *)(b+12) : 0;
+                #pragma unroll
+                for (unsigned g = 0; g < 8; g++) {
+                    const uint8_t *s = b + 4;
+                    const unsigned sc = PACKED_SCALES ? (g < 4 ? (p0>>(g*8))&63 :
+                        ((p2>>((g-4)*8))&15) | (((p0>>((g-4)*8+6))&3)<<4)) :
+                        (g < 4 ? s[g] & 63 : (s[g+4]&15) | ((s[g-4]>>6)<<4));
+                    const unsigned mn = PACKED_SCALES ? (g < 4 ? (p1>>(g*8))&63 :
+                        ((p2>>((g-4)*8+4))&15) | (((p1>>((g-4)*8+6))&3)<<4)) :
+                        (g < 4 ? s[g+4] & 63 : (s[g+4]>>4) | ((s[g]>>6)<<4));
+                    const unsigned q = ((b[48 + (g/2)*32 + lane] >> ((g&1)*4)) & 15) |
+                                       (((high >> g) & 1) << 4);
+                    const float v = d * sc * q - dm * mn;
+                    /* The generic shared gate rounds its product before
+                     * adding (the up projection and routed dots use FMA).
+                     * Preserve that boundary when specializing dispatch. */
+                    if (ROUND_PRODUCT) acc += __fmul_rn(v, x[base + g*32 + lane]);
+                    else acc += v * x[base + g*32 + lane];
+                }
+            } else {
+                #pragma unroll
+                for (unsigned g = 0; g < 8; g++) {
+                    const unsigned half = g / 4, group = g % 4;
+                    const unsigned low = (b[half*64 + (group&1)*32 + lane] >> ((group/2)*4)) & 15;
+                    const unsigned high = (b[128 + half*32 + lane] >> (group*2)) & 3;
+                    const int q = (int)(low | (high<<4)) - 32;
+                    const int sc = ((const int8_t *)(b + 192))[g*2 + lane/16];
+                    const float v = d * (float)sc * q;
+                    if (ROUND_PRODUCT) acc += __fmul_rn(v, x[base + g*32 + lane]);
+                    else acc += v * x[base + g*32 + lane];
+                }
+            }
+        }
+    } else if (TYPE == 1 && !(n%4) && !((uintptr_t)x&15) && !((uintptr_t)row&7)) {
         for (unsigned i = (threadIdx.x&31)*4; i < n; i += 128) {
             const float4 w = value4<TYPE>(row,i,grid,signs), v = *(const float4 *)(x+i);
             acc += w.x*v.x; acc += w.y*v.y; acc += w.z*v.z; acc += w.w*v.w;
+        }
+    } else if (TYPE == 0) {
+        if (n == 2048) {
+            /* Expose the router's independent loads; keep its 64 FMAs in
+             * their original order. Other widths retain the generic loop. */
+            #pragma unroll
+            for (unsigned i = threadIdx.x & 31; i < 2048; i += 32)
+                acc += ((const float *)row)[i] * x[i];
+        } else {
+            #pragma unroll 4
+            for (unsigned i = threadIdx.x & 31; i < n; i += 32)
+                acc += ((const float *)row)[i] * x[i];
         }
     } else {
         for (unsigned i = threadIdx.x & 31; i < n; i += 32) acc += value<TYPE>(row, i, grid, signs) * x[i];
@@ -1101,12 +1318,12 @@ __device__ __forceinline__ float dot(const char *row, const float *x, unsigned n
     return sum(acc);
 }
 
-template<unsigned TYPE>
+template<unsigned TYPE, bool PACKED_SCALES = false>
 __global__ void matvec(float *out, const char *w, const float *x,
                        unsigned K, unsigned M, uint64_t stride) {
     const unsigned row = blockIdx.x * 4 + threadIdx.x / 32, tok = blockIdx.y;
     if (row >= M) return;
-    const float v = dot<TYPE>(w + row * stride, x + (uint64_t)tok * K, K);
+    const float v = dot<TYPE,false,PACKED_SCALES>(w + row * stride, x + (uint64_t)tok * K, K);
     if (!(threadIdx.x & 31)) out[(uint64_t)tok * M + row] = v;
 }
 
@@ -1174,6 +1391,10 @@ static int matvec_dispatch(float *out, const char *w, const float *x,
     const dim3 grid((M + 3) / 4, T);
     const uint64_t stride = row_bytes(type, K);
     if (!stride) return 0;
+    if (type == 13 && T == 1 && !((uintptr_t)w&3)) {
+        matvec<13,true><<<grid,128,0,cuda_decode_stream()>>>(out,w,x,K,M,stride);
+        return launched();
+    }
     if (type == 8 && T <= 8 && !((uintptr_t)x&15)) {
 #define QWEN_Q8_ROWS(N) matvec_q8<N><<<(M+3)/4,128,0,cuda_decode_stream()>>>(out,w,x,T,K,M,stride)
         if (T == 1) { QWEN_Q8_ROWS(1); }
@@ -1190,7 +1411,7 @@ static int matvec_dispatch(float *out, const char *w, const float *x,
     else matvec<TYPE><<<grid,128,0,cuda_decode_stream()>>>(out,w,x,K,M,stride); break
     switch (type) {
     QWEN_MV(0); QWEN_MV(1); QWEN_MV(2); QWEN_MV(8); QWEN_MV(10);
-    QWEN_MV(12); QWEN_MV(16); QWEN_MV(30); QWEN_MV(39);
+    QWEN_MV(12); QWEN_MV(13); QWEN_MV(14); QWEN_MV(16); QWEN_MV(30); QWEN_MV(39);
     default: return 0;
     }
 #undef QWEN_MV
@@ -2078,7 +2299,9 @@ extern "C" int ds4_gpu_qwen4_router_topk_tensor(ds4_gpu_tensor *sel, ds4_gpu_ten
         !tensor(sel, (uint64_t)T*NS*4) || !tensor(weights, (uint64_t)T*NS*4) || !tensor(logits, (uint64_t)T*NE*4)) return 0;
     const char *wg = K ? weight(map, size, off, row_bytes(type, K)) : NULL;
     if (K && (!wg || !tensor(x, (uint64_t)T*K*4) || !tensor(sg, (uint64_t)T*4))) return 0;
-    router<<<T,256,0,cuda_decode_stream()>>>((int *)sel->ptr, (float *)weights->ptr, (const float *)logits->ptr,
+    if (type == 0) router<0><<<T,256,0,cuda_decode_stream()>>>((int *)sel->ptr, (float *)weights->ptr, (const float *)logits->ptr,
+        K ? (const float *)x->ptr : NULL, wg, K ? (float *)sg->ptr : NULL, NE, NS, K, type);
+    else router<><<<T,256,0,cuda_decode_stream()>>>((int *)sel->ptr, (float *)weights->ptr, (const float *)logits->ptr,
         K ? (const float *)x->ptr : NULL, wg, K ? (float *)sg->ptr : NULL, NE, NS, K, type);
     return launched();
 }

@@ -359,6 +359,7 @@ static void cli_prefill_progress_cb(void *ud, const char *event, int current, in
 
 static bool is_rendered_chat_prompt(const char *prompt) {
     static const char *prefixes[] = {
+        "<|im_start|>",
         "<｜begin▁of▁sentence｜>",
         "<｜User｜>",
         "[gMASK]",
@@ -1397,6 +1398,10 @@ static void repl_chat_build_think_prefix(ds4_engine *engine,
 static bool repl_chat_apply_think_prefix(ds4_engine *engine,
                                          repl_chat *chat,
                                          ds4_think_mode mode) {
+    if (ds4_engine_is_qwen3next(engine) && ds4_think_mode_enabled(mode)) {
+        fprintf(stderr, "ds4: Qwen3-Coder uses the non-thinking chat template\n");
+        return false;
+    }
     ds4_tokens prefix = {0};
     repl_chat_build_think_prefix(engine, mode, &prefix);
     if (ds4_engine_is_deepseek41(engine) && chat->initial_system_text && !prefix.len)
@@ -2339,6 +2344,7 @@ int main(int argc, char **argv) {
         free(cfg.prompt_owned);
         return 1;
     }
+    if (ds4_engine_is_qwen3next(engine)) cfg.gen.think_mode = DS4_THINK_NONE;
     if (ds4_think_mode_level(cfg.gen.think_mode) >= 0 && !ds4_engine_is_deepseek41(engine)) {
         fprintf(stderr, "ds4: --think-level requires a DeepSeek V4.1 model\n");
         ds4_engine_close(engine);

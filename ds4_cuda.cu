@@ -957,6 +957,9 @@ static cuda_decode_graph_entry
     g_decode_graphs[CUDA_DECODE_GRAPH_LAYERS][CUDA_DECODE_GRAPH_ISLANDS]
                    [CUDA_DECODE_GRAPH_VARIANTS];
 static cudaStream_t g_decode_graph_stream = NULL;
+/* Qwen3-Next owns its graphs per session and per device. Only capture
+ * redirects kernel submission; eager operations retain the legacy stream. */
+static cudaStream_t g_qwen3next_capture_stream = NULL;
 static int g_decode_graph_capturing = 0;
 static uint64_t g_decode_graph_replays = 0;
 static uint64_t g_decode_graph_captures = 0;
@@ -986,6 +989,7 @@ extern "C" int ds4_gpu_decode_graphs_supported(void) {
  * eager mode (unchanged behavior); the capture stream while a capture
  * or replay is in flight. */
 static inline cudaStream_t cuda_decode_stream(void) {
+    if (g_qwen3next_capture_stream) return g_qwen3next_capture_stream;
     if (g_dsv41_shared.active) return g_dsv41_shared.stream;
     return g_decode_graph_capturing ? g_decode_graph_stream : (cudaStream_t)0;
 }
@@ -34037,3 +34041,4 @@ extern "C" int ds4_gpu_tp_big_gate_wait(uint64_t seq) {
 #include "ds4_deepseek4_vision_gpu.cuh"
 #include "ds4_deepseek41_cuda.cuh"
 #include "ds4_qwen4_cuda.cuh"
+#include "ds4_qwen3next_cuda.cuh"
