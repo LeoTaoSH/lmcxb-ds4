@@ -267,3 +267,81 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 The DwarfStar logo was designed by hand by Salvatore Sanfilippo, made more
 graphical with AI, and manually reworked by Ben Gnomino, whose human touch made
 it rock.
+
+```
+✦━━━━━━━━━━━━━━━━━━━⟡ T R I P L E S P A R K L E ⟡━━━━━━━━━━━━━━━━━━━
+  the card below is ours; the README above is antirez's, unchanged
+
+  ┌─ triple-glm53-hitsfirst-spark ───────────────────────────── POSITIVE
+  │  WHAT     the hits-first split, unchanged, measured on a second model
+  │           family: GLM 5.3 Flash Q2 on the DGX Spark, forced to stream so
+  │           there are misses to hide, both arms at the same expert cache
+  │  SWITCH   DS4_CUDA_HITS_FIRST=0 turns it off; the pread pool stays on
+  │  OUTPUT   greedy-identical: G1 short a84e448ec8e5458f · long 89cffa1b02d565eb
+  │  BASE     triple-glm53-spark @fe20b8cc4 + 5264aa4b5 + 2a03cef9b
+  └─
+```
+
+**RESULTS** DGX Spark GB10 sm_121 · driver 580.159.03 · 128 gen tokens · GLM 5.3 Flash Q2, 89.9 GiB, SSD-streamed · 3 cycles, each hits-first run taken between two runs with it off, after 3 discarded warm-ups
+
+| arm | ctx | cache asked | experts resident | t/s | delta | sign |
+|---|---:|---|---|---:|---:|---|
+| hits-first OFF | 2048 | 24GB | 3,064 of 12,384 | 4.50 | - | - |
+| hits-first ON | 2048 | 24GB | 3,064 of 12,384 | 5.28 | +17.11% | 3/3 |
+| hits-first OFF | 4096 | 24GB | 3,064 of 12,384 | 4.32 | - | - |
+| hits-first ON | 4096 | 24GB | 3,064 of 12,384 | 5.20 | +20.10% | 3/3 |
+| hits-first OFF | 6144 | 24GB | 3,064 of 12,384 | 3.79 | - | - |
+| hits-first ON | 6144 | 24GB | 3,064 of 12,384 | 4.74 | +25.23% | 3/3 |
+| hits-first ON, MIN_MISS=3 | 6144 | 24GB | 3,064 of 12,384 | 4.59 | +22.07% | 3/3 |
+
+```
+floor     5.32 % from this round's own hits-first OFF pairs · 6144 BEATS at 4.74x
+          cycle readings at 6144: +25.23, +24.93, +25.27
+
+cache     both arms asked 24GB and the engine gave both 3,064 slots, so the delta
+          measures the lever, not the memory
+          3,064 = 24.74 % of the 43 x 288 = 12,384 routed set, 6.75 MiB each
+          cache asked = --ssd-streaming-cache-experts · resident = the engine's own line
+
+wall      every OFF run 164-169 s, every ON run 117-121 s · no statistic needed
+
+prefill   about 90 to about 166 t/s at 4096 and 6144 · TTFT about 560 to 315 ms
+
+MIN_MISS  =3 measures +22.07 % against +25.23 %, so the default stays at 1
+
+files     glm53/measured/2026-09-19-GLM-R2-RESULT-*.md (the sealed round)
+          2026-09-20-GLM-A5-RESULT-*.md (the streamed fixture and the split)
+```
+
+NOTES
+**WHAT THIS IS**
+- The hits-first lever on the CUDA streaming path, measured on a second model family. Metal has
+  declined its own split under three misses in ds4_gpu_stream_expert_split_worthwhile() all along.
+- Engine code is the two commits named in BASE, on top of the glm53 branch. Nothing else differs.
+
+**THE POOL DOES MOST OF THE WORK, NOT THE ORDERING**
+- The commit has two parts. Turned on separately (round GLM-A5, its own total, not the table above):
+  pread pool 23.4 · hits-first ordering 4.9 · together 29.4 %
+- The ordering on its own sits near that round's floor. Said here because the branch is named
+  after the smaller half.
+- Both parts ship together. DS4_CUDA_HITS_FIRST=0 keeps the pool, as in #1083.
+
+**OUTPUT**
+- Byte-identical at n_expert_used=8 over ten dumps, shas in the box above.
+- The streamed 100-case fixture agrees to the last digit on both arms: avg_nll 0.459763833,
+  first_match 88, avg_lcp 7.810, 11,559 tokens, per-case files byte-identical on cmp.
+
+**RESIDENT BASELINE, FOR SCALE**
+- No cache at all (GLM-R1, resident): 14.675 / 14.635 / 14.600 t/s at 2048 / 4096 / 6144, six runs.
+  Streaming is what creates the misses this lever hides.
+
+**FLAGGED, NOT FIXED**
+- glm53-full-q2 IQ2_XXS down has no launcher; the GLM launcher hardcodes 256 experts where this
+  file declares 288.
+- q4: see the glm53 card.
+
+```
+  ALSO TRIED
+  DS4_CUDA_HITS_FIRST_MIN_MISS=3 +22.1%  decline the split under 3 misses, as Metal does
+                                         not adopted: below the split alone, GLM and DeepSeek
+```
