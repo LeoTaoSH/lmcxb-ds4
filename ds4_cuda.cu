@@ -16984,8 +16984,8 @@ __device__ static float quarter_warp_sum_f32(float v, uint32_t lane8) {
 }
 
 __global__ static void q8_K_quantize_kernel(cuda_block_q8_K *out, const float *x, uint32_t in_dim, uint32_t n_rows) {
-    uint32_t b = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t b = blockIdx.y;
+    uint32_t row = blockIdx.x;
     if (row >= n_rows || b >= in_dim / CUDA_QK_K) return;
     const float *xr = x + (uint64_t)row * in_dim + (uint64_t)b * CUDA_QK_K;
     cuda_block_q8_K *yb = out + (uint64_t)row * (in_dim / CUDA_QK_K) + b;
@@ -17032,6 +17032,33 @@ __global__ static void q8_K_quantize_kernel(cuda_block_q8_K *out, const float *x
     if (tid == 0) yb->d = 1.0f / iscale_s;
 }
 
+extern "C" int ds4_gpu_test_q8_k_quantize_rows(uint32_t n_rows) {
+    if (n_rows == 0u) return 0;
+
+    float *x = NULL;
+    cuda_block_q8_K *out = NULL;
+    float last_scale = NAN;
+    const size_t x_bytes = (size_t)n_rows * CUDA_QK_K * sizeof(*x);
+    const size_t out_bytes = (size_t)n_rows * sizeof(*out);
+    cudaError_t err = cudaMalloc((void **)&x, x_bytes);
+    if (err == cudaSuccess) err = cudaMalloc((void **)&out, out_bytes);
+    if (err == cudaSuccess) err = cudaMemset(x, 0, x_bytes);
+    if (err == cudaSuccess) err = cudaMemset(out, 0xff, out_bytes);
+    if (err == cudaSuccess) {
+        q8_K_quantize_kernel<<<dim3(n_rows, 1u, 1u), 256>>>(
+            out, x, CUDA_QK_K, n_rows);
+        err = cudaGetLastError();
+    }
+    if (err == cudaSuccess) err = cudaDeviceSynchronize();
+    if (err == cudaSuccess) {
+        err = cudaMemcpy(&last_scale, out + n_rows - 1u,
+                         sizeof(last_scale), cudaMemcpyDeviceToHost);
+    }
+    if (out) (void)cudaFree(out);
+    if (x) (void)cudaFree(x);
+    return err == cudaSuccess && last_scale == 0.0f;
+}
+
 /* Decode-only dual quantizer.  The Q8_0 half mirrors
  * quantize_q8_0_f32_kernel's 32-thread reduction and expression order, while
  * the Q8_K half remains byte-for-byte the ordinary routed-MoE quantizer. */
@@ -17042,8 +17069,8 @@ __global__ static void q8_K_q8_0_quantize_kernel(
         const float *x,
         uint32_t in_dim,
         uint32_t n_rows) {
-    const uint32_t b = blockIdx.x;
-    const uint32_t row = blockIdx.y;
+    const uint32_t b = blockIdx.y;
+    const uint32_t row = blockIdx.x;
     if (row >= n_rows || b >= in_dim / CUDA_QK_K) return;
     const float *xr = x + (uint64_t)row * in_dim +
                       (uint64_t)b * CUDA_QK_K;
@@ -17139,8 +17166,8 @@ __global__ static void q8_K_quantize_owned_kernel(
         uint32_t n_rows,
         uint32_t expert_base,
         uint32_t expert_count) {
-    const uint32_t b = blockIdx.x;
-    const uint32_t row = blockIdx.y;
+    const uint32_t b = blockIdx.y;
+    const uint32_t row = blockIdx.x;
     if (row >= n_rows || b >= in_dim / CUDA_QK_K) return;
     if (!moe_owned_local_expert(selected[row], expert_base, expert_count, NULL)) return;
 
@@ -17215,8 +17242,8 @@ __global__ static void q8_K_quantize_sidecar_kernel(
         const float *amax_sidecar,
         uint32_t in_dim,
         uint32_t n_rows) {
-    uint32_t b = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t b = blockIdx.y;
+    uint32_t row = blockIdx.x;
     const uint32_t blocks = in_dim / CUDA_QK_K;
     if (row >= n_rows || b >= blocks) return;
     const float *xr = x + (uint64_t)row * in_dim + (uint64_t)b * CUDA_QK_K;
@@ -20024,9 +20051,9 @@ static int routed_moe_decode_q4_graph_launch(
 
     uint32_t x_rows = 1u;
     uint32_t mid_rows = n_expert;
-    dim3 xq_grid(xq_blocks, 1, 1);
+    dim3 xq_grid(x_rows, xq_blocks, 1);
     dim3 gate_grid((expert_mid_dim + 7u) / 8u, n_expert, 1);
-    dim3 midq_grid(midq_blocks, n_expert, 1);
+    dim3 midq_grid(mid_rows, midq_blocks, 1);
     dim3 down_grid((out_dim + 31u) / 32u, 1, 1);
     dim3 block(256, 1, 1);
 
@@ -21820,7 +21847,7 @@ static int routed_moe_launch(
         uint32_t *tile16_starts = NULL;
         uint32_t tile_capacity = 0;
         uint32_t tile16_capacity = 0;
-        dim3 xq_grid(xq_blocks, n_tokens, 1);
+        dim3 xq_grid(n_tokens, xq_blocks, 1);
         q8_K_quantize_kernel<<<xq_grid, 256>>>(xq, (const float *)x->ptr, expert_in_dim, n_tokens);
         ok = cuda_ok(cudaGetLastError(), "routed_moe x quantize launch");
         if (prof_ev[1]) (void)cudaEventRecord(prof_ev[1], 0);
@@ -22296,7 +22323,7 @@ static int routed_moe_launch(
         }
         if (prof_ev[3]) (void)cudaEventRecord(prof_ev[3], 0);
         if (ok && !use_direct_midq) {
-            dim3 midq_grid(midq_blocks, n_tokens * n_expert, 1);
+            dim3 midq_grid(n_tokens * n_expert, midq_blocks, 1);
             if (use_q4_midq_sidecar) {
                 q8_K_quantize_sidecar_kernel<<<midq_grid, 256>>>(
                         midq,
@@ -22797,7 +22824,7 @@ extern "C" int ds4_gpu_routed_moe_one_owned_tensor(
     cuda_block_q8_K *xq = (cuda_block_q8_K *)down->ptr;
     cuda_block_q8_K *midq = (cuda_block_q8_K *)gate->ptr;
 
-    dim3 xq_grid(xq_blocks, 1, 1);
+    dim3 xq_grid(1u, xq_blocks, 1);
     if (shared_prequant) {
         int8_t *shared_xq = (int8_t *)shared_prequant->ptr;
         float *shared_scale = (float *)((char *)shared_prequant->ptr +
@@ -22851,7 +22878,7 @@ extern "C" int ds4_gpu_routed_moe_one_owned_tensor(
     }
     if (!cuda_ok(cudaGetLastError(), "owned routed_moe gate/up launch")) return 0;
 
-    dim3 midq_grid(midq_blocks, 6u, 1u);
+    dim3 midq_grid(6u, midq_blocks, 1u);
     q8_K_quantize_owned_kernel<<<midq_grid, 256>>>(
             midq,
             (const float *)mid->ptr,
@@ -27299,7 +27326,7 @@ static int laguna_routed_moe_q34_batch(
         (cuda_block_q8_K *)xq_scratch[logical_tier]->ptr;
     cuda_block_q8_K *midq =
         (cuda_block_q8_K *)midq_scratch[logical_tier]->ptr;
-    q8_K_quantize_kernel<<<dim3(xq_blocks, n_tokens, 1), 256>>>(
+    q8_K_quantize_kernel<<<dim3(n_tokens, xq_blocks, 1), 256>>>(
         xq, (const float *)x->ptr, expert_in_dim, n_tokens);
     if (!cuda_ok(cudaGetLastError(),
                  "Laguna routed MoE input quantize launch")) {
@@ -27455,7 +27482,7 @@ static int laguna_routed_moe_q34_batch(
     }
 
     q8_K_quantize_kernel<<<
-        dim3(midq_blocks, pair_count, 1), 256>>>(
+        dim3(pair_count, midq_blocks, 1), 256>>>(
         midq, (const float *)mid->ptr,
         expert_mid_dim, pair_count);
     if (!cuda_ok(cudaGetLastError(),
@@ -27659,7 +27686,7 @@ extern "C" int ds4_gpu_glm_routed_moe_batch_tensor(
         out_work = (float *)out_local[dev]->ptr;
     }
     {
-        dim3 gq(xq_blocks, n_tokens, 1);
+        dim3 gq(n_tokens, xq_blocks, 1);
         q8_K_quantize_kernel<<<gq, 256>>>(
                 (cuda_block_q8_K *)xq_scratch[dev]->ptr,
                 (const float *)x->ptr, expert_in_dim, n_tokens);
@@ -27721,7 +27748,7 @@ extern "C" int ds4_gpu_glm_routed_moe_batch_tensor(
                         up_expert_bytes, up_row_bytes,
                         xq_blocks, expert_mid_dim, n_expert, cap);
                 q8_K_quantize_kernel<<<
-                        dim3(midq_blocks, n_tokens * n_expert, 1), 256>>>(
+                        dim3(n_tokens * n_expert, midq_blocks, 1), 256>>>(
                         (cuda_block_q8_K *)midq_scratch[dev]->ptr,
                         mid_work,
                         expert_mid_dim, n_tokens * n_expert);
@@ -27818,7 +27845,7 @@ extern "C" int ds4_gpu_glm_routed_moe_batch_tensor(
                     gate_expert_bytes, gate_row_bytes,
                     up_expert_bytes, up_row_bytes,
                     xq_blocks, expert_mid_dim, n_expert, cap);
-            q8_K_quantize_kernel<<<dim3(midq_blocks, n_tokens * n_expert, 1), 256>>>(
+            q8_K_quantize_kernel<<<dim3(n_tokens * n_expert, midq_blocks, 1), 256>>>(
                     (cuda_block_q8_K *)midq_scratch[dev]->ptr,
                     mid_work, expert_mid_dim, n_tokens * n_expert);
             cudaMemsetAsync(out_work, 0,
@@ -27887,7 +27914,7 @@ extern "C" int ds4_gpu_glm_routed_moe_batch_tensor(
     }
 
     {
-        dim3 gq(midq_blocks, n_tokens * n_expert, 1);
+        dim3 gq(n_tokens * n_expert, midq_blocks, 1);
         q8_K_quantize_kernel<<<gq, 256>>>(
                 (cuda_block_q8_K *)midq_scratch[dev]->ptr,
                 mid_work, expert_mid_dim, n_tokens * n_expert);
