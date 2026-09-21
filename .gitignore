@@ -53,6 +53,7 @@
 /tests/test_glm53_vision_engine
 /tests/test_glm_attention
 /tests/test_glm_attention_rocm
+/tests/test_kimi_linear_logits
 /tests/test_linux_memory
 /tests/test_rocm_memory
 /tests/test_qwen4_kernels
@@ -81,8 +82,15 @@ __pycache__/
 /gguf-tools/libds4quants.dylib
 /gguf-tools/libds4quants.so
 /misc/
+/models/
+/logs/
+/spec/
+/NOTES.md
+/download_kimi_instruct.py
+/download_kimi_linear.py
 .*.swp
 .DS_Store
 
 /tests/test_qwen4_conv_parallel
 /tests/test_q8_prefill_variants
+/cuda/mmq/test/test_mmq_parity

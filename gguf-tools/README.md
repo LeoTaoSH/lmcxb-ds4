@@ -13,6 +13,9 @@ The important pieces are:
   importance with `ds4`.
 - `quality-testing/`: prompts and scripts used to compare local GGUF variants
   against official DeepSeek V4 Flash continuations.
+- `download_kimi_linear.py` and `kimi_linear_convert.py`: pinned download and
+  Q8_0 conversion for the experimental Kimi Linear profile described in
+  [the model guide](../docs/KIMI_LINEAR.md).
 
 ## Qwen3.8 IQ2_XXS experiment
 

@@ -174,6 +174,14 @@ Ordinary decode is the default. Enable the embedded draft block with `--mtp`:
 No second model file is needed. See [sampling behavior](SPECULATIVE_DECODING.md)
 before choosing between the default opportunistic mode and exact sampling.
 
+## Kimi Linear 48B-A3B (experimental)
+
+Kimi Linear Instruct is supported in the narrow CUDA Q8_0 profile documented
+in [KIMI_LINEAR.md](KIMI_LINEAR.md). The tested target is a resident, single-GPU
+GB10 run at 32,768 context. Base has compatible geometry but is not yet a
+validated release profile. Other Kimi families and the checkpoint's advertised
+1M context are not implied by this support.
+
 ## Full GLM 5.3 and GLM 5.2
 
 Full GLM 5.3 Q2 is about 197 GiB. Use a sufficiently large machine or streaming:
