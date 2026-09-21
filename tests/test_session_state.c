@@ -418,6 +418,62 @@ static void test_text_observations(void) {
 }
 
 #ifndef DS4_NO_GPU
+static void test_dspark_rollback_misses(void) {
+    ds4_engine e = {.backend = DS4_BACKEND_METAL};
+    ds4_session *s = calloc(1, sizeof(*s));
+    assert(s);
+    s->engine = &e;
+    for (int i = 0; i < 132; i++) ds4_tokens_push(&s->checkpoint, i);
+    char err[128];
+    for (int mode = 0; mode < 6; mode++) {
+        s->checkpoint.len = 132;
+        s->checkpoint_valid = true;
+        s->dspark_rollback_start = 127;
+        s->dspark_rollback_end = 132;
+        s->dspark_draft_valid = true;
+        s->dspark_draft_len = 4;
+        /* A bad cache window makes restoration fail before submitting work. */
+        s->dspark_rollback.dspark_cache_len = 1;
+        int pos = 129;
+        if (mode == 0) pos = 127; /* No saved logits at the frontier. */
+        if (mode == 1) pos = 126; /* Before the snapshot. */
+        if (mode == 2) s->dspark_rollback_end = 131; /* Not this block. */
+        if (mode == 3) ds4_session_dspark_capture_invalidate(s);
+        if (mode == 4) {
+            ds4_spec_frontier reused;
+            s->graph.dspark_cache_len = 1;
+            assert(!spec_frontier_snapshot(&reused, s));
+            assert(s->dspark_rollback_end == 0);
+            s->graph.dspark_cache_len = 0;
+        }
+        /* mode 5 enters restore and fails: history must still be truncated. */
+        ds4_session_rewind(s, pos);
+        assert(s->checkpoint.len == pos && !s->checkpoint_valid);
+        assert(!s->dspark_rollback_end && !s->dspark_draft_valid);
+        assert(!s->dspark_draft_len && ds4_session_argmax(s) == -1);
+        for (int i = 0; i < pos; i++) assert(s->checkpoint.v[i] == i);
+    }
+    /* Both payload loaders expire the rollback handle before any other check. */
+    s->dspark_rollback_end = 132;
+    assert(ds4_session_load_payload(s, NULL, 0, err, sizeof(err)) == 1);
+    assert(s->dspark_rollback_end == 0);
+    s->dspark_rollback_end = 132;
+    assert(ds4_session_load_layer_payload(s, NULL, 0, NULL, 0, 0, 1, err, sizeof(err)) == 1);
+    assert(s->dspark_rollback_end == 0);
+    ds4_session_free(s);
+}
+
+static void test_dspark_rollback_replay_fits(void) {
+    assert(dspark_rollback_replay_fits(0, 1, 0, 1));
+    assert(!dspark_rollback_replay_fits(0, 2, 0, 1));
+    assert(dspark_rollback_replay_fits(5, 10, 128, 10));
+    assert(!dspark_rollback_replay_fits(5, 11, 128, 10));
+    assert(dspark_rollback_replay_fits(128, 138, 128, 138));
+    assert(dspark_rollback_replay_fits(129, 139, 128, 138));
+    assert(!dspark_rollback_replay_fits(129, 140, 128, 138));
+    assert(!dspark_rollback_replay_fits(200, 100, 100, 1000));
+}
+
 static void test_glm_attention_budget(void) {
     const ds4_shape saved_shape = g_ds4_shape;
     g_ds4_shape = DS4_SHAPE_GLM53;
@@ -538,6 +594,8 @@ int main(void) {
     test_snapshot_bytes();
     test_text_observations();
 #ifndef DS4_NO_GPU
+    test_dspark_rollback_misses();
+    test_dspark_rollback_replay_fits();
     test_glm_attention_budget();
     test_glm_spec_rollback();
 #endif
