@@ -264,6 +264,7 @@ typedef struct {
 } agent_tool_arg;
 
 typedef struct {
+    char *id;
     char *name;
     agent_tool_arg *args;
     int argc;
@@ -296,6 +297,7 @@ typedef enum {
     AGENT_TOOL_SYNTAX_GLM,
     AGENT_TOOL_SYNTAX_DSML41,
     AGENT_TOOL_SYNTAX_QWEN,
+    AGENT_TOOL_SYNTAX_KIMI,
 } agent_tool_syntax;
 
 typedef enum {
@@ -321,6 +323,7 @@ typedef struct {
     size_t param_value_start;
     bool param_close_prefix;
     bool glm_after_call;
+    bool kimi_legacy_hybrid;
     agent_tool_calls calls;
     char error[160];
 } agent_dsml_parser;
@@ -397,6 +400,10 @@ static void agent_trace(agent_worker *w, const char *fmt, ...);
 static void agent_trace_text(agent_worker *w, const char *label,
                              const char *text, size_t len);
 static bool agent_stream_wants_greedy_sampling(const agent_stream_renderer *sr);
+static bool agent_kimi_route_wants_greedy(agent_tool_syntax syntax,
+                                          int tool_round,
+                                          int generated);
+static bool agent_command_is_web_fetch(const char *cmd);
 static void agent_publish_system_status(agent_worker *w, const char *msg);
 static int agent_web_confirm(void *privdata, const char *message,
                              char *err, size_t err_len);
@@ -410,6 +417,7 @@ static int agent_read_default_lines(agent_worker *w);
 static int agent_compact_reserve_tokens(agent_worker *w);
 
 static agent_tool_syntax agent_tool_syntax_for_engine(ds4_engine *engine) {
+    if (ds4_engine_is_kimi_linear(engine)) return AGENT_TOOL_SYNTAX_KIMI;
     if (ds4_engine_is_qwen4(engine)) return AGENT_TOOL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ? AGENT_TOOL_SYNTAX_GLM
          : ds4_engine_is_deepseek41(engine) ? AGENT_TOOL_SYNTAX_DSML41
@@ -424,6 +432,8 @@ static const char *agent_dsml_tag_name(agent_tool_syntax syntax, const char *nam
 }
 
 static const char *agent_tool_start(agent_tool_syntax syntax) {
+    if (syntax == AGENT_TOOL_SYNTAX_KIMI)
+        return "<|tool_calls_section_begin|>";
     if (syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN) return "<tool_call>";
     return syntax == AGENT_TOOL_SYNTAX_DSML41 ? "<｜DSML｜ calls>" : "<｜DSML｜tool_calls>";
 }
@@ -439,6 +449,11 @@ static bool agent_tool_syntax_assistant_turn_uses_eos(agent_tool_syntax syntax) 
 /* GLM and Qwen both open a call with <tool_call> and render as chat messages */
 static bool agent_syntax_is_xml_tool_call(agent_tool_syntax syntax) {
     return syntax == AGENT_TOOL_SYNTAX_GLM || syntax == AGENT_TOOL_SYNTAX_QWEN;
+}
+
+static bool agent_tool_prompt_uses_chat_role(agent_tool_syntax syntax) {
+    return syntax == AGENT_TOOL_SYNTAX_KIMI ||
+           agent_syntax_is_xml_tool_call(syntax);
 }
 
 static void agent_worker_append_assistant_turn_end(agent_worker *w) {
@@ -1013,8 +1028,20 @@ static void agent_apply_model_sampling_defaults(
     if (!gen->min_p_set) gen->min_p = 0.0f;
 }
 
-static ds4_think_mode effective_think_mode(const agent_config *cfg) {
+static ds4_think_mode effective_think_mode_for_model(
+        const agent_config *cfg, bool is_kimi_linear) {
+    /* Kimi Linear's shipped chat template has no reasoning delimiters and its
+     * assistant prefix intentionally ignores think_mode. Starting the stream
+     * renderer in thinking state would therefore classify every native tool
+     * call as hidden reasoning and reject it. */
+    if (is_kimi_linear) return DS4_THINK_NONE;
     return ds4_think_mode_for_context(cfg->gen.think_mode, cfg->gen.ctx_size);
+}
+
+static ds4_think_mode effective_think_mode(
+        const agent_config *cfg, ds4_engine *engine) {
+    return effective_think_mode_for_model(
+        cfg, engine && ds4_engine_is_kimi_linear(engine));
 }
 
 /* ============================================================================
@@ -1434,9 +1461,70 @@ static char *agent_build_qwen_tools_prompt(bool edit_upto, bool vision) {
     return out;
 }
 
+static char *agent_build_kimi_tool_declaration(bool vision) {
+    static const char wrap[] = "{\"type\":\"function\",\"function\":";
+    size_t lines = 0;
+    for (const char *p = agent_glm_tool_schemas; *p; p++) lines += *p == '\n';
+    size_t cap = strlen(agent_glm_tool_schemas) +
+                 (lines + (vision ? 1 : 0)) * (strlen(wrap) + 3) + 3;
+    if (vision) cap += strlen(agent_vision_tool_schema);
+    char *out = xmalloc(cap);
+    size_t n = 0;
+    out[n++] = '[';
+    const char *p = agent_glm_tool_schemas;
+    bool first = true;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len) {
+            n += (size_t)snprintf(out + n, cap - n, "%s%s%.*s}",
+                                  first ? "" : ",", wrap, (int)len, p);
+            first = false;
+        }
+        p += len + (nl ? 1 : 0);
+    }
+    if (vision) {
+        n += (size_t)snprintf(out + n, cap - n, "%s%s%s}",
+                              first ? "" : ",", wrap,
+                              agent_vision_tool_schema);
+    }
+    snprintf(out + n, cap - n, "]");
+    return out;
+}
+
+static char *agent_build_kimi_tools_prompt(bool edit_upto) {
+    static const char intro[] =
+        "You are a coding agent running in a local workspace. The declared tools are executable and available now; "
+        "call them whenever the request requires local file, system, or web work. "
+        "When the user asks to use curl, call the bash tool with a curl command instead of merely printing or suggesting it. "
+        "When the user asks to search the web without requiring curl, call google_search and use visit_page for relevant results. "
+        "A request to search, look up, verify online, or use curl must begin with the appropriate tool call, not an answer from memory. "
+        "For an unfamiliar named person or organization, search before answering rather than guessing an identity or biography. "
+        "After obtaining enough evidence from one or two successful web calls, stop searching and answer the user with a concise synthesis and source links. "
+        "Never reproduce raw HTML or full page source in the answer. "
+        "Do not claim that you lack shell or Internet access unless an attempted tool call returns such an error. "
+        "Do not invent facts that the requested tool was meant to verify. "
+        "Avoid printing large file contents or large code blocks as answers; create or edit files with tools, then summarize briefly.\n\n"
+        "Kimi native tool calls use this exact protocol:\n"
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.TOOL_NAME:0"
+        "<|tool_call_argument_begin|>{\"argument\":\"value\"}<|tool_call_end|>"
+        "<|tool_calls_section_end|>\n"
+        "Arguments must be one valid JSON object. Do not emit DSML or XML tool markup.\n\n";
+    const char *edit = edit_upto ? agent_glm_tools_prompt_edit_upto
+                                 : agent_glm_tools_prompt_edit_exact;
+    size_t cap = strlen(intro) + strlen(AGENT_TOOL_CONTRACTS) + strlen(edit) +
+                 strlen(agent_glm_tools_prompt_rules_tail) + 1;
+    char *out = xmalloc(cap);
+    snprintf(out, cap, "%s%s%s%s", intro, AGENT_TOOL_CONTRACTS, edit,
+             agent_glm_tools_prompt_rules_tail);
+    return out;
+}
+
 static char *agent_dsml41_tools_prompt(const char *source);
 
 static char *agent_build_tools_prompt(ds4_engine *engine, bool edit_upto) {
+    if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_KIMI)
+        return agent_build_kimi_tools_prompt(edit_upto);
     if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_QWEN)
         return agent_build_qwen_tools_prompt(edit_upto, ds4_engine_has_vision(engine));
     if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_GLM)
@@ -1474,6 +1562,11 @@ static const char agent_qwen_syntax_reminder[] =
     "Tool-call syntax reminder:\n"
     "<tool_call>\n<function=$TOOL_NAME>\n<parameter=$PARAMETER_NAME>\n$PARAMETER_VALUE\n</parameter>\n"
     "</function>\n</tool_call>\n";
+static const char agent_kimi_syntax_reminder[] =
+    "Kimi native tool-call syntax reminder:\n"
+    "<|tool_calls_section_begin|><|tool_call_begin|>functions.TOOL_NAME:0"
+    "<|tool_call_argument_begin|>{\"argument\":\"value\"}<|tool_call_end|>"
+    "<|tool_calls_section_end|>\n";
 
 #define AGENT_SYSTEM_PROMPT_REMINDER_TOKENS 50000
 
@@ -1553,7 +1646,13 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
      * supplied -sys text: arbitrary user text containing <｜User｜>, <think>, or
      * ｜DSML｜ must remain plain content, not control tokens. */
     char *tools_prompt = agent_build_tools_prompt(engine, edit_upto);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
+    if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_KIMI) {
+        char *declaration = agent_build_kimi_tool_declaration(
+            ds4_engine_has_vision(engine));
+        ds4_chat_append_message(engine, tokens, "tool_declare", declaration);
+        ds4_chat_append_message(engine, tokens, "system", tools_prompt);
+        free(declaration);
+    } else if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
         ds4_chat_append_message(engine, tokens, "system", tools_prompt);
     else {
         if (ds4_engine_is_deepseek41(engine))
@@ -1610,7 +1709,12 @@ static void agent_worker_maybe_append_system_prompt_reminder(agent_worker *w) {
     agent_publish_system_status(w, "Re-injecting system prompt reminder...");
     agent_trace(w, "system prompt reminder injected at transcript=%d",
                 w->transcript.len);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(w->engine))) {
+    /* Kimi instructions must remain a native system turn.  Rendering this
+     * reminder as bare text puts it between chat turns without an im_system
+     * marker; after a long/restored session that weakens or destroys the tool
+     * declaration conditioning even though the initial prompt was correct. */
+    if (agent_tool_prompt_uses_chat_role(
+            agent_tool_syntax_for_engine(w->engine))) {
         ds4_chat_append_message(w->engine, &w->transcript, "system", reminder);
     } else {
         ds4_tokenize_rendered_chat(w->engine, reminder, &w->transcript);
@@ -1812,6 +1916,7 @@ static bool bytes_is_partial_prefix(const char *p, size_t n, const char *prefix)
 
 static void agent_tool_call_free(agent_tool_call *c) {
     if (!c) return;
+    free(c->id);
     free(c->name);
     for (int i = 0; i < c->argc; i++) {
         free(c->args[i].name);
@@ -1859,6 +1964,35 @@ static const char *agent_tool_arg_value(const agent_tool_call *call, const char 
             return call->args[i].value ? call->args[i].value : "";
     }
     return NULL;
+}
+
+static uint64_t agent_tool_hash_bytes(uint64_t hash, const void *data, size_t len) {
+    const unsigned char *p = data;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= p[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t agent_tool_calls_signature(const agent_tool_calls *calls) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (int i = 0; i < calls->len; i++) {
+        const agent_tool_call *call = &calls->v[i];
+        const char *id = call->id ? call->id : "";
+        const char *name = call->name ? call->name : "";
+        hash = agent_tool_hash_bytes(hash, id, strlen(id) + 1);
+        hash = agent_tool_hash_bytes(hash, name, strlen(name) + 1);
+        for (int j = 0; j < call->argc; j++) {
+            const char *arg_name = call->args[j].name ? call->args[j].name : "";
+            const char *value = call->args[j].value ? call->args[j].value : "";
+            hash = agent_tool_hash_bytes(hash, arg_name, strlen(arg_name) + 1);
+            hash = agent_tool_hash_bytes(hash, value, strlen(value) + 1);
+            hash = agent_tool_hash_bytes(hash, &call->args[j].is_string,
+                                         sizeof(call->args[j].is_string));
+        }
+    }
+    return hash;
 }
 
 static void agent_dsml_parser_free(agent_dsml_parser *p) {
@@ -2052,6 +2186,278 @@ static bool agent_bytes_starts_with(const char *p, const char *end,
 static bool agent_bytes_partial_prefix_at(const char *p, const char *end,
                                           const char *prefix) {
     return bytes_is_partial_prefix(p, (size_t)(end - p), prefix);
+}
+
+static void agent_json_skip_ws(const char **p) {
+    while (**p && isspace((unsigned char)**p)) (*p)++;
+}
+
+static int agent_json_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return -1;
+}
+
+static void agent_json_utf8_put(char *out, size_t *n, uint32_t cp) {
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
+    if (cp <= 0x7f) {
+        out[(*n)++] = (char)cp;
+    } else if (cp <= 0x7ff) {
+        out[(*n)++] = (char)(0xc0 | (cp >> 6));
+        out[(*n)++] = (char)(0x80 | (cp & 0x3f));
+    } else if (cp <= 0xffff) {
+        out[(*n)++] = (char)(0xe0 | (cp >> 12));
+        out[(*n)++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[(*n)++] = (char)(0x80 | (cp & 0x3f));
+    } else {
+        out[(*n)++] = (char)(0xf0 | (cp >> 18));
+        out[(*n)++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+        out[(*n)++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[(*n)++] = (char)(0x80 | (cp & 0x3f));
+    }
+}
+
+static bool agent_json_string(const char **p, char **out) {
+    *out = NULL;
+    agent_json_skip_ws(p);
+    if (**p != '"') return false;
+    const char *start = ++*p;
+    char *value = xmalloc(strlen(start) + 1);
+    size_t n = 0;
+    while (**p && **p != '"') {
+        unsigned char c = (unsigned char)*(*p)++;
+        if (c != '\\') {
+            value[n++] = (char)c;
+            continue;
+        }
+        c = (unsigned char)*(*p)++;
+        switch (c) {
+        case '"': value[n++] = '"'; break;
+        case '\\': value[n++] = '\\'; break;
+        case '/': value[n++] = '/'; break;
+        case 'b': value[n++] = '\b'; break;
+        case 'f': value[n++] = '\f'; break;
+        case 'n': value[n++] = '\n'; break;
+        case 'r': value[n++] = '\r'; break;
+        case 't': value[n++] = '\t'; break;
+        case 'u': {
+            uint32_t cp = 0;
+            for (int i = 0; i < 4; i++) {
+                int h = agent_json_hex((*p)[i]);
+                if (h < 0) { free(value); return false; }
+                cp = (cp << 4) | (uint32_t)h;
+            }
+            *p += 4;
+            agent_json_utf8_put(value, &n, cp);
+            break;
+        }
+        default: free(value); return false;
+        }
+    }
+    if (**p != '"') { free(value); return false; }
+    (*p)++;
+    value[n] = '\0';
+    *out = value;
+    return true;
+}
+
+static bool agent_kimi_parse_arguments(agent_tool_call *call,
+                                       const char *json,
+                                       char *err, size_t err_len) {
+    const char *p = json;
+    agent_json_skip_ws(&p);
+    if (*p++ != '{') goto invalid;
+    agent_json_skip_ws(&p);
+    if (*p == '}') { p++; goto done; }
+    for (;;) {
+        char *key = NULL, *string_value = NULL;
+        if (!agent_json_string(&p, &key)) goto invalid;
+        agent_json_skip_ws(&p);
+        if (*p++ != ':') { free(key); goto invalid; }
+        agent_json_skip_ws(&p);
+        const char *value_start = p;
+        bool is_string = *p == '"';
+        if (is_string) {
+            if (!agent_json_string(&p, &string_value)) {
+                free(key);
+                goto invalid;
+            }
+        } else {
+            int depth = 0;
+            bool quoted = false, escaped = false;
+            while (*p) {
+                char c = *p;
+                if (quoted) {
+                    if (escaped) escaped = false;
+                    else if (c == '\\') escaped = true;
+                    else if (c == '"') quoted = false;
+                } else if (c == '"') quoted = true;
+                else if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']') {
+                    if (depth == 0) break;
+                    depth--;
+                } else if (c == ',' && depth == 0) break;
+                p++;
+            }
+        }
+        const char *value_end = p;
+        if (!is_string) {
+            while (value_end > value_start &&
+                   isspace((unsigned char)value_end[-1])) value_end--;
+            if (value_end == value_start) { free(key); goto invalid; }
+        }
+        const char *value = is_string ? string_value : value_start;
+        size_t value_len = is_string ? strlen(string_value) :
+                                       (size_t)(value_end - value_start);
+        agent_tool_call_add_arg(call, key, value, value_len, false, "");
+        call->args[call->argc - 1].is_string = is_string;
+        free(string_value);
+        free(key);
+        agent_json_skip_ws(&p);
+        if (*p == ',') { p++; continue; }
+        if (*p == '}') { p++; break; }
+        goto invalid;
+    }
+done:
+    agent_json_skip_ws(&p);
+    if (*p) goto invalid;
+    return true;
+invalid:
+    snprintf(err, err_len, "invalid Kimi tool arguments JSON");
+    return false;
+}
+
+static char *agent_kimi_tool_name(const char *id, size_t len) {
+    static const char prefix[] = "functions.";
+    if (len >= sizeof(prefix) - 1 && !memcmp(id, prefix, sizeof(prefix) - 1)) {
+        id += sizeof(prefix) - 1;
+        len -= sizeof(prefix) - 1;
+    }
+    const char *colon = memchr(id, ':', len);
+    if (colon) len = (size_t)(colon - id);
+    while (len && isspace((unsigned char)id[len - 1])) len--;
+    while (len && isspace((unsigned char)*id)) { id++; len--; }
+    return len ? xstrndup(id, len) : NULL;
+}
+
+static void agent_kimi_tool_parse(agent_dsml_parser *p) {
+    static const char section_begin[] = "<|tool_calls_section_begin|>";
+    static const char call_begin[] = "<|tool_call_begin|>";
+    static const char arg_begin[] = "<|tool_call_argument_begin|>";
+    static const char call_end[] = "<|tool_call_end|>";
+    static const char section_end[] = "<|tool_calls_section_end|>";
+    static const char legacy_invoke_end[] = "</invoke>";
+    while (p->state == AGENT_DSML_STRUCTURAL ||
+           p->state == AGENT_DSML_PARAM_VALUE) {
+        const char *raw = p->raw;
+        const char *end = raw + p->raw_len;
+        if (p->state == AGENT_DSML_PARAM_VALUE) {
+            const char *close = p->kimi_legacy_hybrid ? legacy_invoke_end : call_end;
+            char *value_end = strstr(raw + p->param_value_start, close);
+            if (!value_end) return;
+            char *json = xstrndup(raw + p->param_value_start,
+                                  (size_t)(value_end - raw - p->param_value_start));
+            if (!agent_kimi_parse_arguments(&p->current, json,
+                                            p->error, sizeof(p->error))) {
+                free(json);
+                p->state = AGENT_DSML_ERROR;
+                return;
+            }
+            free(json);
+            agent_tool_calls_push(&p->calls, &p->current);
+            p->parse_pos = (size_t)(value_end - raw) + strlen(close);
+            if (p->kimi_legacy_hybrid) {
+                p->state = AGENT_DSML_DONE;
+                return;
+            }
+            p->state = AGENT_DSML_STRUCTURAL;
+            continue;
+        }
+        while (p->parse_pos < p->raw_len &&
+               isspace((unsigned char)p->raw[p->parse_pos])) p->parse_pos++;
+        if (p->parse_pos >= p->raw_len) return;
+        const char *cur = raw + p->parse_pos;
+        if (agent_bytes_starts_with(cur, end, section_end)) {
+            p->parse_pos += sizeof(section_end) - 1;
+            p->state = AGENT_DSML_DONE;
+            return;
+        }
+        if (agent_bytes_partial_prefix_at(cur, end, section_end)) return;
+        /* Kimi Linear sometimes repeats section_begin where section_end
+         * belongs.  Once a complete call exists, a nested section cannot be
+         * meaningful, so accept that observed typo as the intended close. */
+        if (p->calls.len > 0 &&
+            agent_bytes_starts_with(cur, end, section_begin)) {
+            p->parse_pos += sizeof(section_begin) - 1;
+            p->state = AGENT_DSML_DONE;
+            return;
+        }
+        if (p->calls.len > 0 &&
+            agent_bytes_partial_prefix_at(cur, end, section_begin)) return;
+        if (!agent_bytes_starts_with(cur, end, call_begin)) {
+            if (agent_bytes_partial_prefix_at(cur, end, call_begin)) return;
+            agent_dsml_set_error(p, "expected Kimi native tool call");
+            return;
+        }
+        const char *id = cur + sizeof(call_begin) - 1;
+        const char *args = strstr(id, arg_begin);
+        const char *legacy_args = NULL;
+        if (!args) {
+            /* Some released Kimi checkpoints begin a call with the native
+             * marker but then emit the old compact payload `<{"..."}</invoke>`.
+             * Accept only this complete, JSON-delimited hybrid form; it is
+             * normalized to a native turn before the result is appended. */
+            legacy_args = strstr(id, "<{");
+            if (!legacy_args) return;
+            args = legacy_args;
+        }
+        agent_tool_call_free(&p->current);
+        const char *id_start = id;
+        const char *id_end = args;
+        agent_trim_span(&id_start, &id_end);
+        p->current.id = xstrndup(id_start, (size_t)(id_end - id_start));
+        p->current.name = agent_kimi_tool_name(id_start,
+                                               (size_t)(id_end - id_start));
+        if (!p->current.name) {
+            agent_dsml_set_error(p, "Kimi tool call without function name");
+            return;
+        }
+        p->kimi_legacy_hybrid = legacy_args != NULL;
+        p->param_value_start = p->kimi_legacy_hybrid ?
+            (size_t)(args - raw) + 1 :
+            (size_t)(args - raw) + sizeof(arg_begin) - 1;
+        p->parse_pos = p->param_value_start;
+        p->state = AGENT_DSML_PARAM_VALUE;
+    }
+}
+
+/* Convert the accepted legacy-hybrid wire form into the native Kimi form
+ * before it becomes conversation history.  The parser seeds raw with the
+ * canonical section opener, so only the legacy argument and close markers
+ * need replacing. */
+static char *agent_kimi_legacy_tool_call_native_text(
+        const agent_dsml_parser *p) {
+    static const char legacy_args[] = "<{";
+    static const char legacy_end[] = "</invoke>";
+    static const char native_args[] = "<|tool_call_argument_begin|>";
+    static const char native_end[] =
+        "<|tool_call_end|><|tool_calls_section_end|>";
+    if (!p || !p->kimi_legacy_hybrid || !p->raw) return NULL;
+    const char *args = strstr(p->raw, legacy_args);
+    const char *end = args ? strstr(args + sizeof(legacy_args) - 1, legacy_end) : NULL;
+    if (!args || !end) return NULL;
+    size_t prefix = (size_t)(args - p->raw);
+    size_t json = (size_t)(end - (args + sizeof(legacy_args) - 1));
+    size_t cap = prefix + strlen(native_args) + json + strlen(native_end) + 1;
+    char *out = xmalloc(cap);
+    size_t n = 0;
+    memcpy(out + n, p->raw, prefix); n += prefix;
+    memcpy(out + n, native_args, strlen(native_args)); n += strlen(native_args);
+    memcpy(out + n, args + sizeof(legacy_args) - 1, json); n += json;
+    memcpy(out + n, native_end, strlen(native_end)); n += strlen(native_end);
+    out[n] = '\0';
+    return out;
 }
 
 static void agent_glm_tool_parse(agent_dsml_parser *p) {
@@ -2317,6 +2723,15 @@ static void agent_qwen_tool_parse(agent_dsml_parser *p) {
 static void agent_dsml_finish(agent_dsml_parser *p) {
     if (!p || p->state == AGENT_DSML_DONE || p->state == AGENT_DSML_ERROR)
         return;
+    if (p->syntax == AGENT_TOOL_SYNTAX_KIMI) {
+        if (p->state == AGENT_DSML_STRUCTURAL && p->calls.len > 0) {
+            const char *tail = p->raw + p->parse_pos;
+            const char *end = p->raw + p->raw_len;
+            tail = agent_skip_ascii_space(tail, end);
+            if (tail == end) p->state = AGENT_DSML_DONE;
+        }
+        return;
+    }
     if (!agent_syntax_is_xml_tool_call(p->syntax) || !p->glm_after_call)
         return;
 
@@ -2335,6 +2750,10 @@ static void agent_dsml_finish(agent_dsml_parser *p) {
  * until enough bytes arrive, while malformed completed input switches to
  * AGENT_DSML_ERROR so the model gets a retryable tool error. */
 static void agent_dsml_parse(agent_dsml_parser *p) {
+    if (p->syntax == AGENT_TOOL_SYNTAX_KIMI) {
+        agent_kimi_tool_parse(p);
+        return;
+    }
     if (p->syntax == AGENT_TOOL_SYNTAX_QWEN) {
         agent_qwen_tool_parse(p);
         return;
@@ -2356,7 +2775,8 @@ static void agent_dsml_parse(agent_dsml_parser *p) {
             agent_tool_call_add_arg(&p->current, p->param_name ? p->param_name : "",
                                     p->raw + p->param_value_start,
                                     (size_t)(end - (p->raw + p->param_value_start)),
-                                    p->param_is_string, agent_dsml_param_close(p->syntax));
+                                    p->param_is_string,
+                                    agent_dsml_param_close(p->syntax));
             p->param_close_prefix = false;
             free(p->param_name);
             p->param_name = NULL;
@@ -4163,8 +4583,9 @@ static void agent_stream_tool_events(agent_stream_renderer *sr) {
         v->read_whole[0] = '\0';
         v->tool_announced = false;
     }
-    if (!v->param_active && p->state == AGENT_DSML_PARAM_VALUE && p->param_name)
+    if (!v->param_active && p->state == AGENT_DSML_PARAM_VALUE && p->param_name) {
         agent_tool_viz_param_begin(sr, p->param_name);
+    }
 }
 
 static void agent_stream_preflight_closed_param(agent_stream_renderer *sr) {
@@ -4192,8 +4613,23 @@ static void agent_stream_preflight_closed_param(agent_stream_renderer *sr) {
 
 static void agent_stream_feed_dsml_byte(agent_stream_renderer *sr, char c) {
     bool was_param = !sr->dsml_ignored && sr->viz.param_active;
+    int calls_before = sr->parser->calls.len;
     agent_dsml_feed(sr->parser, &c, 1);
     if (!sr->dsml_ignored) {
+        if (sr->syntax == AGENT_TOOL_SYNTAX_KIMI &&
+            sr->parser->calls.len > calls_before) {
+            for (int i = calls_before; i < sr->parser->calls.len; i++) {
+                agent_tool_call *call = &sr->parser->calls.v[i];
+                if (!sr->viz.tool_announced)
+                    agent_tool_viz_tool(sr, call->name);
+                for (int j = 0; j < call->argc; j++) {
+                    agent_tool_viz_param_begin(sr, call->args[j].name);
+                    for (const char *s = call->args[j].value; *s; s++)
+                        agent_tool_viz_param_raw_byte(sr, *s);
+                    agent_tool_viz_param_end(sr);
+                }
+            }
+        }
         agent_stream_tool_events(sr);
         if (was_param) agent_tool_viz_param_value_byte(sr, c);
         if (was_param && sr->parser->state != AGENT_DSML_PARAM_VALUE &&
@@ -4240,6 +4676,7 @@ static void agent_stream_start_dsml(agent_stream_renderer *sr, bool ignored) {
     sr->dsml_start_len = 0;
     sr->post_think_gap = false;
     agent_trace(sr->renderer->worker, "%s tool start detected%s",
+                sr->syntax == AGENT_TOOL_SYNTAX_KIMI ? "kimi" :
                 sr->syntax == AGENT_TOOL_SYNTAX_QWEN ? "qwen" :
                 sr->syntax == AGENT_TOOL_SYNTAX_GLM ? "glm" : "dsml",
                 ignored ? " inside thinking" : "");
@@ -4267,6 +4704,24 @@ static bool agent_stream_dsml_start_match(agent_tool_syntax syntax,
                                           const char *tail, size_t len,
                                           bool *complete,
                                           bool *implicit_invoke) {
+    if (syntax == AGENT_TOOL_SYNTAX_KIMI) {
+        const char *start = agent_tool_start(syntax);
+        static const char call_begin[] = "<|tool_call_begin|>";
+        size_t start_len = strlen(start);
+        *complete = false;
+        *implicit_invoke = false;
+        if (len <= start_len && memcmp(start, tail, len) == 0) {
+            *complete = len == start_len;
+            return true;
+        }
+        size_t call_len = sizeof(call_begin) - 1;
+        if (len <= call_len && memcmp(call_begin, tail, len) == 0) {
+            *complete = len == call_len;
+            *implicit_invoke = true;
+            return true;
+        }
+        return false;
+    }
     if (agent_syntax_is_xml_tool_call(syntax)) {
         static const char glm_call[] = "<tool_call>";
         size_t form_len = sizeof(glm_call) - 1;
@@ -4360,7 +4815,8 @@ static void agent_stream_note_plain_dsml_byte(agent_stream_renderer *sr,
  * the DSML detector.  The detector must hold short prefixes because the model
  * can split "<｜DSML｜tool_calls>" across arbitrary tokens. */
 static void agent_stream_normal_byte(agent_stream_renderer *sr, char c) {
-    const char *canonical_invoke = sr->syntax == AGENT_TOOL_SYNTAX_DSML41 ?
+    const char *canonical_invoke = sr->syntax == AGENT_TOOL_SYNTAX_KIMI ?
+        "<|tool_call_begin|>" : sr->syntax == AGENT_TOOL_SYNTAX_DSML41 ?
         "<｜DSML｜ invoke" : "<｜DSML｜invoke";
     const char *start = agent_tool_start(sr->syntax);
     if (sr->parser->state == AGENT_DSML_ERROR) return;
@@ -5122,7 +5578,7 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
 
 static void agent_worker_build_system_tokens(agent_worker *w, ds4_tokens *out) {
     ds4_chat_begin(w->engine, out);
-    ds4_think_mode think_mode = effective_think_mode(w->cfg);
+    ds4_think_mode think_mode = effective_think_mode(w->cfg, w->engine);
     if (ds4_engine_is_qwen4(w->engine)) {
         const char *effort = ds4_qwen4_reasoning_effort_text(think_mode);
         if (effort) ds4_chat_append_message(w->engine, out, "system", effort);
@@ -7508,6 +7964,57 @@ static void agent_test_assert(bool cond, const char *expr,
 #define AGENT_TEST_ASSERT(expr) \
     agent_test_assert((expr), #expr, __FILE__, __LINE__)
 
+static void test_agent_kimi_disables_implicit_thinking(void) {
+    agent_config cfg = {0};
+    cfg.gen.ctx_size = 4096;
+    cfg.gen.think_mode = DS4_THINK_HIGH;
+
+    AGENT_TEST_ASSERT(
+        effective_think_mode_for_model(&cfg, false) == DS4_THINK_HIGH);
+    AGENT_TEST_ASSERT(
+        effective_think_mode_for_model(&cfg, true) == DS4_THINK_NONE);
+}
+
+static void test_agent_kimi_tool_affordances(void) {
+    AGENT_TEST_ASSERT(agent_tool_prompt_uses_chat_role(
+        AGENT_TOOL_SYNTAX_KIMI));
+    AGENT_TEST_ASSERT(agent_tool_prompt_uses_chat_role(
+        AGENT_TOOL_SYNTAX_GLM));
+    AGENT_TEST_ASSERT(!agent_tool_prompt_uses_chat_role(
+        AGENT_TOOL_SYNTAX_DSML));
+    AGENT_TEST_ASSERT(agent_kimi_route_wants_greedy(
+        AGENT_TOOL_SYNTAX_KIMI, 0, 0));
+    AGENT_TEST_ASSERT(!agent_kimi_route_wants_greedy(
+        AGENT_TOOL_SYNTAX_KIMI, 0, 1));
+    AGENT_TEST_ASSERT(!agent_kimi_route_wants_greedy(
+        AGENT_TOOL_SYNTAX_KIMI, 1, 0));
+    AGENT_TEST_ASSERT(!agent_kimi_route_wants_greedy(
+        AGENT_TOOL_SYNTAX_GLM, 0, 0));
+
+    char *declaration = agent_build_kimi_tool_declaration(false);
+    AGENT_TEST_ASSERT(declaration != NULL);
+    AGENT_TEST_ASSERT(strstr(
+        declaration,
+        "\"type\":\"function\",\"function\":{\"name\":\"google_search\"") != NULL);
+    free(declaration);
+
+    char *prompt = agent_build_kimi_tools_prompt(false);
+    AGENT_TEST_ASSERT(prompt != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "declared tools are executable and available now") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "call the bash tool with a curl command") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "call google_search") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "must begin with the appropriate tool call") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "search before answering") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "stop searching and answer") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "Never reproduce raw HTML") != NULL);
+    AGENT_TEST_ASSERT(strstr(prompt, "Do not invent facts") != NULL);
+    free(prompt);
+
+    AGENT_TEST_ASSERT(agent_command_is_web_fetch("curl -s https://example.com"));
+    AGENT_TEST_ASSERT(agent_command_is_web_fetch("  /usr/bin/wget -qO- https://example.com"));
+    AGENT_TEST_ASSERT(!agent_command_is_web_fetch("printf curl"));
+}
+
 static void test_agent_edit_upto_tail_newline_is_not_part_of_anchor(void) {
     const char *data =
         "CFLAGS = -Wall -Wextra -g\n"
@@ -7953,6 +8460,92 @@ static void test_agent_dsml_stream_tool_call_chunked(void) {
     agent_dsml_parser_free(&p);
 }
 
+static void test_agent_kimi_native_tool_call(void) {
+    const char *chunks[] = {
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.bash:0",
+        "<|tool_call_argument_begin|>{\"command\":\"printf \\\"hello\\n\\\"\",",
+        "\"timeout_sec\":30}<|tool_call_end|><|tool_calls_section_end|>",
+    };
+    agent_dsml_parser p;
+    char *out = agent_test_stream_capture(AGENT_TOOL_SYNTAX_KIMI,
+                                          chunks,
+                                          sizeof(chunks) / sizeof(chunks[0]),
+                                          &p, NULL);
+    AGENT_TEST_ASSERT(p.state == AGENT_DSML_DONE);
+    AGENT_TEST_ASSERT(p.calls.len == 1);
+    AGENT_TEST_ASSERT(p.calls.v[0].id &&
+                      !strcmp(p.calls.v[0].id, "functions.bash:0"));
+    AGENT_TEST_ASSERT(p.calls.v[0].name &&
+                      !strcmp(p.calls.v[0].name, "bash"));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "command"),
+                              "printf \"hello\n\""));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "timeout_sec"),
+                              "30"));
+    AGENT_TEST_ASSERT(strstr(out, "printf") != NULL);
+    AGENT_TEST_ASSERT(strstr(out, "tool_call") == NULL);
+    free(out);
+    agent_dsml_parser_free(&p);
+
+    const char *repeated_section_begin =
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.google_search:2"
+        "<|tool_call_argument_begin|>{\"query\":\"example query\"}<|tool_call_end|>"
+        "<|tool_calls_section_begin|>";
+    p = (agent_dsml_parser){
+        .syntax = AGENT_TOOL_SYNTAX_KIMI,
+        .state = AGENT_DSML_SEARCH,
+    };
+    out = agent_test_stream_capture(AGENT_TOOL_SYNTAX_KIMI,
+                                    &repeated_section_begin, 1, &p, NULL);
+    AGENT_TEST_ASSERT(p.state == AGENT_DSML_DONE);
+    AGENT_TEST_ASSERT(p.calls.len == 1);
+    AGENT_TEST_ASSERT(!strcmp(p.calls.v[0].name, "google_search"));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "query"),
+                              "example query"));
+    AGENT_TEST_ASSERT(strstr(out, "invalid tool call") == NULL);
+    free(out);
+    agent_dsml_parser_free(&p);
+
+    const char *without_section_end =
+        "<|tool_call_begin|>functions.google_search:7"
+        "<|tool_call_argument_begin|>{\"query\":\"Ada Example\"}<|tool_call_end|>";
+    p = (agent_dsml_parser){
+        .syntax = AGENT_TOOL_SYNTAX_KIMI,
+        .state = AGENT_DSML_SEARCH,
+    };
+    out = agent_test_stream_capture(AGENT_TOOL_SYNTAX_KIMI,
+                                    &without_section_end, 1, &p, NULL);
+    AGENT_TEST_ASSERT(p.state == AGENT_DSML_DONE);
+    AGENT_TEST_ASSERT(p.calls.len == 1);
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "query"),
+                              "Ada Example"));
+    free(out);
+    agent_dsml_parser_free(&p);
+
+    const char *legacy_hybrid =
+        "<|tool_call_begin|>google_search:0<{\"query\":\"Ada Example\"}</invoke>";
+    p = (agent_dsml_parser){
+        .syntax = AGENT_TOOL_SYNTAX_KIMI,
+        .state = AGENT_DSML_SEARCH,
+    };
+    out = agent_test_stream_capture(AGENT_TOOL_SYNTAX_KIMI,
+                                    &legacy_hybrid, 1, &p, NULL);
+    AGENT_TEST_ASSERT(p.state == AGENT_DSML_DONE);
+    AGENT_TEST_ASSERT(p.kimi_legacy_hybrid);
+    AGENT_TEST_ASSERT(p.calls.len == 1);
+    AGENT_TEST_ASSERT(!strcmp(p.calls.v[0].name, "google_search"));
+    AGENT_TEST_ASSERT(!strcmp(agent_tool_arg_value(&p.calls.v[0], "query"),
+                              "Ada Example"));
+    char *native = agent_kimi_legacy_tool_call_native_text(&p);
+    AGENT_TEST_ASSERT(native != NULL);
+    AGENT_TEST_ASSERT(strstr(native, "<|tool_calls_section_begin|>") == native);
+    AGENT_TEST_ASSERT(strstr(native, "<|tool_call_argument_begin|>") != NULL);
+    AGENT_TEST_ASSERT(strstr(native, "Ada Example") != NULL);
+    AGENT_TEST_ASSERT(strstr(native, "<|tool_call_end|><|tool_calls_section_end|>") != NULL);
+    free(native);
+    free(out);
+    agent_dsml_parser_free(&p);
+}
+
 static void test_agent_glm_tool_parser_rejects_missing_value(void) {
     const char *text = "<tool_call>list<arg_key>path</arg_key></tool_call>";
     agent_dsml_parser p = {
@@ -8156,6 +8749,8 @@ static void test_agent_hints_state(void) {
 }
 
 static void ds4_agent_unit_tests_run(void) {
+    test_agent_kimi_disables_implicit_thinking();
+    test_agent_kimi_tool_affordances();
     test_agent_hints_state();
     test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
     test_agent_edit_upto_requires_tail_after_newline_strip();
@@ -8179,6 +8774,7 @@ static void ds4_agent_unit_tests_run(void) {
     test_agent_glm_stream_ignores_tool_inside_think();
     test_agent_glm_stream_greedy_sampling_boundaries();
     test_agent_dsml_stream_tool_call_chunked();
+    test_agent_kimi_native_tool_call();
     test_agent_glm_tool_parser_rejects_missing_value();
     test_agent_terminal_wrap_output_is_deferred();
 }
@@ -8559,8 +9155,13 @@ static char *agent_tool_search(agent_worker *w, const agent_tool_call *call) {
  * output using the same "head plus temp file" shape as bash.
  */
 
+/* Preserve the established generic web-tool budget. Kimi gets a smaller,
+ * model-specific excerpt below because its short contexts otherwise spend a
+ * disproportionate amount of room on page boilerplate. */
 #define AGENT_WEB_HEAD_BYTES (8*1024)
 #define AGENT_WEB_HEAD_LINES 100
+#define AGENT_KIMI_WEB_HEAD_BYTES (4*1024)
+#define AGENT_KIMI_WEB_HEAD_LINES 60
 
 static int agent_count_lines(const char *s) {
     if (!s || !s[0]) return 0;
@@ -8667,7 +9268,11 @@ static char *agent_tool_visit_page(agent_worker *w, const agent_tool_call *call)
     int total_lines = agent_count_lines(md);
     int shown_lines = 0;
     bool byte_limited = false;
-    char *head = agent_string_head(md, AGENT_WEB_HEAD_LINES, AGENT_WEB_HEAD_BYTES,
+    const int head_lines = ds4_engine_is_kimi_linear(w->engine) ?
+        AGENT_KIMI_WEB_HEAD_LINES : AGENT_WEB_HEAD_LINES;
+    const size_t head_bytes = ds4_engine_is_kimi_linear(w->engine) ?
+        AGENT_KIMI_WEB_HEAD_BYTES : AGENT_WEB_HEAD_BYTES;
+    char *head = agent_string_head(md, head_lines, head_bytes,
                                    &shown_lines, &byte_limited);
     bool truncated = byte_limited || shown_lines < total_lines;
     agent_buf out = {0};
@@ -8678,7 +9283,7 @@ static char *agent_tool_visit_page(agent_worker *w, const agent_tool_call *call)
     agent_buf_puts(&out, line);
     if (truncated) {
         snprintf(line, sizeof(line), "<head -%d %s>\n",
-                 AGENT_WEB_HEAD_LINES, path);
+                 head_lines, path);
         agent_buf_puts(&out, line);
         agent_buf_puts(&out, head);
         if (head[0] && head[strlen(head) - 1] != '\n') agent_buf_puts(&out, "\n");
@@ -8732,6 +9337,7 @@ struct agent_bash_job {
     int exit_status;
     bool running;
     bool timed_out;
+    bool web_fetch;
     bool reaped, pipe_eof;
     int child_status;
     int output_error;
@@ -8970,7 +9576,8 @@ static int agent_bash_spawn(pid_t *pid, int tmpfd, const int pipefd[2],
 /* Spawn a shell command into its own process group so bash_stop/timeout can
  * kill grandchildren created by the shell, not just the /bin/sh wrapper. */
 static agent_bash_job *agent_bash_start(agent_worker *w, const char *cmd,
-                                        int timeout_sec, char *err, size_t err_len) {
+                                        int timeout_sec,
+                                        char *err, size_t err_len) {
     char tmp_path[] = "/tmp/ds4_agent_output_XXXXXX";
     int tmpfd = mkstemp(tmp_path);
     if (tmpfd < 0) {
@@ -9023,6 +9630,8 @@ static agent_bash_job *agent_bash_start(agent_worker *w, const char *cmd,
     job->timeout_sec = timeout_sec;
     job->exit_status = -1;
     job->running = true;
+    job->web_fetch = ds4_engine_is_kimi_linear(w->engine) &&
+                     agent_command_is_web_fetch(cmd);
     job->worker = w;
     int thread_rc = pthread_create(&job->thread, NULL, agent_bash_monitor, job);
     if (thread_rc != 0) {
@@ -9117,6 +9726,120 @@ static char *agent_bash_read_tail_lines(const agent_bash_job *job, int max_lines
     return out;
 }
 
+/* A Kimi tool call sometimes deliberately uses curl instead of visit_page.
+ * Curl's useful result is often an HTML document, not its first few kilobytes
+ * of JavaScript and CSS.  Keep the raw file for inspection, but turn the main
+ * document body into bounded plain text before putting it in Kimi's context. */
+#define AGENT_KIMI_WEB_HTML_SOURCE_BYTES (1024*1024)
+#define AGENT_KIMI_WEB_TEXT_BYTES (16*1024)
+
+static char *agent_bash_read_file_limited(const agent_bash_job *job,
+                                          size_t max_bytes, size_t *len_out) {
+    if (len_out) *len_out = 0;
+    if (!job || !job->path[0] || job->bytes == 0) return NULL;
+    size_t want = job->bytes < max_bytes ? job->bytes : max_bytes;
+    FILE *fp = fopen(job->path, "rb");
+    if (!fp) return NULL;
+    char *out = xmalloc(want + 1);
+    size_t used = 0;
+    while (used < want) {
+        size_t n = fread(out + used, 1, want - used, fp);
+        used += n;
+        if (n == 0) break;
+    }
+    fclose(fp);
+    out[used] = '\0';
+    if (len_out) *len_out = used;
+    return out;
+}
+
+static void agent_kimi_html_text_break(agent_buf *out) {
+    if (out->len && out->ptr[out->len - 1] != '\n') agent_buf_puts(out, "\n");
+}
+
+static char *agent_kimi_html_visible_text(const agent_bash_job *job) {
+    size_t len = 0;
+    char *html = agent_bash_read_file_limited(job, AGENT_KIMI_WEB_HTML_SOURCE_BYTES,
+                                               &len);
+    if (!html || !len ||
+        (!strcasestr(html, "<html") && !strcasestr(html, "<!doctype html"))) {
+        free(html);
+        return NULL;
+    }
+    const char *begin = strcasestr(html, "<main");
+    if (begin) {
+        begin = strchr(begin, '>');
+        if (begin) begin++;
+    }
+    if (!begin) {
+        begin = strcasestr(html, "<body");
+        if (begin) {
+            begin = strchr(begin, '>');
+            if (begin) begin++;
+        }
+    }
+    if (!begin) begin = html;
+    const char *end = strcasestr(begin, "</main>");
+    if (!end) end = html + len;
+
+    agent_buf out = {0};
+    bool space = true;
+    for (const char *p = begin; p < end && out.len < AGENT_KIMI_WEB_TEXT_BYTES;) {
+        if (*p == '<') {
+            const char *gt = memchr(p, '>', (size_t)(end - p));
+            if (!gt) break;
+            const char *tag = p + 1;
+            while (tag < gt && isspace((unsigned char)*tag)) tag++;
+            bool closing = tag < gt && *tag == '/';
+            if (closing) tag++;
+            if ((size_t)(gt - tag) >= 2 &&
+                (!strncasecmp(tag, "br", 2) || !strncasecmp(tag, "p", 1) ||
+                 !strncasecmp(tag, "li", 2) || !strncasecmp(tag, "h1", 2) ||
+                 !strncasecmp(tag, "h2", 2) || !strncasecmp(tag, "h3", 2) ||
+                 !strncasecmp(tag, "h4", 2) || !strncasecmp(tag, "h5", 2) ||
+                 !strncasecmp(tag, "h6", 2) || (closing && !strncasecmp(tag, "div", 3)))) {
+                agent_kimi_html_text_break(&out);
+                space = true;
+            }
+            p = gt + 1;
+            continue;
+        }
+        if (*p == '&') {
+            const char *semi = memchr(p, ';', (size_t)(end - p));
+            if (semi && semi - p <= 10) {
+                if (!strncmp(p, "&amp;", 5)) agent_buf_puts(&out, "&");
+                else if (!strncmp(p, "&lt;", 4)) agent_buf_puts(&out, "<");
+                else if (!strncmp(p, "&gt;", 4)) agent_buf_puts(&out, ">");
+                else if (!strncmp(p, "&quot;", 6)) agent_buf_puts(&out, "\"");
+                else if (!strncmp(p, "&#39;", 5) || !strncmp(p, "&apos;", 6))
+                    agent_buf_puts(&out, "'");
+                else agent_buf_puts(&out, " ");
+                p = semi + 1;
+                space = false;
+                continue;
+            }
+        }
+        unsigned char c = (unsigned char)*p++;
+        if (isspace(c)) {
+            if (!space) {
+                agent_buf_puts(&out, " ");
+                space = true;
+            }
+        } else if (isprint(c) || c >= 0x80) {
+            agent_buf_append(&out, (const char *)&c, 1);
+            space = false;
+        }
+    }
+    free(html);
+    if (!out.ptr || out.len < 32) {
+        free(out.ptr);
+        return NULL;
+    }
+    if (out.len >= AGENT_KIMI_WEB_TEXT_BYTES)
+        agent_buf_puts(&out, "\n[HTML text truncated by DS4.]\n");
+    return agent_buf_take(&out);
+}
+
 /* The first observation uses the head; subsequent ones use a bounded tail. */
 static char *agent_bash_observation(agent_bash_job *job, bool mark_observed, bool *done) {
     pthread_mutex_lock(&job->mu);
@@ -9127,6 +9850,7 @@ static char *agent_bash_observation(agent_bash_job *job, bool mark_observed, boo
         .newline_count = job->newline_count, .last_byte = job->last_byte,
         .observed_once = job->observed_once, .exit_status = job->exit_status,
         .running = job->running, .timed_out = job->timed_out,
+        .web_fetch = job->web_fetch,
         .output_error = job->output_error,
     };
     memcpy(snapshot.path, job->path, sizeof(snapshot.path));
@@ -9162,13 +9886,29 @@ static char *agent_bash_observation(agent_bash_job *job, bool mark_observed, boo
         agent_buf_puts(&out, "\n");
     }
 
-    if (job->bytes == 0) {
+    char *web_text = job->web_fetch && !job->running ?
+        agent_kimi_html_visible_text(job) : NULL;
+    if (web_text) {
+        snprintf(line, sizeof(line),
+                 "output_path=%s (%zu bytes, %d lines; HTML converted to visible text)\n",
+                 job->path[0] ? job->path : "<unavailable>",
+                 job->bytes, display_lines);
+        agent_buf_puts(&out, line);
+        agent_buf_puts(&out, "<web_text>\n");
+        agent_buf_puts(&out, web_text);
+        if (web_text[0] && web_text[strlen(web_text) - 1] != '\n')
+            agent_buf_puts(&out, "\n");
+        agent_buf_puts(&out, "</web_text>\n");
+        free(web_text);
+    } else if (job->bytes == 0) {
         agent_buf_puts(&out, "<output>\n</output>\n");
     } else if (first_observation) {
         int shown_lines = 0;
         bool byte_limited = false;
-        char *head = agent_bash_read_head(job, AGENT_BASH_HEAD_LINES,
-                                          AGENT_BASH_HEAD_BYTES,
+        int head_lines = job->web_fetch ? AGENT_KIMI_WEB_HEAD_LINES : AGENT_BASH_HEAD_LINES;
+        size_t head_bytes = job->web_fetch ? AGENT_KIMI_WEB_HEAD_BYTES : AGENT_BASH_HEAD_BYTES;
+        char *head = agent_bash_read_head(job, head_lines,
+                                          head_bytes,
                                           &shown_lines, &byte_limited);
         bool truncated = byte_limited || display_lines > shown_lines;
         if (!job->running && !truncated) {
@@ -9183,7 +9923,7 @@ static char *agent_bash_observation(agent_bash_job *job, bool mark_observed, boo
                      job->bytes, display_lines);
             agent_buf_puts(&out, line);
             snprintf(line, sizeof(line), "<head -%d %s>\n",
-                     AGENT_BASH_HEAD_LINES, job->path);
+                     head_lines, job->path);
             agent_buf_puts(&out, line);
             agent_buf_puts(&out, head);
             if (head[0] && head[strlen(head) - 1] != '\n') agent_buf_puts(&out, "\n");
@@ -9343,7 +10083,10 @@ static char *agent_bash_job_tool_result(agent_worker *w, agent_bash_job *job,
 
     bool done = false;
     char *obs = agent_bash_observation(job, true, &done);
-    agent_bash_publish_observation(w, obs);
+    /* curl/wget output is usually HTML or another large response body.  Keep a
+     * bounded excerpt available to the model, but do not dump page source into
+     * the interactive terminal. */
+    if (!job->web_fetch) agent_bash_publish_observation(w, obs);
     if (remove_if_done && done) agent_bash_remove_job(w, job);
     return obs;
 }
@@ -9412,6 +10155,14 @@ static void agent_tool_observation_free(agent_tool_observation *obs) {
     memset(obs, 0, sizeof(*obs));
 }
 
+static bool agent_tool_observation_has_error(const agent_tool_observation *obs) {
+    for (size_t i = 0; i < obs->part_count; i++) {
+        if (obs->parts[i].text && strstr(obs->parts[i].text, "Tool error:"))
+            return true;
+    }
+    return false;
+}
+
 static void agent_tool_view_image(agent_worker *w,
                                   const agent_tool_call *call,
                                   agent_tool_observation *obs) {
@@ -9446,6 +10197,18 @@ static void agent_tool_view_image(agent_worker *w,
              obs->images[obs->image_count - 1].height,
              obs->images[obs->image_count - 1].token_count);
     agent_tool_observation_puts(obs, meta);
+}
+
+static bool agent_command_is_web_fetch(const char *cmd) {
+    if (!cmd) return false;
+    while (isspace((unsigned char)*cmd)) cmd++;
+    const char *end = cmd;
+    while (*end && !isspace((unsigned char)*end)) end++;
+    const char *base = end;
+    while (base > cmd && base[-1] != '/') base--;
+    size_t len = (size_t)(end - base);
+    return (len == 4 && !memcmp(base, "curl", 4)) ||
+           (len == 4 && !memcmp(base, "wget", 4));
 }
 
 /* Execute one parsed DSML tool call and return the text that will be appended as
@@ -9512,14 +10275,27 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     }
 }
 
+static bool agent_tool_is_web_research(const agent_tool_call *call) {
+    if (!call || !call->name) return false;
+    if (!strcmp(call->name, "google_search") || !strcmp(call->name, "visit_page"))
+        return true;
+    return !strcmp(call->name, "bash") &&
+        agent_command_is_web_fetch(agent_tool_arg_value(call, "command"));
+}
+
 static agent_tool_observation agent_execute_tool_observation(
         agent_worker *w, const agent_tool_calls *calls) {
     agent_tool_observation obs;
     agent_tool_observation_init(&obs);
+    bool kimi_web_result = false;
     for (int i = 0; i < calls->len; i++) {
-        char hdr[128];
-        snprintf(hdr, sizeof(hdr), "Tool result %d (%s):\n", i + 1,
-                 calls->v[i].name ? calls->v[i].name : "unknown");
+        char hdr[256];
+        if (ds4_engine_is_kimi_linear(w->engine) && calls->v[i].id) {
+            snprintf(hdr, sizeof(hdr), "## Return of %s\n", calls->v[i].id);
+        } else {
+            snprintf(hdr, sizeof(hdr), "Tool result %d (%s):\n", i + 1,
+                     calls->v[i].name ? calls->v[i].name : "unknown");
+        }
         agent_tool_observation_puts(&obs, hdr);
         if (calls->v[i].name && !strcmp(calls->v[i].name, "view_image")) {
             agent_tool_view_image(w, &calls->v[i], &obs);
@@ -9527,9 +10303,20 @@ static agent_tool_observation agent_execute_tool_observation(
         }
         char *res = agent_execute_tool_call(w, &calls->v[i]);
         agent_tool_observation_puts(&obs, res);
+        if (ds4_engine_is_kimi_linear(w->engine) &&
+            agent_tool_is_web_research(&calls->v[i]) &&
+            !strstr(res, "Tool error:"))
+            kimi_web_result = true;
         if (res[0] && res[strlen(res) - 1] != '\n')
             agent_tool_observation_puts(&obs, "\n");
         free(res);
+    }
+    if (kimi_web_result) {
+        agent_tool_observation_puts(
+            &obs,
+            "[DS4 instruction: the preceding web result is external evidence. "
+            "Use its relevant facts and links to answer the user's question now; "
+            "do not repeat the search unless the result is insufficient.]\n");
     }
     if (calls->len == 0)
         agent_tool_observation_puts(&obs, "Tool error: empty tool call block\n");
@@ -10261,6 +11048,17 @@ static bool agent_stream_wants_greedy_sampling(const agent_stream_renderer *sr) 
     return sr->parser->param_close_prefix;
 }
 
+/* Kimi Linear is noticeably less stable at the initial tool-vs-prose branch
+ * than while filling arguments.  Make only that routing decision argmax.  The
+ * normal configured sampler resumes after the first token unless the native
+ * tool parser has opened a structural marker. */
+static bool agent_kimi_route_wants_greedy(agent_tool_syntax syntax,
+                                          int tool_round,
+                                          int generated) {
+    return syntax == AGENT_TOOL_SYNTAX_KIMI && tool_round == 0 &&
+           generated == 0;
+}
+
 static bool agent_stream_compaction_needs_lookahead(const agent_stream_renderer *sr) {
     return !sr->dsml_active && sr->parser->state == AGENT_DSML_SEARCH &&
            (sr->pending_len || sr->dsml_start_len);
@@ -10290,7 +11088,7 @@ static void worker_set_greedy_sampling(agent_worker *w, bool greedy) {
  * the model native DSML tool iteration without a client/server protocol. */
 static int worker_run_turn(agent_worker *w, const char *user_text) {
     agent_config *cfg = w->cfg;
-    ds4_think_mode think_mode = effective_think_mode(cfg);
+    ds4_think_mode think_mode = effective_think_mode(cfg, w->engine);
     pthread_mutex_lock(&w->mu);
     w->interrupt = false;
     w->status.error[0] = '\0';
@@ -10345,6 +11143,8 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
      * after a DSML stanza completes we terminate that assistant message, append
      * the tool result as a tool message, then ask the model to continue. */
     int carried_generation = 0;
+    uint64_t last_failed_tool_signature = 0;
+    int repeated_failed_tool_calls = 0;
     bool resume_assistant = false, resume_in_think = false;
     int resume_start = 0;
     for (int tool_round = 0; ; tool_round++) {
@@ -10477,7 +11277,10 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         bool status_greedy_sampling = false;
         while (generated < max_tokens && !worker_should_interrupt(w)) {
             worker_apply_pending_power(w);
-            bool greedy_sampling = agent_stream_wants_greedy_sampling(&stream);
+            bool greedy_sampling =
+                agent_kimi_route_wants_greedy(tool_syntax, tool_round,
+                                               generated) ||
+                agent_stream_wants_greedy_sampling(&stream);
             if (greedy_sampling != status_greedy_sampling) {
                 worker_set_greedy_sampling(w, greedy_sampling);
                 status_greedy_sampling = greedy_sampling;
@@ -10703,9 +11506,31 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         {
             malformed_tool = true;
             snprintf(dsml.error, sizeof(dsml.error),
+                     tool_syntax == AGENT_TOOL_SYNTAX_KIMI ? "incomplete Kimi tool call" :
                      tool_syntax == AGENT_TOOL_SYNTAX_QWEN ? "incomplete Qwen tool call" :
                      tool_syntax == AGENT_TOOL_SYNTAX_GLM ? "incomplete GLM tool call" :
                      "incomplete DSML tool call");
+        }
+
+        if (got_tool && dsml.kimi_legacy_hybrid) {
+            char *native = agent_kimi_legacy_tool_call_native_text(&dsml);
+            if (!native) {
+                got_tool = false;
+                malformed_tool = true;
+                snprintf(dsml.error, sizeof(dsml.error),
+                         "invalid legacy Kimi hybrid tool call");
+            } else {
+                /* The model emitted a tolerated legacy wire form, but Kimi's
+                 * subsequent tool-result turn must be conditioned on the
+                 * canonical assistant tool-call grammar. */
+                w->transcript.len = assistant_start;
+                ds4_chat_append_assistant_prefix(w->engine, &w->transcript,
+                                                 think_mode);
+                ds4_tokenize_rendered_chat(w->engine, native, &w->transcript);
+                ds4_session_invalidate(w->session);
+                agent_trace(w, "normalized legacy Kimi hybrid tool call");
+                free(native);
+            }
         }
 
         agent_worker_append_assistant_turn_end(w);
@@ -10718,7 +11543,15 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
 
         agent_tool_observation observation;
         agent_tool_observation_init(&observation);
-        if (early_tool_error) {
+        uint64_t tool_signature = got_tool ?
+            agent_tool_calls_signature(&dsml.calls) : 0;
+        bool repeated_tool_guard = got_tool && repeated_failed_tool_calls >= 2 &&
+            tool_signature == last_failed_tool_signature;
+        if (repeated_tool_guard) {
+            agent_tool_observation_puts(
+                &observation,
+                "Tool error: stopped before executing the same failing tool call a third time.\n");
+        } else if (early_tool_error) {
             agent_tool_observation_puts(&observation, "Tool error: ");
             agent_tool_observation_puts(
                 &observation, stream.tool_preflight_error_msg[0] ?
@@ -10728,6 +11561,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         } else if (malformed_tool) {
             agent_tool_observation_puts(
                 &observation,
+                tool_syntax == AGENT_TOOL_SYNTAX_KIMI ? "Tool error: invalid Kimi tool call: " :
                 tool_syntax == AGENT_TOOL_SYNTAX_QWEN ? "Tool error: invalid Qwen tool call: " :
                 tool_syntax == AGENT_TOOL_SYNTAX_GLM ? "Tool error: invalid GLM tool call: " :
                 "Tool error: invalid DSML tool call: ");
@@ -10735,13 +11569,30 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 &observation, dsml.error[0] ? dsml.error : "parse error");
             agent_tool_observation_puts(&observation, "\n");
             agent_tool_observation_puts(
-                &observation, tool_syntax == AGENT_TOOL_SYNTAX_QWEN ?
+                &observation, tool_syntax == AGENT_TOOL_SYNTAX_KIMI ?
+                agent_kimi_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_QWEN ?
                 agent_qwen_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_GLM ?
                 agent_glm_syntax_reminder : tool_syntax == AGENT_TOOL_SYNTAX_DSML41 ?
                 agent_dsml41_syntax_reminder : agent_dsml_syntax_reminder);
         } else {
             agent_tool_observation_free(&observation);
             observation = agent_execute_tool_observation(w, &dsml.calls);
+        }
+        if (got_tool && !repeated_tool_guard) {
+            if (agent_tool_observation_has_error(&observation)) {
+                if (tool_signature == last_failed_tool_signature)
+                    repeated_failed_tool_calls++;
+                else {
+                    last_failed_tool_signature = tool_signature;
+                    repeated_failed_tool_calls = 1;
+                }
+            } else {
+                last_failed_tool_signature = 0;
+                repeated_failed_tool_calls = 0;
+            }
+        } else if (!repeated_tool_guard) {
+            last_failed_tool_signature = 0;
+            repeated_failed_tool_calls = 0;
         }
         int projected_tokens = 0;
         int result_reserve = agent_tool_result_reserve_tokens(w);
@@ -10795,6 +11646,12 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             goto observation_error;
         agent_tool_observation_free(&observation);
         agent_dsml_parser_free(&dsml);
+        if (repeated_tool_guard) {
+            agent_publish_system_status(
+                w, "Stopped after the model repeated the same failing tool call three times.");
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
         carried_generation = 0;
 
         char *queued_user = worker_request_queued_user_drain(w);

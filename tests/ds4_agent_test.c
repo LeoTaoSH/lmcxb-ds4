@@ -825,7 +825,7 @@ static int test_v41_thinking(const char *model) {
         AGENT_TEST_ASSERT(ds4_session_sync(w.session, &w.transcript, err, sizeof(err)) == 0);
         const int before = w.transcript.len;
         w.requested_think = (ds4_think_mode)(DS4_THINK_LEVEL_BASE + levels[i]);
-        const bool changed = effective_think_mode(&cfg) != w.requested_think;
+        const bool changed = effective_think_mode(&cfg, w.engine) != w.requested_think;
         w.think_requested = true;
         AGENT_TEST_ASSERT(!worker_is_idle(&w));
         AGENT_TEST_ASSERT(!worker_submit(&w, "must wait"));

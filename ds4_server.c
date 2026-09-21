@@ -673,6 +673,7 @@ typedef enum {
     SERVER_MODEL_SYNTAX_GLM,
     SERVER_MODEL_SYNTAX_DEEPSEEK41,
     SERVER_MODEL_SYNTAX_QWEN,
+    SERVER_MODEL_SYNTAX_KIMI,
 } server_model_syntax;
 
 #define DS41_TOOL_CALLS_START "<｜DSML｜ calls>"
@@ -1034,6 +1035,19 @@ static ds4_think_mode think_mode_from_enabled(bool enabled, ds4_think_mode effor
     return effort;
 }
 
+/* Kimi Linear's native chat template has no <think> turn.  In particular, a
+ * native tool-call block must be executable immediately rather than being
+ * classified as unfinished DeepSeek reasoning.  Keep this model-specific: the
+ * OpenAI request defaults remain unchanged for every other architecture. */
+static ds4_think_mode effective_think_mode_for_engine(ds4_engine *engine,
+                                                       bool enabled,
+                                                       ds4_think_mode effort,
+                                                       int ctx_size) {
+    if (engine && ds4_engine_is_kimi_linear(engine)) return DS4_THINK_NONE;
+    return ds4_think_mode_for_context(think_mode_from_enabled(enabled, effort),
+                                      ctx_size);
+}
+
 static bool parse_reasoning_effort_name(const char *s, ds4_think_mode *out) {
     if (!s) return false;
     if (!strcmp(s, "max")) {
@@ -1212,6 +1226,7 @@ static bool model_alias_enables_thinking(const char *model) {
 }
 
 static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
+    if (ds4_engine_is_kimi_linear(engine)) return SERVER_MODEL_SYNTAX_KIMI;
     if (ds4_engine_is_qwen4(engine)) return SERVER_MODEL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ?
            SERVER_MODEL_SYNTAX_GLM : ds4_engine_is_deepseek41(engine) ?
@@ -1219,6 +1234,7 @@ static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
 }
 
 static const char *server_model_id_from_engine(ds4_engine *engine) {
+    if (ds4_engine_is_kimi_linear(engine)) return "kimi-linear-48b-a3b-instruct";
     if (ds4_engine_is_deepseek41(engine)) return "deepseek-v4.1-flash";
     if (ds4_engine_is_qwen4(engine)) return "qwen3.8-flash-next";
     if (ds4_engine_is_glm53(engine)) return "glm-5.3-flash";
@@ -3611,6 +3627,93 @@ static char *render_qwen_chat_prompt_text(const chat_msgs *msgs,
     return buf_take(&out);
 }
 
+/* Kimi Linear uses its own three-part role records.  It is neither the
+ * DeepSeek <｜User｜> protocol nor Qwen ChatML: omitting the textual role and
+ * <|im_middle|> token changes the very first model logits. */
+static void append_kimi_role(buf *out, const char *marker,
+                             const char *role, const char *content) {
+    buf_puts(out, marker);
+    buf_puts(out, role);
+    buf_puts(out, "<|im_middle|>");
+    buf_puts(out, content ? content : "");
+    buf_puts(out, "<|im_end|>");
+}
+
+static void append_kimi_tool_declaration(buf *out,
+                                         const char *tool_schemas) {
+    if (!tool_schemas || !tool_schemas[0]) return;
+    buf_puts(out, "<|im_system|>tool_declare<|im_middle|>[");
+    const char *line = tool_schemas;
+    bool comma = false;
+    while (*line) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len) {
+            if (comma) buf_putc(out, ',');
+            buf_append(out, line, len);
+            comma = true;
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    buf_puts(out, "]<|im_end|>");
+}
+
+static void append_kimi_tool_calls_text(buf *out, const tool_calls *calls) {
+    if (!calls || calls->len == 0) return;
+    if (calls->raw_tool_text && calls->raw_tool_text[0]) {
+        buf_puts(out, calls->raw_tool_text);
+        return;
+    }
+    buf_puts(out, "<|tool_calls_section_begin|>");
+    for (int i = 0; i < calls->len; i++) {
+        const tool_call *tc = &calls->v[i];
+        buf_puts(out, "<|tool_call_begin|>functions.");
+        buf_puts(out, tc->name ? tc->name : "");
+        buf_putc(out, ':');
+        char ordinal[24];
+        snprintf(ordinal, sizeof(ordinal), "%d", i);
+        buf_puts(out, ordinal);
+        buf_puts(out, "<|tool_call_argument_begin|>");
+        buf_puts(out, tc->arguments ? tc->arguments : "{}");
+        buf_puts(out, "<|tool_call_end|>");
+    }
+    buf_puts(out, "<|tool_calls_section_end|>");
+}
+
+static char *render_kimi_chat_prompt_text(const chat_msgs *msgs,
+                                          const char *tool_schemas) {
+    buf out = {0};
+    append_kimi_tool_declaration(&out, tool_schemas);
+    for (int i = 0; msgs && i < msgs->len; i++) {
+        const chat_msg *m = &msgs->v[i];
+        if (!strcmp(m->role, "user")) {
+            append_kimi_role(&out, "<|im_user|>", "user", m->content);
+        } else if (!strcmp(m->role, "assistant")) {
+            buf assistant = {0};
+            buf_puts(&assistant, m->content ? m->content : "");
+            append_kimi_tool_calls_text(&assistant, &m->calls);
+            append_kimi_role(&out, "<|im_assistant|>", "assistant",
+                             assistant.ptr ? assistant.ptr : "");
+            buf_free(&assistant);
+        } else if (!strcmp(m->role, "tool")) {
+            buf tool = {0};
+            buf_puts(&tool, "## Return of ");
+            buf_puts(&tool, m->tool_call_id ? m->tool_call_id : "");
+            buf_putc(&tool, '\n');
+            buf_puts(&tool, m->content ? m->content : "");
+            append_kimi_role(&out, "<|im_system|>", "tool",
+                             tool.ptr ? tool.ptr : "");
+            buf_free(&tool);
+        } else {
+            const char *role = m->role && m->role[0] ? m->role : "system";
+            append_kimi_role(&out, "<|im_system|>", role, m->content);
+        }
+    }
+    buf_puts(&out, "<|im_assistant|>assistant<|im_middle|>");
+    return buf_take(&out);
+}
+
 static char *render_chat_prompt_text_for_syntax(server_model_syntax syntax,
                                                 const chat_msgs *msgs,
                                                 const char *tool_schemas,
@@ -3624,6 +3727,9 @@ static char *render_chat_prompt_text_for_syntax(server_model_syntax syntax,
         return render_deepseek41_chat(msgs, 0, tool_schemas, think_mode, false);
     if (syntax == SERVER_MODEL_SYNTAX_QWEN) {
         return render_qwen_chat_prompt_text(msgs, tool_schemas, tool_orders, think_mode);
+    }
+    if (syntax == SERVER_MODEL_SYNTAX_KIMI) {
+        return render_kimi_chat_prompt_text(msgs, tool_schemas);
     }
     return render_deepseek_chat_prompt_text(msgs, tool_schemas,
                                             tool_orders, think_mode);
@@ -4264,8 +4370,8 @@ static bool parse_chat_request(ds4_engine *e, server *s, const char *body, int d
     r->has_tools = tool_schemas && tool_schemas[0] && !tool_choice_none;
     if (!got_thinking && model_alias_disables_thinking(r->model)) thinking_enabled = false;
     if (!got_thinking && model_alias_enables_thinking(r->model)) thinking_enabled = true;
-    r->think_mode = ds4_think_mode_for_context(
-        think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
+    r->think_mode = effective_think_mode_for_engine(
+        e, thinking_enabled, reasoning_effort, ctx_size);
     kv_cache_restore_tool_memory_for_messages(s, &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
     const char *active_tool_schemas = r->has_tools ? tool_schemas : NULL;
@@ -4480,8 +4586,8 @@ static bool parse_anthropic_request(ds4_engine *e, server *s, const char *body, 
     r->has_tools = tool_schemas && tool_schemas[0] && !tool_choice_none;
     if (!got_thinking && model_alias_disables_thinking(r->model)) thinking_enabled = false;
     if (!got_thinking && model_alias_enables_thinking(r->model)) thinking_enabled = true;
-    r->think_mode = ds4_think_mode_for_context(
-        think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
+    r->think_mode = effective_think_mode_for_engine(
+        e, thinking_enabled, reasoning_effort, ctx_size);
     if (!anthropic_validate_tool_results(s, &msgs,
                                          &r->anthropic_requires_live_tool_state,
                                          err, errlen))
@@ -5509,8 +5615,8 @@ static bool parse_responses_request(ds4_engine *e, server *s, const char *body, 
     r->has_tools = active_tool_schemas && active_tool_schemas[0];
     if (!got_thinking && model_alias_disables_thinking(r->model)) thinking_enabled = false;
     if (!got_thinking && model_alias_enables_thinking(r->model)) thinking_enabled = true;
-    r->think_mode = ds4_think_mode_for_context(
-        think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
+    r->think_mode = effective_think_mode_for_engine(
+        e, thinking_enabled, reasoning_effort, ctx_size);
     if (!responses_validate_tool_outputs(s, &msgs, r->think_mode,
                                          &r->responses_requires_live_tool_state,
                                          &r->responses_requires_live_reasoning,
@@ -5715,8 +5821,8 @@ static bool parse_completion_request(ds4_engine *e, const char *body, int def_to
     }
     if (!got_thinking && model_alias_disables_thinking(r->model)) thinking_enabled = false;
     if (!got_thinking && model_alias_enables_thinking(r->model)) thinking_enabled = true;
-    r->think_mode = ds4_think_mode_for_context(
-        think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
+    r->think_mode = effective_think_mode_for_engine(
+        e, thinking_enabled, reasoning_effort, ctx_size);
     chat_msgs msgs = {0};
     chat_msg sys = {0};
     sys.role = xstrdup("system");
@@ -5839,6 +5945,8 @@ static void json_escape_fragment_n(buf *b, const char *s, size_t n) {
 static const char *find_any_tool_start(const char *s) {
     const char *best = NULL;
     const char *candidates[] = {
+        strstr(s, "<|tool_calls_section_begin|>"),
+        strstr(s, "<|tool_call_begin|>"),
         strstr(s, DS41_TOOL_CALLS_START),
         strstr(s, DS4_TOOL_CALLS_START),
         strstr(s, DS4_TOOL_CALLS_START_SHORT),
@@ -5854,6 +5962,7 @@ static const char *find_any_tool_start(const char *s) {
 static const char *find_any_tool_end(const char *s) {
     const char *best = NULL;
     const char *candidates[] = {
+        strstr(s, "<|tool_calls_section_end|>"),
         strstr(s, DS41_TOOL_CALLS_END),
         strstr(s, DS4_TOOL_CALLS_END),
         strstr(s, DS4_TOOL_CALLS_END_SHORT),
@@ -6668,6 +6777,99 @@ static bool parse_qwen_generated_message_ex(const char *text,
     return true;
 }
 
+/* Kimi's released Instruct template does not use DSML.  A call is a JSON
+ * object between its native markers, for example:
+ * <|tool_calls_section_begin|><|tool_call_begin|>functions.search:0
+ * <|tool_call_argument_begin|>{"query":"..."}<|tool_call_end|>
+ * <|tool_calls_section_end|>
+ *
+ * Do not try to translate it through the DSML parser: the token spellings are
+ * different and, more importantly, Kimi is conditioned on seeing this exact
+ * protocol again when a client supplies tool results on the next request. */
+static char *kimi_native_function_name(const char *id, size_t len) {
+    static const char prefix[] = "functions.";
+    if (len >= sizeof(prefix) - 1 && !memcmp(id, prefix, sizeof(prefix) - 1)) {
+        id += sizeof(prefix) - 1;
+        len -= sizeof(prefix) - 1;
+    }
+    const char *colon = memchr(id, ':', len);
+    if (colon) len = (size_t)(colon - id);
+    while (len && isspace((unsigned char)*id)) { id++; len--; }
+    while (len && isspace((unsigned char)id[len - 1])) len--;
+    return len ? xstrndup(id, len) : NULL;
+}
+
+static bool parse_kimi_generated_message_ex(const char *text,
+                                            char **content_out,
+                                            char **reasoning_out,
+                                            tool_calls *calls) {
+    static const char section_begin[] = "<|tool_calls_section_begin|>";
+    static const char call_begin[] = "<|tool_call_begin|>";
+    static const char arg_begin[] = "<|tool_call_argument_begin|>";
+    static const char call_end[] = "<|tool_call_end|>";
+    static const char section_end[] = "<|tool_calls_section_end|>";
+    text = text ? text : "";
+    const char *start = strstr(text, section_begin);
+    if (!start) start = strstr(text, call_begin); /* tolerant of a missing wrapper */
+    if (!start) {
+        *content_out = xstrdup(text);
+        *reasoning_out = NULL;
+        return true;
+    }
+    size_t content_len = trim_tool_separator_ws(text, 0, (size_t)(start - text));
+    const char *p = start;
+    if (!strncmp(p, section_begin, sizeof(section_begin) - 1))
+        p += sizeof(section_begin) - 1;
+    for (;;) {
+        p = skip_ascii_ws(p);
+        if (!strncmp(p, section_end, sizeof(section_end) - 1)) {
+            p += sizeof(section_end) - 1;
+            break;
+        }
+        if (strncmp(p, call_begin, sizeof(call_begin) - 1)) return false;
+        p += sizeof(call_begin) - 1;
+        const char *args = strstr(p, arg_begin);
+        if (!args) return false;
+        const char *name_start = p, *name_end = args;
+        trim_const_span(&name_start, &name_end);
+        char *name = kimi_native_function_name(name_start,
+                                               (size_t)(name_end - name_start));
+        if (!name) return false;
+        const char *json_start = args + sizeof(arg_begin) - 1;
+        const char *json_end = strstr(json_start, call_end);
+        if (!json_end) { free(name); return false; }
+        char *arguments = xstrndup(json_start, (size_t)(json_end - json_start));
+        const char *check = arguments;
+        char *validated = NULL;
+        bool valid = json_raw_value(&check, &validated);
+        json_ws(&check);
+        free(validated);
+        if (!valid || *check) { free(name); free(arguments); return false; }
+        tool_call tc = {0};
+        char id[64];
+        random_tool_id(id, sizeof(id), API_OPENAI);
+        tc.id = xstrdup(id);
+        tc.name = name;
+        tc.arguments = arguments;
+        tool_calls_push(calls, tc);
+        p = json_end + sizeof(call_end) - 1;
+        if (!strncmp(p, section_end, sizeof(section_end) - 1)) {
+            p += sizeof(section_end) - 1;
+            break;
+        }
+        /* A few Kimi checkpoints stop immediately after a single native call
+         * instead of emitting the optional section closer. */
+        if (!*p) break;
+        if (!strncmp(p, call_begin, sizeof(call_begin) - 1)) continue;
+        return false;
+    }
+    free(calls->raw_tool_text);
+    calls->raw_tool_text = xstrndup(start, (size_t)(p - start));
+    *content_out = xstrndup(text, content_len);
+    *reasoning_out = NULL;
+    return true;
+}
+
 static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
                                                   const char *text,
                                                   bool require_thinking_closed,
@@ -6682,6 +6884,11 @@ static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
     if (syntax == SERVER_MODEL_SYNTAX_QWEN) {
         return parse_qwen_generated_message_ex(text, require_thinking_closed,
                                                content_out, reasoning_out, calls, NULL);
+    }
+    if (syntax == SERVER_MODEL_SYNTAX_KIMI) {
+        (void)require_thinking_closed;
+        return parse_kimi_generated_message_ex(text, content_out, reasoning_out,
+                                               calls);
     }
     return parse_deepseek_generated_message_ex(text, require_thinking_closed,
                                                content_out, reasoning_out,
@@ -7749,6 +7956,14 @@ structural:
 static void observe_tool_markers(const dsml_decode_tracker *tracker,
                                  const char *scan, bool *saw_start,
                                  bool *saw_end, bool *orphan_end) {
+    if (tracker && tracker->model_syntax == SERVER_MODEL_SYNTAX_KIMI) {
+        const char *start = scan ? find_any_tool_start(scan) : NULL;
+        if (start) *saw_start = true;
+        if (start && find_any_tool_end(start)) *saw_end = true;
+        else if (!*saw_start && scan && find_any_tool_end(scan) && orphan_end)
+            *orphan_end = true;
+        return;
+    }
     if (tracker->syn) *saw_start = true;
     if (tracker->mode == DSML_TRACK_DONE) *saw_end = true;
     else if (!*saw_start && scan && find_any_tool_end(scan) && orphan_end)
@@ -14126,6 +14341,14 @@ decode_again:
         snprintf(err, sizeof(err), "shutdown requested");
     }
 
+    /* The native section terminator is normally emitted after the call end,
+     * but tolerate checkpoints that finish the turn at <|tool_call_end|>.  Do
+     * this after decoding so the usual case still consumes the section token. */
+    if (j->req.model_syntax == SERVER_MODEL_SYNTAX_KIMI && saw_tool_start &&
+        text.ptr && strstr(text.ptr, "<|tool_call_end|>")) {
+        saw_tool_end = true;
+    }
+
     if (j->req.kind == REQ_CHAT && j->req.has_tools &&
         saw_tool_start && !saw_tool_end && strcmp(finish, "error") != 0)
     {
@@ -17567,6 +17790,75 @@ static void test_render_qwen_chat_prompt_text(void) {
     free(prompt);
     tool_schema_orders_free(&orders);
     chat_msgs_free(&msgs);
+}
+
+static void test_render_kimi_chat_prompt_text(void) {
+    chat_msgs msgs = {0};
+    chat_msg sys = {0};
+    sys.role = xstrdup("system");
+    sys.content = xstrdup("You are terse.");
+    chat_msgs_push(&msgs, sys);
+    chat_msg user = {0};
+    user.role = xstrdup("user");
+    user.content = xstrdup("Hello");
+    chat_msgs_push(&msgs, user);
+
+    char *prompt = render_chat_prompt_text_for_syntax(
+        SERVER_MODEL_SYNTAX_KIMI, &msgs, NULL, NULL, DS4_THINK_NONE);
+    TEST_ASSERT(prompt != NULL);
+    TEST_ASSERT(!strcmp(prompt,
+        "<|im_system|>system<|im_middle|>You are terse.<|im_end|>"
+        "<|im_user|>user<|im_middle|>Hello<|im_end|>"
+        "<|im_assistant|>assistant<|im_middle|>"));
+    free(prompt);
+
+    prompt = render_chat_prompt_text_for_syntax(
+        SERVER_MODEL_SYNTAX_KIMI, &msgs,
+        "{\"name\":\"one\"}\n{\"name\":\"two\"}", NULL,
+        DS4_THINK_HIGH);
+    TEST_ASSERT(prompt != NULL);
+    const char *tool_prefix =
+        "<|im_system|>tool_declare<|im_middle|>"
+        "[{\"name\":\"one\"},{\"name\":\"two\"}]<|im_end|>";
+    TEST_ASSERT(!strncmp(prompt, tool_prefix, strlen(tool_prefix)));
+    free(prompt);
+
+    tool_call tc = {.id = xstrdup("call_test"), .name = xstrdup("search"),
+                    .arguments = xstrdup("{\"query\":\"Kimi\"}")};
+    chat_msg assistant = {0};
+    assistant.role = xstrdup("assistant");
+    tool_calls_push(&assistant.calls, tc);
+    chat_msgs_push(&msgs, assistant);
+    prompt = render_chat_prompt_text_for_syntax(
+        SERVER_MODEL_SYNTAX_KIMI, &msgs, NULL, NULL, DS4_THINK_NONE);
+    TEST_ASSERT(prompt && strstr(prompt,
+        "<|tool_call_begin|>functions.search:0<|tool_call_argument_begin|>{\"query\":\"Kimi\"}<|tool_call_end|>"));
+    free(prompt);
+    chat_msgs_free(&msgs);
+}
+
+static void test_kimi_native_tool_calls_parse(void) {
+    const char *raw = "I will search.\n<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.google_search:7"
+        "<|tool_call_argument_begin|>{\"query\":\"Ada Lovelace\"}"
+        "<|tool_call_end|><|tool_calls_section_end|>";
+    char *content = NULL, *reasoning = NULL;
+    tool_calls calls = {0};
+    TEST_ASSERT(parse_generated_message_ex_for_syntax(
+        SERVER_MODEL_SYNTAX_KIMI, raw, true, &content, &reasoning, &calls));
+    TEST_ASSERT(content && !strcmp(content, "I will search."));
+    TEST_ASSERT(reasoning == NULL);
+    TEST_ASSERT(calls.len == 1);
+    TEST_ASSERT(calls.len && !strcmp(calls.v[0].name, "google_search"));
+    TEST_ASSERT(calls.len && !strcmp(calls.v[0].arguments,
+                                    "{\"query\":\"Ada Lovelace\"}"));
+    TEST_ASSERT(calls.raw_tool_text && !strcmp(calls.raw_tool_text,
+        "<|tool_calls_section_begin|><|tool_call_begin|>functions.google_search:7"
+        "<|tool_call_argument_begin|>{\"query\":\"Ada Lovelace\"}"
+        "<|tool_call_end|><|tool_calls_section_end|>"));
+    free(content);
+    free(reasoning);
+    tool_calls_free(&calls);
 }
 
 static void test_qwen_reasoning_effort_levels(void) {
@@ -22017,6 +22309,10 @@ static void test_deepseek41_live_result_order(void) {
 }
 
 static void ds4_server_unit_tests_run(void) {
+    /* Keep architecture-only renderers ahead of socket-heavy stream tests so
+     * restricted CI environments still exercise their prompt contracts. */
+    test_render_kimi_chat_prompt_text();
+    test_kimi_native_tool_calls_parse();
     test_deepseek41_server_stream();
     test_deepseek41_server_tools();
     test_deepseek41_anthropic_results();
