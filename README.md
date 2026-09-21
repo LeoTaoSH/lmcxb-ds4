@@ -133,8 +133,11 @@ Run each binary with `--help` for its full options.
 ### Native coding agent
 
 `ds4-agent` runs inference directly, without a separate HTTP server. It keeps
-the token history and live model state together, shows prefill progress, and
-uses the model's native tool format. DeepSeek and GLM have their own templates.
+ the token history and live model state together, shows prefill progress, and
+ uses the model's native tool format. DeepSeek and GLM have their own templates.
+The `google_search` and `visit_page` tools require an installed Chrome or
+Chromium browser; set `DS4_CHROME` when it is not on the standard path. On a
+console-only session, set `DS4_CHROME_HEADLESS=1` to launch Chromium headless.
 
 Use `/hints on` for occasional, brief explanations of the programming choices
 behind the work, and `/hints off` to stop them. Changes take effect at the next

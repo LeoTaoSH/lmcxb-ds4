@@ -1006,7 +1006,15 @@ static char *web_chrome_executable(void) {
         }
         free(path);
     }
-    return web_xstrdup("google-chrome");
+    return NULL;
+}
+
+/* Keep the historical visible-browser default for every model.  Console-only
+ * deployments can explicitly request Chromium's native headless mode through
+ * DS4_CHROME_HEADLESS=1. */
+static bool web_chrome_headless(void) {
+    const char *override = getenv("DS4_CHROME_HEADLESS");
+    return override && override[0] && strcmp(override, "0") != 0;
 }
 
 #ifdef __APPLE__
@@ -1027,6 +1035,11 @@ static bool web_spawn_chrome(ds4_web *web, char *err, size_t err_len) {
         return false;
     }
     char *exe = web_chrome_executable();
+    if (!exe) {
+        web_set_err(err, err_len,
+                    "Chrome/Chromium executable not found (install it or set DS4_CHROME)");
+        return false;
+    }
 #ifdef __APPLE__
     const char *mac_app_name = web_macos_chrome_app_name();
     bool launched_via_open = mac_app_name != NULL && access("/usr/bin/open", X_OK) == 0;
@@ -1036,6 +1049,7 @@ static bool web_spawn_chrome(ds4_web *web, char *err, size_t err_len) {
     char port_arg[64], profile_arg[PATH_MAX + 64];
     snprintf(port_arg, sizeof(port_arg), "--remote-debugging-port=%d", web->port);
     snprintf(profile_arg, sizeof(profile_arg), "--user-data-dir=%s", web->profile_dir);
+    const bool headless = web_chrome_headless();
     pid_t pid = fork();
     if (pid < 0) {
         web_set_err(err, err_len, "failed to fork Chrome: %s", strerror(errno));
@@ -1051,28 +1065,61 @@ static bool web_spawn_chrome(ds4_web *web, char *err, size_t err_len) {
         }
 #ifdef __APPLE__
         if (launched_via_open) {
-            execlp("/usr/bin/open", "open", "-g", "-na", mac_app_name,
-                   "--args", port_arg, "--remote-allow-origins=*",
-                   profile_arg, "--no-first-run", "--no-default-browser-check",
-                   "--disable-sync", "--use-mock-keychain", "--password-store=basic",
-                   "--mute-audio", "about:blank", (char *)NULL);
+            if (headless) {
+                execlp("/usr/bin/open", "open", "-g", "-na", mac_app_name,
+                       "--args", "--headless=new", port_arg,
+                       "--remote-allow-origins=*", profile_arg,
+                       "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--use-mock-keychain", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            } else {
+                execlp("/usr/bin/open", "open", "-g", "-na", mac_app_name,
+                       "--args", port_arg, "--remote-allow-origins=*",
+                       profile_arg, "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--use-mock-keychain", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            }
         } else {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
-                   profile_arg, "--no-first-run", "--no-default-browser-check",
-                   "--disable-sync", "--use-mock-keychain", "--password-store=basic",
-                   "--mute-audio", "about:blank", (char *)NULL);
+            if (headless) {
+                execlp(exe, exe, "--headless=new", port_arg,
+                       "--remote-allow-origins=*", profile_arg,
+                       "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--use-mock-keychain", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            } else {
+                execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+                       profile_arg, "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--use-mock-keychain", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            }
         }
 #else
         if (geteuid() == 0) {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
-                   profile_arg, "--no-first-run", "--no-default-browser-check",
-                   "--disable-sync", "--password-store=basic", "--no-sandbox",
-                   "--mute-audio", "about:blank", (char *)NULL);
+            if (headless) {
+                execlp(exe, exe, "--headless=new", port_arg,
+                       "--remote-allow-origins=*", profile_arg,
+                       "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--password-store=basic", "--no-sandbox",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            } else {
+                execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+                       profile_arg, "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--password-store=basic", "--no-sandbox",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            }
         } else {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
-                   profile_arg, "--no-first-run", "--no-default-browser-check",
-                   "--disable-sync", "--password-store=basic",
-                   "--mute-audio", "about:blank", (char *)NULL);
+            if (headless) {
+                execlp(exe, exe, "--headless=new", port_arg,
+                       "--remote-allow-origins=*", profile_arg,
+                       "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            } else {
+                execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+                       profile_arg, "--no-first-run", "--no-default-browser-check",
+                       "--disable-sync", "--password-store=basic",
+                       "--mute-audio", "about:blank", (char *)NULL);
+            }
         }
 #endif
         _exit(127);
@@ -1437,6 +1484,17 @@ char *ds4_web_google_search(ds4_web *web, const char *query,
     char *url_s = web_buf_take(&url);
     char *out = web_run_page_js(web, url_s, web_extract_search_js, false, err, err_len);
     free(url_s);
+    /* A Google anti-automation page is not search evidence.  Returning its
+     * boilerplate as a successful tool result makes an agent invent an answer
+     * from a CAPTCHA page, or repeatedly search for the same query. */
+    if (out && (strstr(out, "Our systems have detected unusual traffic") ||
+                strstr(out, "/sorry/index"))) {
+        free(out);
+        web_set_err(err, err_len,
+                    "Google presented an anti-automation verification page; "
+                    "no search results were obtained");
+        return NULL;
+    }
     return out;
 }
 
