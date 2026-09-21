@@ -132,7 +132,6 @@ int main(void) {
     }
 
     require_ok(ds4_gpu_init(), "GPU initialization");
-    require_ok(ds4_gpu_set_model_map(model, MODEL_BYTES), "model map registration");
 
     uint16_t *bf16_weights = (uint16_t *)(model + BF16_OFFSET);
     for (uint32_t o = 0; o < BF16_OUT; o++) {
@@ -142,6 +141,10 @@ int main(void) {
             bf16_weights[o * BF16_IN + i] = f32_to_bf16(value);
         }
     }
+    /* Finish all CUDA-visible model writes before registration. This also
+     * lets memcheck use DS4_CUDA_COPY_MODEL without copying stale weights. */
+    require_ok(ds4_gpu_set_model_map(model, MODEL_BYTES),
+               "model map registration");
     float bf16_input[BF16_ROWS * BF16_IN];
     float bf16_expected[BF16_ROWS * BF16_OUT];
     for (uint32_t row = 0; row < BF16_ROWS; row++) {
@@ -275,6 +278,191 @@ int main(void) {
     ds4_gpu_tensor_free(compact_cache_gpu);
     ds4_gpu_tensor_free(compact_raw_gpu);
     ds4_gpu_tensor_free(compact_norm_gpu);
+
+    /* Kimi Linear calls the last key dimensions "rope", but its reference
+     * forward stores them verbatim.  A zero frequency scale is the explicit
+     * no-rotation mode used by the production Kimi MLA cache builder. */
+    enum {
+        KIMI_KV_TOKENS = 2,
+        KIMI_KV_CAP = 4,
+        KIMI_KV_HEADS = 4,
+        KIMI_KV_LORA = 3,
+        KIMI_KV_NOPE = 4,
+        KIMI_KV_TAIL = 4,
+        KIMI_KV_VALUE = 2,
+        KIMI_KV_RAW = KIMI_KV_LORA + KIMI_KV_TAIL,
+        KIMI_KV_KEY_DIM = KIMI_KV_NOPE + KIMI_KV_TAIL,
+    };
+    float kimi_kv_raw[KIMI_KV_TOKENS * KIMI_KV_RAW];
+    float kimi_kv_nope[KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_NOPE];
+    float kimi_kv_value[KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_VALUE];
+    for (uint32_t i = 0; i < KIMI_KV_TOKENS * KIMI_KV_RAW; i++)
+        kimi_kv_raw[i] = 10.0f + (float)i;
+    for (uint32_t i = 0; i < KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_NOPE; i++)
+        kimi_kv_nope[i] = 100.0f + (float)i;
+    for (uint32_t i = 0; i < KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_VALUE; i++)
+        kimi_kv_value[i] = 200.0f + (float)i;
+
+    ds4_gpu_tensor *kimi_raw_gpu = ds4_gpu_tensor_alloc(sizeof(kimi_kv_raw));
+    ds4_gpu_tensor *kimi_nope_gpu = ds4_gpu_tensor_alloc(sizeof(kimi_kv_nope));
+    ds4_gpu_tensor *kimi_value_gpu = ds4_gpu_tensor_alloc(sizeof(kimi_kv_value));
+    ds4_gpu_tensor *kimi_key_cache_gpu = ds4_gpu_tensor_alloc(
+        (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_KEY_DIM * sizeof(float));
+    ds4_gpu_tensor *kimi_value_cache_gpu = ds4_gpu_tensor_alloc(
+        (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_VALUE * sizeof(float));
+    require_ok(kimi_raw_gpu && kimi_nope_gpu && kimi_value_gpu &&
+               kimi_key_cache_gpu && kimi_value_cache_gpu,
+               "Kimi no-RoPE KV tensor allocation");
+    require_ok(ds4_gpu_tensor_write(kimi_raw_gpu, 0, kimi_kv_raw,
+                                    sizeof(kimi_kv_raw)),
+               "Kimi no-RoPE raw write");
+    require_ok(ds4_gpu_tensor_write(kimi_nope_gpu, 0, kimi_kv_nope,
+                                    sizeof(kimi_kv_nope)),
+               "Kimi no-RoPE nope write");
+    require_ok(ds4_gpu_tensor_write(kimi_value_gpu, 0, kimi_kv_value,
+                                    sizeof(kimi_kv_value)),
+               "Kimi no-RoPE value write");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_key_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_KEY_DIM),
+               "Kimi no-RoPE key cache clear");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_value_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_VALUE),
+               "Kimi no-RoPE value cache clear");
+    require_ok(ds4_gpu_glm_build_kv_cache_tensor(
+                   kimi_key_cache_gpu, kimi_value_cache_gpu,
+                   kimi_raw_gpu, kimi_nope_gpu, kimi_value_gpu,
+                   1, KIMI_KV_TOKENS, KIMI_KV_CAP, KIMI_KV_HEADS,
+                   KIMI_KV_RAW, KIMI_KV_LORA, KIMI_KV_NOPE,
+                   KIMI_KV_TAIL, KIMI_KV_VALUE, 0,
+                   10000.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, false),
+               "Kimi no-RoPE KV cache build");
+    float kimi_key_actual[KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_KEY_DIM];
+    float kimi_value_actual[KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_VALUE];
+    require_ok(ds4_gpu_tensor_read(
+                   kimi_key_cache_gpu,
+                   (uint64_t)KIMI_KV_HEADS * KIMI_KV_KEY_DIM * sizeof(float),
+                   kimi_key_actual, sizeof(kimi_key_actual)),
+               "Kimi no-RoPE key cache read");
+    require_ok(ds4_gpu_tensor_read(
+                   kimi_value_cache_gpu,
+                   (uint64_t)KIMI_KV_HEADS * KIMI_KV_VALUE * sizeof(float),
+                   kimi_value_actual, sizeof(kimi_value_actual)),
+               "Kimi no-RoPE value cache read");
+    for (uint32_t t = 0; t < KIMI_KV_TOKENS; t++) {
+        for (uint32_t h = 0; h < KIMI_KV_HEADS; h++) {
+            const uint32_t key_base =
+                (t * KIMI_KV_HEADS + h) * KIMI_KV_KEY_DIM;
+            const uint32_t nope_base =
+                (t * KIMI_KV_HEADS + h) * KIMI_KV_NOPE;
+            for (uint32_t i = 0; i < KIMI_KV_NOPE; i++)
+                require_close("Kimi no-RoPE nope cache",
+                              kimi_key_actual[key_base + i],
+                              kimi_kv_nope[nope_base + i], 0.0f);
+            for (uint32_t i = 0; i < KIMI_KV_TAIL; i++)
+                require_close("Kimi no-RoPE tail cache",
+                              kimi_key_actual[key_base + KIMI_KV_NOPE + i],
+                              kimi_kv_raw[t * KIMI_KV_RAW + KIMI_KV_LORA + i],
+                              0.0f);
+        }
+    }
+    for (uint32_t i = 0;
+         i < KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_VALUE; i++)
+        require_close("Kimi no-RoPE value cache", kimi_value_actual[i],
+                      kimi_kv_value[i], 0.0f);
+
+    /* A one-token call selects Metal's four-head decode kernel. */
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_key_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_KEY_DIM),
+               "Kimi no-RoPE decode key clear");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_value_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_VALUE),
+               "Kimi no-RoPE decode value clear");
+    require_ok(ds4_gpu_glm_build_kv_cache_tensor(
+                   kimi_key_cache_gpu, kimi_value_cache_gpu,
+                   kimi_raw_gpu, kimi_nope_gpu, kimi_value_gpu,
+                   0, 1, KIMI_KV_CAP, KIMI_KV_HEADS,
+                   KIMI_KV_RAW, KIMI_KV_LORA, KIMI_KV_NOPE,
+                   KIMI_KV_TAIL, KIMI_KV_VALUE, 0,
+                   10000.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, false),
+               "Kimi no-RoPE decode KV cache build");
+    require_ok(ds4_gpu_tensor_read(
+                   kimi_key_cache_gpu, 0, kimi_key_actual,
+                   (uint64_t)KIMI_KV_HEADS * KIMI_KV_KEY_DIM * sizeof(float)),
+               "Kimi no-RoPE decode key read");
+    require_ok(ds4_gpu_tensor_read(
+                   kimi_value_cache_gpu, 0, kimi_value_actual,
+                   (uint64_t)KIMI_KV_HEADS * KIMI_KV_VALUE * sizeof(float)),
+               "Kimi no-RoPE decode value read");
+    for (uint32_t h = 0; h < KIMI_KV_HEADS; h++) {
+        const uint32_t key_base = h * KIMI_KV_KEY_DIM;
+        const uint32_t nope_base = h * KIMI_KV_NOPE;
+        for (uint32_t i = 0; i < KIMI_KV_NOPE; i++)
+            require_close("Kimi no-RoPE decode nope cache",
+                          kimi_key_actual[key_base + i],
+                          kimi_kv_nope[nope_base + i], 0.0f);
+        for (uint32_t i = 0; i < KIMI_KV_TAIL; i++)
+            require_close("Kimi no-RoPE decode tail cache",
+                          kimi_key_actual[key_base + KIMI_KV_NOPE + i],
+                          kimi_kv_raw[KIMI_KV_LORA + i], 0.0f);
+        for (uint32_t i = 0; i < KIMI_KV_VALUE; i++)
+            require_close("Kimi no-RoPE decode value cache",
+                          kimi_value_actual[h * KIMI_KV_VALUE + i],
+                          kimi_kv_value[h * KIMI_KV_VALUE + i], 0.0f);
+    }
+
+    /* Prefill can select the staged FlashAttention KV builder. */
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_key_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_KEY_DIM),
+               "Kimi no-RoPE flash key clear");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   kimi_value_cache_gpu, -1.0f,
+                   (uint64_t)KIMI_KV_CAP * KIMI_KV_HEADS * KIMI_KV_VALUE),
+               "Kimi no-RoPE flash value clear");
+    require_ok(ds4_gpu_glm_build_kv_cache_flash_tensor(
+                   kimi_key_cache_gpu, kimi_value_cache_gpu,
+                   kimi_raw_gpu, kimi_nope_gpu, kimi_value_gpu,
+                   0, KIMI_KV_TOKENS, KIMI_KV_CAP, KIMI_KV_HEADS,
+                   KIMI_KV_RAW, KIMI_KV_LORA, KIMI_KV_NOPE,
+                   KIMI_KV_TAIL, KIMI_KV_VALUE, 0,
+                   10000.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, false),
+               "Kimi no-RoPE flash KV cache build");
+    require_ok(ds4_gpu_tensor_read(kimi_key_cache_gpu, 0,
+                                   kimi_key_actual, sizeof(kimi_key_actual)),
+               "Kimi no-RoPE flash key read");
+    require_ok(ds4_gpu_tensor_read(kimi_value_cache_gpu, 0,
+                                   kimi_value_actual, sizeof(kimi_value_actual)),
+               "Kimi no-RoPE flash value read");
+    for (uint32_t t = 0; t < KIMI_KV_TOKENS; t++) {
+        for (uint32_t h = 0; h < KIMI_KV_HEADS; h++) {
+            const uint32_t key_base =
+                (t * KIMI_KV_HEADS + h) * KIMI_KV_KEY_DIM;
+            const uint32_t nope_base =
+                (t * KIMI_KV_HEADS + h) * KIMI_KV_NOPE;
+            for (uint32_t i = 0; i < KIMI_KV_NOPE; i++)
+                require_close("Kimi no-RoPE flash nope cache",
+                              kimi_key_actual[key_base + i],
+                              kimi_kv_nope[nope_base + i], 0.0f);
+            for (uint32_t i = 0; i < KIMI_KV_TAIL; i++)
+                require_close("Kimi no-RoPE flash tail cache",
+                              kimi_key_actual[key_base + KIMI_KV_NOPE + i],
+                              kimi_kv_raw[t * KIMI_KV_RAW + KIMI_KV_LORA + i],
+                              0.0f);
+        }
+    }
+    for (uint32_t i = 0;
+         i < KIMI_KV_TOKENS * KIMI_KV_HEADS * KIMI_KV_VALUE; i++)
+        require_close("Kimi no-RoPE flash value cache", kimi_value_actual[i],
+                      kimi_kv_value[i], 0.0f);
+    ds4_gpu_tensor_free(kimi_value_cache_gpu);
+    ds4_gpu_tensor_free(kimi_key_cache_gpu);
+    ds4_gpu_tensor_free(kimi_value_gpu);
+    ds4_gpu_tensor_free(kimi_nope_gpu);
+    ds4_gpu_tensor_free(kimi_raw_gpu);
 
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
     enum {
@@ -977,6 +1165,122 @@ int main(void) {
                "prefill output read");
     for (uint32_t i = 0; i < TOKENS * PROJECTION; i++)
         require_close("KDA prefill/decode", prefill_outputs[i], decode_outputs[i], 5e-5f);
+
+#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+    /* Kimi selects the unbounded softplus decay with -INFINITY.  Compare a
+     * monolithic prefill with irregular chunks that exercise both the serial
+     * (< HISTORY) and parallel prepare paths.  Besides outputs, the persistent
+     * convolution and recurrent states must agree: matching only the final
+     * token can hide a state bug that appears on the following decode. */
+    require_ok(ds4_gpu_tensor_write(pq, 0, qs, sizeof(qs)),
+               "Kimi full Q write");
+    require_ok(ds4_gpu_tensor_write(pk, 0, ks, sizeof(ks)),
+               "Kimi full K write");
+    require_ok(ds4_gpu_tensor_write(pv, 0, vs, sizeof(vs)),
+               "Kimi full V write");
+    require_ok(ds4_gpu_tensor_write(pg, 0, gates, sizeof(gates)),
+               "Kimi full gate write");
+    require_ok(ds4_gpu_tensor_write(poutput_gate, 0, output_gates,
+                                    sizeof(output_gates)),
+               "Kimi full output gate write");
+    require_ok(ds4_gpu_tensor_write(pbeta, 0, betas, sizeof(betas)),
+               "Kimi full beta write");
+    require_ok(ds4_gpu_tensor_fill_f32(pconv, 0.0f, 9u * PROJECTION),
+               "Kimi full conv clear");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   pstate, 0.0f, (uint64_t)HEADS * D * D),
+               "Kimi full state clear");
+    require_ok(ds4_gpu_glm53_kda_prefill(
+        pout, pconv, pstate, pq, pk, pv, pg, pbeta, poutput_gate,
+        model, MODEL_BYTES, Q_CONV_OFFSET, K_CONV_OFFSET, V_CONV_OFFSET,
+        A_LOG_OFFSET, DT_BIAS_OFFSET, NORM_OFFSET,
+        HEADS, TOKENS, -INFINITY, 1e-5f), "Kimi full prefill");
+
+    float kimi_full_outputs[TOKENS * PROJECTION];
+    float kimi_chunk_outputs[TOKENS * PROJECTION];
+    float kimi_full_conv[9u * PROJECTION];
+    float kimi_chunk_conv[9u * PROJECTION];
+    const size_t kimi_state_count = (size_t)HEADS * D * D;
+    float *kimi_full_state = malloc(kimi_state_count * sizeof(float));
+    float *kimi_chunk_state = malloc(kimi_state_count * sizeof(float));
+    require_ok(kimi_full_state && kimi_chunk_state,
+               "Kimi state host allocation");
+    require_ok(ds4_gpu_tensor_read(pout, 0, kimi_full_outputs,
+                                   sizeof(kimi_full_outputs)),
+               "Kimi full output read");
+    require_ok(ds4_gpu_tensor_read(pconv, 0, kimi_full_conv,
+                                   sizeof(kimi_full_conv)),
+               "Kimi full conv read");
+    require_ok(ds4_gpu_tensor_read(pstate, 0, kimi_full_state,
+                                   kimi_state_count * sizeof(float)),
+               "Kimi full state read");
+
+    require_ok(ds4_gpu_tensor_fill_f32(pconv, 0.0f, 9u * PROJECTION),
+               "Kimi chunk conv clear");
+    require_ok(ds4_gpu_tensor_fill_f32(
+                   pstate, 0.0f, (uint64_t)HEADS * D * D),
+               "Kimi chunk state clear");
+    const uint32_t kimi_chunks[] = {1, 2, 3, 5, 6};
+    uint32_t kimi_pos = 0;
+    for (uint32_t c = 0;
+         c < sizeof(kimi_chunks) / sizeof(kimi_chunks[0]); c++) {
+        const uint32_t rows = kimi_chunks[c];
+        const uint32_t activation_offset = kimi_pos * PROJECTION;
+        const uint32_t beta_offset = kimi_pos * HEADS;
+        require_ok(ds4_gpu_tensor_write(
+                       pq, 0, qs + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk Q write");
+        require_ok(ds4_gpu_tensor_write(
+                       pk, 0, ks + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk K write");
+        require_ok(ds4_gpu_tensor_write(
+                       pv, 0, vs + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk V write");
+        require_ok(ds4_gpu_tensor_write(
+                       pg, 0, gates + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk gate write");
+        require_ok(ds4_gpu_tensor_write(
+                       poutput_gate, 0, output_gates + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk output gate write");
+        require_ok(ds4_gpu_tensor_write(
+                       pbeta, 0, betas + beta_offset,
+                       (uint64_t)rows * HEADS * sizeof(float)),
+                   "Kimi chunk beta write");
+        require_ok(ds4_gpu_glm53_kda_prefill(
+            pout, pconv, pstate, pq, pk, pv, pg, pbeta, poutput_gate,
+            model, MODEL_BYTES, Q_CONV_OFFSET, K_CONV_OFFSET, V_CONV_OFFSET,
+            A_LOG_OFFSET, DT_BIAS_OFFSET, NORM_OFFSET,
+            HEADS, rows, -INFINITY, 1e-5f), "Kimi chunk prefill");
+        require_ok(ds4_gpu_tensor_read(
+                       pout, 0, kimi_chunk_outputs + activation_offset,
+                       (uint64_t)rows * PROJECTION * sizeof(float)),
+                   "Kimi chunk output read");
+        kimi_pos += rows;
+    }
+    require_ok(kimi_pos == TOKENS, "Kimi chunk coverage");
+    require_ok(ds4_gpu_tensor_read(pconv, 0, kimi_chunk_conv,
+                                   sizeof(kimi_chunk_conv)),
+               "Kimi chunk conv read");
+    require_ok(ds4_gpu_tensor_read(pstate, 0, kimi_chunk_state,
+                                   kimi_state_count * sizeof(float)),
+               "Kimi chunk state read");
+    for (uint32_t i = 0; i < TOKENS * PROJECTION; i++)
+        require_close("Kimi chunk/full output", kimi_chunk_outputs[i],
+                      kimi_full_outputs[i], 5e-5f);
+    for (uint32_t i = 0; i < 9u * PROJECTION; i++)
+        require_close("Kimi chunk/full conv state", kimi_chunk_conv[i],
+                      kimi_full_conv[i], 0.0f);
+    for (size_t i = 0; i < kimi_state_count; i++)
+        require_close("Kimi chunk/full recurrent state", kimi_chunk_state[i],
+                      kimi_full_state[i], 5e-5f);
+    free(kimi_chunk_state);
+    free(kimi_full_state);
+#endif
 
     ds4_gpu_tensor_free(pstate);
     ds4_gpu_tensor_free(pconv);

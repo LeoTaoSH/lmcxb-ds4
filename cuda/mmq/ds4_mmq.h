@@ -208,6 +208,22 @@ int ds4_mmq_q8_0_moe(
     int             n_expert_used,
     cudaStream_t    stream);
 
+// Variant for a true top-k routing table. max_rows_per_expert is a proven
+// upper bound on each expert bucket and only narrows the MMQ launch; output
+// layout and arithmetic are identical to ds4_mmq_q8_0_moe.
+int ds4_mmq_q8_0_moe_bounded(
+    const void    * W,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_f32,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    int             max_rows_per_expert,
+    cudaStream_t    stream);
+
 int ds4_mmq_q2_K_moe(
     const void    * W,
     const float   * X_f32,
@@ -286,6 +302,20 @@ int ds4_mmq_mxfp4_moe(
 // block. See ds4_mmq.cu / routed_moe_launch for the wiring.
 //
 // Returns 0 on success; on error neither output is guaranteed valid.
+
+int ds4_mmq_q8_0_moe_pair(
+    const void    * W_a,
+    const void    * W_b,
+    const float   * X_f32,
+    const int32_t * ids,
+    float         * out_a,
+    float         * out_b,
+    int             M,
+    int             K,
+    int             n_tokens,
+    int             n_experts,
+    int             n_expert_used,
+    cudaStream_t    stream);
 
 int ds4_mmq_iq2_xxs_moe_pair(
     const void    * W_a,

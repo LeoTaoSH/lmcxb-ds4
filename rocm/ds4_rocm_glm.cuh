@@ -2400,6 +2400,28 @@ extern "C" int ds4_gpu_glm_build_kv_cache_flash_tensor(
                                              cache_f16);
 }
 
+extern "C" int ds4_gpu_glm_attention_full_decode_split_tensor(
+        ds4_gpu_tensor *heads,
+        ds4_gpu_tensor *partial_values,
+        ds4_gpu_tensor *partial_ms,
+        const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_cache,
+        const ds4_gpu_tensor *value_cache,
+        uint32_t cache_len,
+        uint32_t cache_cap,
+        uint32_t n_head,
+        uint32_t qk_dim,
+        uint32_t value_dim,
+        uint32_t max_splits,
+        bool cache_f16) {
+    (void)partial_values;
+    (void)partial_ms;
+    (void)max_splits;
+    return ds4_gpu_glm_attention_full_tensor(
+        heads, q, key_cache, value_cache, cache_len - 1u, 1u,
+        cache_len, cache_cap, n_head, qk_dim, value_dim, cache_f16);
+}
+
 extern "C" int ds4_gpu_glm_attention_full_tensor(
         ds4_gpu_tensor *heads,
         const ds4_gpu_tensor *q,

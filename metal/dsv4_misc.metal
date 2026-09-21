@@ -891,7 +891,8 @@ kernel void kernel_glm_store_indexer_k(
     const float inv = rsqrt(scratch[0] / (float)head_dim + args.eps);
 
     float corr_dims[2] = {0.0f, 0.0f};
-    if (args.ext_factor != 0.0f) {
+    const bool apply_rope = args.freq_scale != 0.0f;
+    if (apply_rope && args.ext_factor != 0.0f) {
         glm_rope_yarn_corr_dims((int)rot_dim,
                                 (int)args.n_ctx_orig,
                                 args.freq_base,
@@ -1163,6 +1164,17 @@ kernel void kernel_glm_build_kv_cache(
     const float inv_ndims = args.qk_rope != 0u ?
         -1.0f / (float)args.qk_rope : 0.0f;
     for (uint r = tid * 2u; r < args.qk_rope; r += nth * 2u) {
+        const uint src0 = args.kv_lora_dim + r;
+        const float x0 = raw[src0];
+        const float x1 = raw[src0 + 1u];
+        const uint dst0 = args.qk_nope + r;
+        if (!apply_rope) {
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0,
+                                             args.cache_f16, x0);
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0 + 1u,
+                                             args.cache_f16, x1);
+            continue;
+        }
 #ifdef DS4_METAL_ROPE_EXP2_LOG2
         const float theta = theta_base * exp2(inv_ndims * (float)r * log2(args.freq_base));
 #else
@@ -1178,10 +1190,6 @@ kernel void kernel_glm_build_kv_cache(
                       args.attn_factor,
                       &cos_theta,
                       &sin_theta);
-        const uint src0 = args.kv_lora_dim + r;
-        const float x0 = raw[src0];
-        const float x1 = raw[src0 + 1u];
-        const uint dst0 = args.qk_nope + r;
         glm_dense_cache_store_f32_or_f16(key_cache,
                                          kbase + dst0,
                                          args.cache_f16,
@@ -1237,7 +1245,8 @@ kernel void kernel_glm_build_kv_cache_decode_group4(
     }
 
     float corr_dims[2] = {0.0f, 0.0f};
-    if (args.ext_factor != 0.0f) {
+    const bool apply_rope = args.freq_scale != 0.0f;
+    if (apply_rope && args.ext_factor != 0.0f) {
         glm_rope_yarn_corr_dims((int)args.qk_rope,
                                 (int)args.n_ctx_orig,
                                 args.freq_base,
@@ -1249,6 +1258,20 @@ kernel void kernel_glm_build_kv_cache_decode_group4(
     const float inv_ndims = args.qk_rope != 0u ?
         -1.0f / (float)args.qk_rope : 0.0f;
     for (uint r = tid * 2u; r < args.qk_rope; r += 512u) {
+        const uint src0 = args.kv_lora_dim + r;
+        const float x0 = raw[src0];
+        const float x1 = raw[src0 + 1u];
+        const uint dst0 = args.qk_nope + r;
+        const float y0 = apply_rope ? 0.0f : x0;
+        const float y1 = apply_rope ? 0.0f : x1;
+        if (!apply_rope) {
+            for (uint h = group_head0; h < min(group_head0 + 4u, args.n_head); h++) {
+                const uint64_t kbase = ((uint64_t)pos * args.n_head + h) * qk_dim;
+                glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0, args.cache_f16, y0);
+                glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0 + 1u, args.cache_f16, y1);
+            }
+            continue;
+        }
 #ifdef DS4_METAL_ROPE_EXP2_LOG2
         const float theta = theta_base * exp2(inv_ndims * (float)r * log2(args.freq_base));
 #else
@@ -1264,16 +1287,12 @@ kernel void kernel_glm_build_kv_cache_decode_group4(
                       args.attn_factor,
                       &cos_theta,
                       &sin_theta);
-        const uint src0 = args.kv_lora_dim + r;
-        const float x0 = raw[src0];
-        const float x1 = raw[src0 + 1u];
-        const uint dst0 = args.qk_nope + r;
-        const float y0 = x0 * cos_theta - x1 * sin_theta;
-        const float y1 = x0 * sin_theta + x1 * cos_theta;
+        const float yr0 = x0 * cos_theta - x1 * sin_theta;
+        const float yr1 = x0 * sin_theta + x1 * cos_theta;
         for (uint h = group_head0; h < min(group_head0 + 4u, args.n_head); h++) {
             const uint64_t kbase = ((uint64_t)pos * args.n_head + h) * qk_dim;
-            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0, args.cache_f16, y0);
-            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0 + 1u, args.cache_f16, y1);
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0, args.cache_f16, yr0);
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0 + 1u, args.cache_f16, yr1);
         }
     }
 }
@@ -1321,7 +1340,8 @@ kernel void kernel_glm_build_kv_cache_flash(
     }
 
     float corr_dims[2] = {0.0f, 0.0f};
-    if (args.ext_factor != 0.0f) {
+    const bool apply_rope = args.freq_scale != 0.0f;
+    if (apply_rope && args.ext_factor != 0.0f) {
         glm_rope_yarn_corr_dims((int)args.qk_rope,
                                 (int)args.n_ctx_orig,
                                 args.freq_base,
@@ -1333,6 +1353,19 @@ kernel void kernel_glm_build_kv_cache_flash(
     const float inv_ndims = args.qk_rope != 0u ?
         -1.0f / (float)args.qk_rope : 0.0f;
     for (uint r = tid * 2u; r < args.qk_rope; r += nth * 2u) {
+        const uint src0 = args.kv_lora_dim + r;
+        const float x0 = raw[src0];
+        const float x1 = raw[src0 + 1u];
+        const uint dst0 = args.qk_nope + r;
+        if (!apply_rope) {
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0,
+                                             args.cache_f16, x0);
+            glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0 + 1u,
+                                             args.cache_f16, x1);
+            kdst_f16[dst0] = (half)x0;
+            kdst_f16[dst0 + 1u] = (half)x1;
+            continue;
+        }
 #ifdef DS4_METAL_ROPE_EXP2_LOG2
         const float theta = theta_base * exp2(inv_ndims * (float)r * log2(args.freq_base));
 #else
@@ -1348,10 +1381,6 @@ kernel void kernel_glm_build_kv_cache_flash(
                       args.attn_factor,
                       &cos_theta,
                       &sin_theta);
-        const uint src0 = args.kv_lora_dim + r;
-        const float x0 = raw[src0];
-        const float x1 = raw[src0 + 1u];
-        const uint dst0 = args.qk_nope + r;
         const float y0 = x0 * cos_theta - x1 * sin_theta;
         const float y1 = x0 * sin_theta + x1 * cos_theta;
         glm_dense_cache_store_f32_or_f16(key_cache, kbase + dst0, args.cache_f16, y0);

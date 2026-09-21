@@ -222,7 +222,53 @@ static void reduction_cases(void) {
         memcpy(block, &scale, sizeof(scale));
         memset(block + 2, 1, 32);
     }
+    enum { KB_T = 9, KB_H = 2, KB_K = 64, KB_Q = 128, KB_OFFSET = 32768 };
+    for (int h = 0; h < KB_H; h++) {
+        for (int k = 0; k < KB_K; k++) {
+            for (int qb = 0; qb < KB_Q / 32; qb++) {
+                unsigned char *block = model + KB_OFFSET +
+                    ((h * KB_K + k) * (KB_Q / 32) + qb) * 34;
+                _Float16 scale = (_Float16)(0.03125f * (1 + k % 3));
+                memcpy(block, &scale, sizeof(scale));
+                for (int q = 0; q < 32; q++) {
+                    ((int8_t *)(block + 2))[q] =
+                        (int8_t)((h + k + qb * 32 + q) % 7 - 3);
+                }
+            }
+        }
+    }
     check(ds4_gpu_set_model_map(model, MODEL_BYTES), "test model registration");
+
+    float kb_x[KB_T * KB_K], kb_actual[KB_T * KB_H * KB_Q];
+    for (int i = 0; i < KB_T * KB_K; i++)
+        kb_x[i] = (float)(i % 13 - 6) * 0.0625f;
+    ds4_gpu_tensor *kb_xg = upload(kb_x, sizeof(kb_x));
+    ds4_gpu_tensor *kb_out = ds4_gpu_tensor_alloc(sizeof(kb_actual));
+    check(kb_out != NULL, "K-B output allocation");
+    check(ds4_gpu_glm_k_b_project_typed_tensor(
+              kb_out, kb_xg, model, MODEL_BYTES, KB_OFFSET, 8,
+              KB_T, KB_K, KB_Q, KB_H),
+          "K-B tiled prefill projection");
+    check(ds4_gpu_tensor_read(kb_out, 0, kb_actual, sizeof(kb_actual)),
+          "K-B tiled read");
+    for (int t = 0; t < KB_T; t++) {
+        for (int h = 0; h < KB_H; h++) {
+            for (int q = 0; q < KB_Q; q++) {
+                double expected = 0.0;
+                for (int k = 0; k < KB_K; k++) {
+                    const double scale = 0.03125 * (1 + k % 3);
+                    const int quant = (h + k + q) % 7 - 3;
+                    expected += scale * quant * kb_x[t * KB_K + k];
+                }
+                const size_t i = ((size_t)t * KB_H + h) * KB_Q + q;
+                check(isfinite(kb_actual[i]) &&
+                      fabs(kb_actual[i] - expected) < 2e-5,
+                      "K-B tiled reference");
+            }
+        }
+    }
+    ds4_gpu_tensor_free(kb_out);
+    ds4_gpu_tensor_free(kb_xg);
     ds4_gpu_tensor *x = upload(raw, sizeof(raw));
     ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(sizeof(raw));
     for (int run = 0; run < 20; run++) {
@@ -286,6 +332,138 @@ static void reduction_cases(void) {
     }
     ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(vg);
     ds4_gpu_tensor_free(kg); ds4_gpu_tensor_free(qg);
+
+    /* Exercise the CUDA MLA prefill kernel, rather than the short-row
+     * reference fallback used by the reduction case above. */
+    enum { MLA_T = 9, MLA_H = 2, MLA_Q = 192, MLA_V = 128, MLA_C = 17 };
+    float mla_q[MLA_T * MLA_H * MLA_Q];
+    float mla_k[MLA_C * MLA_H * MLA_Q];
+    float mla_v[MLA_C * MLA_H * MLA_V];
+    float mla_actual[MLA_T * MLA_H * MLA_V];
+    for (size_t i = 0; i < sizeof(mla_q) / sizeof(mla_q[0]); i++)
+        mla_q[i] = (float)((int)(i % 17) - 8) * 0.015625f;
+    for (size_t i = 0; i < sizeof(mla_k) / sizeof(mla_k[0]); i++)
+        mla_k[i] = (float)((int)(i % 13) - 6) * 0.03125f;
+    for (size_t i = 0; i < sizeof(mla_v) / sizeof(mla_v[0]); i++)
+        mla_v[i] = (float)((int)(i % 11) - 5) * 0.0625f;
+    qg = upload(mla_q, sizeof(mla_q));
+    kg = upload_cache(mla_k, sizeof(mla_k) / sizeof(mla_k[0]), true);
+    vg = upload_cache(mla_v, sizeof(mla_v) / sizeof(mla_v[0]), true);
+    out = ds4_gpu_tensor_alloc(sizeof(mla_actual));
+    check(out != NULL, "MLA output allocation");
+    check(ds4_gpu_glm_attention_full_tensor(
+              out, qg, kg, vg, MLA_C - MLA_T, MLA_T, MLA_C, MLA_C,
+              MLA_H, MLA_Q, MLA_V, true),
+          "MLA full attention");
+    check(ds4_gpu_tensor_read(out, 0, mla_actual, sizeof(mla_actual)),
+          "MLA attention read");
+#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+    float mla_fallback[MLA_T * MLA_H * MLA_V];
+    ds4_gpu_tensor *mla_fallback_g = ds4_gpu_tensor_alloc(sizeof(mla_fallback));
+    check(mla_fallback_g != NULL, "MLA fallback output allocation");
+    check(setenv("DS4_CUDA_GLM_NO_TILED_MLA_ATTN", "1", 1) == 0,
+          "MLA fallback environment");
+    check(ds4_gpu_glm_attention_full_tensor(
+              mla_fallback_g, qg, kg, vg, MLA_C - MLA_T, MLA_T,
+              MLA_C, MLA_C, MLA_H, MLA_Q, MLA_V, true),
+          "MLA fallback attention");
+    unsetenv("DS4_CUDA_GLM_NO_TILED_MLA_ATTN");
+    check(ds4_gpu_tensor_read(mla_fallback_g, 0, mla_fallback,
+                              sizeof(mla_fallback)),
+          "MLA fallback attention read");
+    for (size_t i = 0; i < sizeof(mla_actual) / sizeof(mla_actual[0]); i++) {
+        check(isfinite(mla_fallback[i]) &&
+              fabsf(mla_actual[i] - mla_fallback[i]) < 0.0015f,
+              "MLA tiled/fallback agreement");
+    }
+    ds4_gpu_tensor_free(mla_fallback_g);
+#endif
+    for (int t = 0; t < MLA_T; t++) {
+        const int visible = MLA_C - MLA_T + t + 1;
+        for (int h = 0; h < MLA_H; h++) {
+            double weights[MLA_C], denom = 0.0;
+            for (int r = 0; r < visible; r++) {
+                double score = 0.0;
+                for (int d = 0; d < MLA_Q; d++) {
+                    score += mla_q[((t * MLA_H + h) * MLA_Q) + d] *
+                             mla_k[((r * MLA_H + h) * MLA_Q) + d];
+                }
+                weights[r] = exp(score / sqrt((double)MLA_Q));
+                denom += weights[r];
+            }
+            for (int d = 0; d < MLA_V; d++) {
+                double expected = 0.0;
+                for (int r = 0; r < visible; r++) {
+                    expected += weights[r] *
+                        mla_v[((r * MLA_H + h) * MLA_V) + d];
+                }
+                const size_t i = ((size_t)t * MLA_H + h) * MLA_V + d;
+                check(isfinite(mla_actual[i]) &&
+                      fabs(mla_actual[i] - expected / denom) < 0.0015,
+                      "MLA attention reference");
+            }
+        }
+    }
+    ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(vg);
+    ds4_gpu_tensor_free(kg); ds4_gpu_tensor_free(qg);
+
+#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+    /* Cross the 512-row CUDA partition boundary and compare the new
+     * one-token split-KV path against the dense reference implementation. */
+    enum { SPLIT_C = 1025, SPLIT_H = 2, SPLIT_Q = 192, SPLIT_V = 128,
+           SPLIT_MAX = 4 };
+    float *split_q = malloc((size_t)SPLIT_H * SPLIT_Q * sizeof(float));
+    float *split_k = malloc((size_t)SPLIT_C * SPLIT_H * SPLIT_Q * sizeof(float));
+    float *split_v = malloc((size_t)SPLIT_C * SPLIT_H * SPLIT_V * sizeof(float));
+    float split_ref[SPLIT_H * SPLIT_V];
+    float split_actual[SPLIT_H * SPLIT_V];
+    check(split_q && split_k && split_v, "dense split host allocation");
+    for (size_t i = 0; i < (size_t)SPLIT_H * SPLIT_Q; i++)
+        split_q[i] = (float)((int)(i % 19u) - 9) * 0.0078125f;
+    for (size_t i = 0; i < (size_t)SPLIT_C * SPLIT_H * SPLIT_Q; i++)
+        split_k[i] = (float)((int)(i % 23u) - 11) * 0.0078125f;
+    for (size_t i = 0; i < (size_t)SPLIT_C * SPLIT_H * SPLIT_V; i++)
+        split_v[i] = (float)((int)(i % 29u) - 14) * 0.015625f;
+    qg = upload(split_q, (size_t)SPLIT_H * SPLIT_Q * sizeof(float));
+    kg = upload_cache(split_k, (size_t)SPLIT_C * SPLIT_H * SPLIT_Q, true);
+    vg = upload_cache(split_v, (size_t)SPLIT_C * SPLIT_H * SPLIT_V, true);
+    ds4_gpu_tensor *split_ref_g =
+        ds4_gpu_tensor_alloc(sizeof(split_ref));
+    ds4_gpu_tensor *split_out_g =
+        ds4_gpu_tensor_alloc(sizeof(split_actual));
+    ds4_gpu_tensor *split_partial_g = ds4_gpu_tensor_alloc(
+        (uint64_t)SPLIT_MAX * SPLIT_H * SPLIT_V * sizeof(float));
+    ds4_gpu_tensor *split_ms_g = ds4_gpu_tensor_alloc(
+        (uint64_t)SPLIT_MAX * SPLIT_H * 2u * sizeof(float));
+    check(split_ref_g && split_out_g && split_partial_g && split_ms_g,
+          "dense split GPU allocation");
+    check(ds4_gpu_glm_attention_full_tensor(
+              split_ref_g, qg, kg, vg, SPLIT_C - 1u, 1u,
+              SPLIT_C, SPLIT_C, SPLIT_H, SPLIT_Q, SPLIT_V, true),
+          "dense split reference attention");
+    check(ds4_gpu_glm_attention_full_decode_split_tensor(
+              split_out_g, split_partial_g, split_ms_g, qg, kg, vg,
+              SPLIT_C, SPLIT_C, SPLIT_H, SPLIT_Q, SPLIT_V,
+              SPLIT_MAX, true),
+          "dense split attention");
+    check(ds4_gpu_tensor_read(split_ref_g, 0, split_ref,
+                              sizeof(split_ref)),
+          "dense split reference read");
+    check(ds4_gpu_tensor_read(split_out_g, 0, split_actual,
+                              sizeof(split_actual)),
+          "dense split output read");
+    for (size_t i = 0; i < (size_t)SPLIT_H * SPLIT_V; i++) {
+        check(isfinite(split_actual[i]) &&
+              fabsf(split_actual[i] - split_ref[i]) < 2.5e-4f,
+              "dense split/reference agreement");
+    }
+    ds4_gpu_tensor_free(split_ms_g);
+    ds4_gpu_tensor_free(split_partial_g);
+    ds4_gpu_tensor_free(split_out_g);
+    ds4_gpu_tensor_free(split_ref_g);
+    ds4_gpu_tensor_free(vg); ds4_gpu_tensor_free(kg); ds4_gpu_tensor_free(qg);
+    free(split_v); free(split_k); free(split_q);
+#endif
 
 #if defined(__APPLE__) || defined(DS4_ROCM_BUILD)
     float *kv = malloc(C * D * sizeof(float));

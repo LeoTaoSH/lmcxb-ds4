@@ -1229,6 +1229,33 @@ int main(int argc, char ** argv) {
             }
         }
     };
+    auto gen_q8 = [](cpu_block_q8_0 * blk, float * out,
+                     int n_experts, int M, int K, int blocks_per_expert,
+                     std::mt19937 & rng) {
+        std::normal_distribution<float> nd(0.0f, 1.0f);
+        const int blocks_per_row = K / QK8_0;
+        for (int e = 0; e < n_experts; e++) {
+            cpu_block_q8_0 * eblk = blk + (size_t)e * blocks_per_expert;
+            std::vector<float> src((size_t)M * K);
+            for (auto & v : src) v = nd(rng);
+            for (int row = 0; row < M; row++) {
+                quantize_row_q8_0_cpu(&src[(size_t)row * K],
+                                      &eblk[row * blocks_per_row], K);
+                const cpu_block_q8_0 *rowblk = &eblk[row * blocks_per_row];
+                float *orow = out + ((size_t)e * M + row) * K;
+                for (int b = 0; b < blocks_per_row; b++) {
+                    const float d = fp16_to_float(rowblk[b].d);
+                    for (int j = 0; j < QK8_0; j++) {
+                        orow[b * QK8_0 + j] = d * rowblk[b].qs[j];
+                    }
+                }
+            }
+        }
+    };
+    all_ok &= run_moe_pair_generic<cpu_block_q8_0>(
+        "Q8_0", QK8_0, /*M=*/256, /*K=*/512, /*nt=*/16,
+        /*ne=*/16, /*nu=*/8, 0xC0FE0F, gen_q8,
+        ds4_mmq_q8_0_moe_pair, ds4_mmq_q8_0_moe);
     all_ok &= run_moe_pair_generic<block_iq2_xxs>(
         "IQ2_XXS", QK_K_LOCAL, /*M=*/256, /*K=*/512, /*nt=*/8,
         /*ne=*/16, /*nu=*/6, 0xC0FE10, gen_iq2,

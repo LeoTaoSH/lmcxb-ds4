@@ -527,6 +527,7 @@ typedef enum {
     DS4_MODEL_FAMILY_GLM_DSA   = 1,
     DS4_MODEL_FAMILY_DEEPSEEK41 = 2,
     DS4_MODEL_FAMILY_QWEN4_EXP = 3,
+    DS4_MODEL_FAMILY_KIMI_LINEAR = 4,
 } ds4_model_family;
 
 typedef enum {
@@ -537,6 +538,7 @@ typedef enum {
     DS4_VARIANT_FLASH41 = 4,
     DS4_VARIANT_QWEN4_EXP = 5,
     DS4_VARIANT_QWEN4_MINI = 6,
+    DS4_VARIANT_KIMI_LINEAR = 7,
 } ds4_variant;
 
 typedef struct {
@@ -597,6 +599,15 @@ typedef struct {
     float compress_rope_freq_base;
     float kda_gate_lower_bound;
     uint64_t rope_orig_ctx;
+    /* Kimi Linear: MLA (full-attention) and KDA (linear-attention) geometry. */
+    uint32_t kimi_kv_lora;
+    uint32_t kimi_qk_nope_head_dim;
+    uint32_t kimi_qk_rope_head_dim;
+    uint32_t kimi_v_head_dim;
+    uint32_t kimi_kda_num_heads;
+    uint32_t kimi_moe_intermediate;
+    uint32_t kimi_first_dense;
+    uint32_t kimi_kda_layer_flags[DS4_MAX_LAYER];
 } ds4_shape;
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -877,6 +888,49 @@ static const ds4_shape DS4_SHAPE_QWEN4_MINI = {
     .rope_orig_ctx = 262144,
 };
 
+static const ds4_shape DS4_SHAPE_KIMI_LINEAR = {
+    .name = "Kimi Linear 48B A3B",
+    .family = DS4_MODEL_FAMILY_KIMI_LINEAR,
+    .variant = DS4_VARIANT_KIMI_LINEAR,
+    .n_layer = 27,
+    .n_embd = 2304,
+    .n_vocab = 163840,
+    .n_head = 32,          /* MLA query heads */
+    .n_head_kv = 32,       /* MLA kv heads (per-head, no grouping) */
+    .n_head_dim = 192,     /* MLA q_head_dim = qk_nope(128) + qk_rope(64) */
+    .n_value_dim = 128,    /* MLA v_head_dim */
+    .n_rot = 64,           /* MLA qk_rope_head_dim */
+    .n_expert = 256,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 1024,      /* moe_intermediate_size */
+    .n_ff_dense = 9216,
+    .n_leading_dense = 1,  /* first_k_dense_replace */
+    .n_kv_lora = 512,      /* MLA kv_lora_rank */
+    .n_key_mla = 192,      /* qk_nope(128) + qk_rope(64) */
+    .n_value_mla = 128,
+    .n_kda_head = 32,      /* KDA num_heads */
+    .n_kda_head_dim = 128, /* KDA head_dim */
+    .n_kda_conv = 4,       /* short_conv_kernel_size */
+    .kimi_kv_lora = 512,
+    .kimi_qk_nope_head_dim = 128,
+    .kimi_qk_rope_head_dim = 64,
+    .kimi_v_head_dim = 128,
+    .kimi_kda_num_heads = 32,
+    .kimi_moe_intermediate = 1024,
+    .kimi_first_dense = 1,
+    .rms_eps = 1.0e-5f,
+    .expert_weight_scale = 2.446f,
+    /* Kimi uses the stock SiLU(gate) * up MLP, without DeepSeek's clamp. */
+    .swiglu_clamp_exp = 0.0f,
+    .rope_freq_base = 10000.0f,
+    /* Kimi's GGUF converter folds A_log to -exp(A_log), and the original
+     * model uses the unbounded softplus gate.  -INFINITY selects that path
+     * in the shared KDA CUDA kernels; GLM-5.3 keeps its bounded safe gate. */
+    .kda_gate_lower_bound = -INFINITY,
+    .rope_orig_ctx = 1048576,
+};
+
 static ds4_shape g_ds4_shape = {
     .name = "DeepSeek V4 Flash",
     .family = DS4_MODEL_FAMILY_DEEPSEEK4,
@@ -964,6 +1018,14 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_COMPRESS_ROPE_FREQ_BASE   (g_ds4_shape.compress_rope_freq_base)
 #define DS4_KDA_GATE_LOWER_BOUND       (g_ds4_shape.kda_gate_lower_bound)
 #define DS4_ROPE_ORIG_CTX             (g_ds4_shape.rope_orig_ctx)
+#define DS4_KIMI_KV_LORA              (g_ds4_shape.kimi_kv_lora)
+#define DS4_KIMI_QK_NOPE_HEAD_DIM     (g_ds4_shape.kimi_qk_nope_head_dim)
+#define DS4_KIMI_QK_ROPE_HEAD_DIM     (g_ds4_shape.kimi_qk_rope_head_dim)
+#define DS4_KIMI_V_HEAD_DIM           (g_ds4_shape.kimi_v_head_dim)
+#define DS4_KIMI_KDA_NUM_HEADS        (g_ds4_shape.kimi_kda_num_heads)
+#define DS4_KIMI_MOE_INTERMEDIATE     (g_ds4_shape.kimi_moe_intermediate)
+#define DS4_KIMI_FIRST_DENSE          (g_ds4_shape.kimi_first_dense)
+#define DS4_KIMI_IS_KDA_LAYER(il)     (g_ds4_shape.kimi_kda_layer_flags[(il)] != 0u)
 #define DS4_N_HC_LOWRANK              (g_ds4_shape.n_hc_lowrank)
 #define DS4_N_LIN_K_HEAD              (g_ds4_shape.n_lin_k_head)
 #define DS4_N_LIN_V_HEAD              (g_ds4_shape.n_lin_v_head)
@@ -1024,6 +1086,10 @@ static bool ds4_qwen4_layer_is_ple(uint32_t il) {
 static bool ds4_qwen4_layer_is_nextn(uint32_t il) {
     return ds4_model_is_qwen4() && DS4_N_NEXTN_PREDICT != 0 &&
            il + DS4_N_NEXTN_PREDICT >= DS4_N_LAYER;
+}
+
+static bool ds4_model_is_kimi_linear(void) {
+    return DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_KIMI_LINEAR;
 }
 
 static int g_ds4_lock_fd = -1;
@@ -4874,7 +4940,7 @@ static void tensor_expect_layout(
     }
 
     const uint64_t want[3] = { d0, d1, d2 };
-    for (uint32_t i = 0; i < ndim; i++) {
+    for (uint32_t i = 0; i < ndim && i < 3; i++) {
         if (t->dim[i] == want[i]) continue;
         fprintf(stderr,
                 "ds4: tensor %.*s has dim[%u]=%" PRIu64 ", expected %" PRIu64 "\n",
@@ -4887,8 +4953,27 @@ static void tensor_expect_layout(
     }
 }
 
+static void tensor_expect_layout4(
+        const ds4_tensor *t,
+        uint32_t          type,
+        uint64_t          d0,
+        uint64_t          d1,
+        uint64_t          d2,
+        uint64_t          d3) {
+    tensor_expect_layout(t, type, 4, d0, d1, d2);
+    if (t->dim[3] == d3) return;
+    fprintf(stderr,
+            "ds4: tensor %.*s has dim[3]=%" PRIu64 ", expected %" PRIu64 "\n",
+            (int)t->name.len,
+            t->name.ptr,
+            t->dim[3],
+            d3);
+    exit(1);
+}
+
 static bool tensor_type_is_glm_dense_quant(uint32_t type) {
-    return type == DS4_TENSOR_Q8_0 ||
+    return type == DS4_TENSOR_F16 ||
+           type == DS4_TENSOR_Q8_0 ||
            type == DS4_TENSOR_Q4_K ||
            type == DS4_TENSOR_Q4_0 ||
            type == DS4_TENSOR_BF16;
@@ -5341,7 +5426,8 @@ static void tensor_expect_routed_expert(
 
 static bool weights_have_output_head(const ds4_weights *w) {
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ||
+        ds4_model_is_kimi_linear()) {
         return w && w->output_norm && w->output;
     }
     if (ds4_model_is_qwen4()) {
@@ -5634,8 +5720,42 @@ static void weights_validate_qwen4_layout(
     }
 }
 
+static bool weights_kimi_linear_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
+    if (!l) return false;
+    if (!l->attn_norm || !l->ffn_norm) return false;
+    if (ds4_model_is_kimi_linear() && DS4_KIMI_IS_KDA_LAYER(il)) {
+        if (!l->kda_q || !l->kda_k || !l->kda_v ||
+            !l->kda_q_conv || !l->kda_k_conv || !l->kda_v_conv ||
+            !l->kda_f_a || !l->kda_f_b || !l->kda_dt_bias || !l->kda_a_log ||
+            !l->kda_beta || !l->kda_g_a || !l->kda_g_b ||
+            !l->kda_o_norm || !l->kda_output) {
+            return false;
+        }
+    } else if (ds4_model_is_kimi_linear()) {
+        /* MLA full-attention layer. */
+        if (!l->attn_q_a || !l->attn_kv_a_mqa || !l->attn_kv_a_norm ||
+            !l->attn_k_b || !l->attn_v_b || !l->attn_output) {
+            return false;
+        }
+    }
+    if (il == 0) {
+        /* Dense MLP on the first Kimi layer. */
+        if (!l->ffn_gate || !l->ffn_up || !l->ffn_down) return false;
+    } else {
+        if (!l->ffn_gate_inp || !l->ffn_exp_probs_b || !l->ffn_gate_exps ||
+            !l->ffn_up_exps || !l->ffn_down_exps ||
+            !l->ffn_gate_shexp || !l->ffn_up_shexp || !l->ffn_down_shexp) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool weights_layer_has_required(const ds4_layer_weights *l, uint32_t il) {
     if (!l) return false;
+    if (ds4_model_is_kimi_linear()) {
+        return weights_kimi_linear_layer_has_required(l, il);
+    }
     if (ds4_model_is_qwen4()) {
         return weights_qwen4_layer_has_required(l, il);
     }
@@ -5880,12 +6000,134 @@ static void weights_validate_glm_dsa_layout(
     }
 }
 
+static void weights_validate_kimi_linear_layout(
+        const ds4_weights *w,
+        uint32_t           layer_start,
+        uint32_t           layer_end,
+        bool               require_token_embd,
+        bool               require_output) {
+    if (!w) ds4_die("internal error: missing weights while validating layout");
+    if (layer_start >= DS4_N_LAYER) ds4_die("invalid first layer in weight layout validation");
+    if (layer_end == UINT32_MAX) layer_end = DS4_N_LAYER - 1u;
+    if (layer_end >= DS4_N_LAYER || layer_end < layer_start) {
+        ds4_die("invalid layer range in KL weight layout validation");
+    }
+    if (require_token_embd && !w->token_embd) ds4_die("required token embedding tensor is missing");
+    if (w->token_embd) {
+        tensor_expect_layout(w->token_embd, DS4_TENSOR_F16, 2, DS4_N_EMBD, DS4_N_VOCAB, 0);
+    }
+    const bool have_output = weights_have_output_head(w);
+    if (require_output && !have_output) ds4_die("required output head tensors are missing");
+    if (weights_have_partial_output_head(w) && !have_output) ds4_die("partial output head in GGUF");
+    if (have_output) {
+        tensor_expect_layout(w->output_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        tensor_expect_layout(w->output, DS4_TENSOR_F16, 2, DS4_N_EMBD, DS4_N_VOCAB, 0);
+    }
+
+    const uint64_t kda_projection = (uint64_t)DS4_KIMI_KDA_NUM_HEADS * DS4_N_KDA_HEAD_DIM;
+    const uint64_t q_dim          = (uint64_t)DS4_N_HEAD * DS4_N_HEAD_DIM;
+    const uint64_t v_dim          = (uint64_t)DS4_N_HEAD * DS4_KIMI_V_HEAD_DIM;
+
+    for (uint32_t il = layer_start; il <= layer_end; il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        if (!weights_kimi_linear_layer_has_required(l, il)) {
+            fprintf(stderr, "ds4: required Kimi tensors for layer %u are missing\n", il);
+            exit(1);
+        }
+        tensor_expect_layout(l->attn_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+        tensor_expect_layout(l->ffn_norm, DS4_TENSOR_F32, 1, DS4_N_EMBD, 0, 0);
+
+        if (DS4_KIMI_IS_KDA_LAYER(il)) {
+            tensor_expect_layout(l->kda_q, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 (uint32_t)kda_projection, 0);
+            tensor_expect_layout(l->kda_k, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 (uint32_t)kda_projection, 0);
+            tensor_expect_layout(l->kda_v, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 (uint32_t)kda_projection, 0);
+            /* llama.cpp stores the short conv as [kernel, 1, proj, 1]. */
+            tensor_expect_layout4(l->kda_q_conv, DS4_TENSOR_F32, DS4_N_KDA_CONV,
+                                  1, kda_projection, 1);
+            tensor_expect_layout4(l->kda_k_conv, DS4_TENSOR_F32, DS4_N_KDA_CONV,
+                                  1, kda_projection, 1);
+            tensor_expect_layout4(l->kda_v_conv, DS4_TENSOR_F32, DS4_N_KDA_CONV,
+                                  1, kda_projection, 1);
+            tensor_expect_layout(l->kda_f_a, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_N_KDA_HEAD_DIM, 0);
+            tensor_expect_layout(l->kda_f_b, DS4_TENSOR_Q8_0, 2, DS4_N_KDA_HEAD_DIM,
+                                 (uint32_t)kda_projection, 0);
+            tensor_expect_layout(l->kda_dt_bias, DS4_TENSOR_F32, 1,
+                                 (uint32_t)kda_projection, 0, 0);
+            /* Upstream preserves A_log's HF broadcast shape [1, heads, 1, 1]. */
+            tensor_expect_layout4(l->kda_a_log, DS4_TENSOR_F32,
+                                  1, DS4_KIMI_KDA_NUM_HEADS, 1, 1);
+            tensor_expect_layout(l->kda_beta, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_KIMI_KDA_NUM_HEADS, 0);
+            tensor_expect_layout(l->kda_g_a, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_N_KDA_HEAD_DIM, 0);
+            tensor_expect_layout(l->kda_g_b, DS4_TENSOR_Q8_0, 2, DS4_N_KDA_HEAD_DIM,
+                                 (uint32_t)kda_projection, 0);
+            tensor_expect_layout(l->kda_o_norm, DS4_TENSOR_F32, 1,
+                                 DS4_N_KDA_HEAD_DIM, 0, 0);
+            tensor_expect_layout(l->kda_output, DS4_TENSOR_Q8_0, 2,
+                                 (uint32_t)kda_projection, DS4_N_EMBD, 0);
+        } else {
+            tensor_expect_layout(l->attn_q_a, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 (uint32_t)q_dim, 0);
+            tensor_expect_layout(l->attn_kv_a_mqa, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_KIMI_KV_LORA + DS4_KIMI_QK_ROPE_HEAD_DIM, 0);
+            tensor_expect_layout(l->attn_kv_a_norm, DS4_TENSOR_F32, 1,
+                                 DS4_KIMI_KV_LORA, 0, 0);
+            tensor_expect_layout(l->attn_k_b, DS4_TENSOR_Q8_0, 3,
+                                 DS4_KIMI_QK_NOPE_HEAD_DIM, DS4_KIMI_KV_LORA,
+                                 DS4_N_HEAD);
+            tensor_expect_layout(l->attn_v_b, DS4_TENSOR_Q8_0, 3,
+                                 DS4_KIMI_KV_LORA, DS4_KIMI_V_HEAD_DIM,
+                                 DS4_N_HEAD);
+            tensor_expect_layout(l->attn_output, DS4_TENSOR_Q8_0, 2,
+                                 (uint32_t)v_dim, DS4_N_EMBD, 0);
+        }
+
+        if (il < DS4_KIMI_FIRST_DENSE) {
+            tensor_expect_layout(l->ffn_gate, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_N_FF_DENSE, 0);
+            tensor_expect_layout(l->ffn_up, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_N_FF_DENSE, 0);
+            tensor_expect_layout(l->ffn_down, DS4_TENSOR_Q8_0, 2, DS4_N_FF_DENSE,
+                                 DS4_N_EMBD, 0);
+        } else {
+            tensor_expect_layout(l->ffn_gate_inp, DS4_TENSOR_F32, 2, DS4_N_EMBD,
+                                 DS4_N_EXPERT, 0);
+            tensor_expect_layout(l->ffn_exp_probs_b, DS4_TENSOR_F32, 1,
+                                 DS4_N_EXPERT, 0, 0);
+            tensor_expect_routed_expert(l->ffn_gate_exps, 3, DS4_N_EMBD,
+                                        DS4_KIMI_MOE_INTERMEDIATE, DS4_N_EXPERT);
+            tensor_expect_routed_expert(l->ffn_up_exps, 3, DS4_N_EMBD,
+                                        DS4_KIMI_MOE_INTERMEDIATE, DS4_N_EXPERT);
+            tensor_expect_routed_expert(l->ffn_down_exps, 3, DS4_KIMI_MOE_INTERMEDIATE,
+                                        DS4_N_EMBD, DS4_N_EXPERT);
+            tensor_expect_layout(l->ffn_gate_shexp, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_KIMI_MOE_INTERMEDIATE, 0);
+            tensor_expect_layout(l->ffn_up_shexp, DS4_TENSOR_Q8_0, 2, DS4_N_EMBD,
+                                 DS4_KIMI_MOE_INTERMEDIATE, 0);
+            tensor_expect_layout(l->ffn_down_shexp, DS4_TENSOR_Q8_0, 2,
+                                 DS4_KIMI_MOE_INTERMEDIATE, DS4_N_EMBD, 0);
+            tensor_expect_layout(l->ffn_exp_probs_b, DS4_TENSOR_F32, 1,
+                                 DS4_N_EXPERT, 0, 0);
+        }
+    }
+}
+
 static void weights_validate_layout(
         const ds4_weights *w,
         uint32_t           layer_start,
         uint32_t           layer_end,
         bool               require_token_embd,
         bool               require_output) {
+    if (ds4_model_is_kimi_linear()) {
+        weights_validate_kimi_linear_layout(w, layer_start, layer_end,
+                                            require_token_embd, require_output);
+        return;
+    }
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         weights_validate_glm_dsa_layout(w,
                                         layer_start,
@@ -7018,6 +7260,98 @@ static void qwen4_rope_configure(uint32_t native_ctx) {
 #endif
 }
 
+/* Validate and configure a Kimi Linear model. The ds4 shape is pinned to the
+ * single released 48B-A3B geometry; per-layer linear-attention classification
+ * comes from the `kimi.linear_attn.kda_layers` metadata array emitted by the
+ * converter (llama.cpp uses 1-based indices in that array). */
+static void config_validate_kimi_linear_model(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_KIMI_LINEAR;
+    memset(g_ds4_shape.kimi_kda_layer_flags, 0, sizeof(g_ds4_shape.kimi_kda_layer_flags));
+    /* llama.cpp writes the KIMI_LINEAR keys with the `kimi-linear.` prefix. */
+    const struct { const char *key; uint32_t value; } ints[] = {
+        {"embedding_length", DS4_N_EMBD},
+        {"block_count", DS4_N_LAYER},
+        {"feed_forward_length", DS4_N_FF_DENSE},
+        {"attention.head_count", DS4_N_HEAD},
+        {"expert_count", DS4_N_EXPERT},
+        {"expert_used_count", DS4_N_EXPERT_USED},
+        {"expert_shared_count", DS4_N_EXPERT_SHARED},
+        {"rope.dimension_count", DS4_N_ROT},
+        {"attention.kv_lora_rank", DS4_KIMI_KV_LORA},
+        {"kda.head_dim", DS4_N_KDA_HEAD_DIM},
+        {"ssm.conv_kernel", DS4_N_KDA_CONV},
+        {"expert_feed_forward_length", DS4_KIMI_MOE_INTERMEDIATE},
+        {"leading_dense_block_count", DS4_KIMI_FIRST_DENSE},
+        {"vocab_size", DS4_N_VOCAB},
+    };
+    for (size_t i = 0; i < sizeof(ints) / sizeof(ints[0]); i++) {
+        char key[96];
+        snprintf(key, sizeof(key), "kimi-linear.%s", ints[i].key);
+        config_expect_u32(key, required_u32(m, key), ints[i].value);
+    }
+    config_expect_u64("kimi-linear.context_length",
+                      required_u64_compat(m, "kimi-linear.context_length"), DS4_ROPE_ORIG_CTX);
+    config_expect_epsilon("kimi-linear.attention.layer_norm_rms_epsilon",
+                          required_f32(m, "kimi-linear.attention.layer_norm_rms_epsilon"), DS4_RMS_EPS);
+    config_expect_epsilon("kimi-linear.expert_weights_scale",
+                          required_f32(m, "kimi-linear.expert_weights_scale"), DS4_EXPERT_WEIGHT_SCALE);
+    /* expert_gating_func: ExpertGatingFuncType = {SOFTMAX:1, SIGMOID:2}. */
+    config_expect_u32("kimi-linear.expert_gating_func",
+                      required_u32(m, "kimi-linear.expert_gating_func"), 2u);
+
+    /* MLA geometry. llama.cpp writes key_length = kv_lora_rank + qk_rope
+     * (the compressed-kv projection), key_length_mla = qk_nope_head_dim and
+     * value_length_mla = v_head_dim; the query head is 192 = nope(128)+rope(64). */
+    config_expect_u32("kimi-linear.attention.key_length",
+                      required_u32(m, "kimi-linear.attention.key_length"),
+                      DS4_KIMI_KV_LORA + DS4_KIMI_QK_ROPE_HEAD_DIM);
+    config_expect_u32("kimi-linear.attention.key_length_mla",
+                      required_u32(m, "kimi-linear.attention.key_length_mla"),
+                      DS4_KIMI_QK_NOPE_HEAD_DIM + DS4_KIMI_QK_ROPE_HEAD_DIM);
+    config_expect_u32("kimi-linear.attention.value_length_mla",
+                      required_u32(m, "kimi-linear.attention.value_length_mla"),
+                      DS4_KIMI_V_HEAD_DIM);
+    config_expect_u32("kimi-linear.rope.dimension_count",
+                      required_u32(m, "kimi-linear.rope.dimension_count"), DS4_N_ROT);
+    config_expect_epsilon("kimi-linear.rope.freq_base",
+                          required_f32(m, "kimi-linear.rope.freq_base"), DS4_ROPE_FREQ_BASE);
+
+    /* Per-layer KDA classification.  Keep the released geometry pinned, but
+     * read it from the GGUF rather than silently accepting a converter/model
+     * mismatch.  The source config and llama.cpp metadata use 1-based IDs. */
+    static const uint32_t known_kda_1based[] = {
+        1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 23, 25, 26,
+    };
+    const char *kda_key = "kimi.linear_attn.kda_layers";
+    ds4_array_ref kda_layers;
+    if (!model_get_array(m, kda_key, &kda_layers) ||
+        (kda_layers.type != GGUF_VALUE_UINT32 &&
+         kda_layers.type != GGUF_VALUE_INT32) ||
+        kda_layers.len != sizeof(known_kda_1based) / sizeof(known_kda_1based[0])) {
+        ds4_die("kimi.linear_attn.kda_layers must describe the 20 KDA layers");
+    }
+    ds4_cursor kda_cursor = cursor_at(m, kda_layers.data_pos);
+    for (size_t i = 0; i < sizeof(known_kda_1based) / sizeof(known_kda_1based[0]); i++) {
+        uint32_t got = 0;
+        if (kda_layers.type == GGUF_VALUE_UINT32) {
+            if (!cursor_u32(&kda_cursor, &got)) ds4_die(kda_cursor.error);
+        } else {
+            int32_t value = 0;
+            if (!cursor_read(&kda_cursor, &value, sizeof(value))) ds4_die(kda_cursor.error);
+            if (value < 1) ds4_die("Kimi KDA layer IDs must be positive");
+            got = (uint32_t)value;
+        }
+        if (got != known_kda_1based[i]) {
+            fprintf(stderr,
+                    "ds4: unexpected Kimi KDA layer at slot %zu: got %u, expected %u\n",
+                    i, got, known_kda_1based[i]);
+            exit(1);
+        }
+        uint32_t idx = got - 1u;
+        if (idx < DS4_N_LAYER) g_ds4_shape.kimi_kda_layer_flags[idx] = 1;
+    }
+}
+
 static void config_validate_qwen4_model(const ds4_model *m) {
     const uint32_t n_embd = required_u32(m, "qwen4exp.embedding_length");
     if (n_embd == DS4_SHAPE_QWEN4_EXP.n_embd) {
@@ -7151,6 +7485,10 @@ static void config_validate_model(const ds4_model *m) {
     g_ds4_flash_vision_exp = false;
     ds4_str arch = {0};
     if (model_get_string(m, "general.architecture", &arch)) {
+        if (ds4_streq(arch, "kimi-linear")) {
+            config_validate_kimi_linear_model(m);
+            return;
+        }
         if (ds4_streq(arch, "deepseek41")) {
             config_validate_deepseek41_model(m);
             return;
@@ -7656,7 +7994,8 @@ static void weights_bind_output(
             w->output         = model_find_tensor(m, "output.weight");
         }
     } else if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
-        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ||
+        ds4_model_is_kimi_linear()) {
 
         if (required) {
             w->output_norm = required_tensor(m, "output_norm.weight");
@@ -7762,6 +8101,55 @@ static void weights_bind_glm_dsa_layer(ds4_layer_weights *l, const ds4_model *m,
     }
 }
 
+static void weights_bind_kimi_linear_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    l->attn_norm = required_tensorf(m, "blk.%u.attn_norm.weight", il);
+    l->ffn_norm  = required_tensorf(m, "blk.%u.ffn_norm.weight", il);
+
+    if (DS4_KIMI_IS_KDA_LAYER(il)) {
+        /* llama.cpp names the Kimi KDA projections attn_q/k/v/out and the
+         * convolution/gate tensors with the ssm_ prefix. Map onto the ds4
+         * kda_* slot names. */
+        l->kda_q       = required_tensorf(m, "blk.%u.attn_q.weight", il);
+        l->kda_k       = required_tensorf(m, "blk.%u.attn_k.weight", il);
+        l->kda_v       = required_tensorf(m, "blk.%u.attn_v.weight", il);
+        l->kda_q_conv  = required_tensorf(m, "blk.%u.ssm_conv1d_q.weight", il);
+        l->kda_k_conv  = required_tensorf(m, "blk.%u.ssm_conv1d_k.weight", il);
+        l->kda_v_conv  = required_tensorf(m, "blk.%u.ssm_conv1d_v.weight", il);
+        l->kda_f_a     = required_tensorf(m, "blk.%u.ssm_f_a.weight", il);
+        l->kda_f_b     = required_tensorf(m, "blk.%u.ssm_f_b.weight", il);
+        l->kda_dt_bias = required_tensorf(m, "blk.%u.ssm_dt.bias", il);
+        l->kda_a_log   = required_tensorf(m, "blk.%u.ssm_a", il);
+        l->kda_beta    = required_tensorf(m, "blk.%u.ssm_beta.weight", il);
+        l->kda_g_a     = required_tensorf(m, "blk.%u.ssm_g_a.weight", il);
+        l->kda_g_b     = required_tensorf(m, "blk.%u.ssm_g_b.weight", il);
+        l->kda_o_norm  = required_tensorf(m, "blk.%u.ssm_norm.weight", il);
+        l->kda_output  = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    } else {
+        /* MLA full-attention layer: q (no lora), kv_a, low-rank k_b/v_b. */
+        l->attn_q_a       = required_tensorf(m, "blk.%u.attn_q.weight", il);
+        l->attn_kv_a_mqa  = required_tensorf(m, "blk.%u.attn_kv_a_mqa.weight", il);
+        l->attn_kv_a_norm = required_tensorf(m, "blk.%u.attn_kv_a_norm.weight", il);
+        l->attn_k_b       = required_tensorf(m, "blk.%u.attn_k_b.weight", il);
+        l->attn_v_b       = required_tensorf(m, "blk.%u.attn_v_b.weight", il);
+        l->attn_output    = required_tensorf(m, "blk.%u.attn_output.weight", il);
+    }
+
+    if (il < DS4_KIMI_FIRST_DENSE) {
+        l->ffn_gate = required_tensorf(m, "blk.%u.ffn_gate.weight", il);
+        l->ffn_up   = required_tensorf(m, "blk.%u.ffn_up.weight", il);
+        l->ffn_down = required_tensorf(m, "blk.%u.ffn_down.weight", il);
+    } else {
+        l->ffn_gate_inp    = required_tensorf(m, "blk.%u.ffn_gate_inp.weight", il);
+        l->ffn_exp_probs_b = required_tensorf(m, "blk.%u.exp_probs_b.bias", il);
+        l->ffn_gate_exps   = required_tensorf(m, "blk.%u.ffn_gate_exps.weight", il);
+        l->ffn_up_exps     = required_tensorf(m, "blk.%u.ffn_up_exps.weight", il);
+        l->ffn_down_exps   = required_tensorf(m, "blk.%u.ffn_down_exps.weight", il);
+        l->ffn_gate_shexp  = required_tensorf(m, "blk.%u.ffn_gate_shexp.weight", il);
+        l->ffn_up_shexp    = required_tensorf(m, "blk.%u.ffn_up_shexp.weight", il);
+        l->ffn_down_shexp  = required_tensorf(m, "blk.%u.ffn_down_shexp.weight", il);
+    }
+}
+
 static void weights_bind_qwen4_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
     l->hc_attn_norm   = required_tensorf(m, "blk.%u.hc_attn_norm.weight", il);
     l->hc_attn_down   = required_tensorf(m, "blk.%u.hc_attn_down.weight", il);
@@ -7820,6 +8208,10 @@ static void weights_bind_qwen4_layer(ds4_layer_weights *l, const ds4_model *m, u
 }
 
 static void weights_bind_layer(ds4_layer_weights *l, const ds4_model *m, uint32_t il) {
+    if (ds4_model_is_kimi_linear()) {
+        weights_bind_kimi_linear_layer(l, m, il);
+        return;
+    }
     if (ds4_model_is_qwen4()) {
         weights_bind_qwen4_layer(l, m, il);
         return;
@@ -16590,7 +16982,8 @@ typedef struct {
 
 static bool glm_graph_gate_pair_type_supported(uint32_t gate_type, uint32_t up_type) {
     return gate_type == up_type &&
-           (gate_type == DS4_TENSOR_IQ2_XXS ||
+           (gate_type == DS4_TENSOR_Q8_0 ||
+            gate_type == DS4_TENSOR_IQ2_XXS ||
             gate_type == DS4_TENSOR_Q2_K ||
             gate_type == DS4_TENSOR_Q4_K ||
             gate_type == DS4_TENSOR_Q5_K ||
@@ -16598,7 +16991,8 @@ static bool glm_graph_gate_pair_type_supported(uint32_t gate_type, uint32_t up_t
 }
 
 static bool glm_graph_down_type_supported(uint32_t down_type) {
-    return down_type == DS4_TENSOR_IQ2_XXS ||
+    return down_type == DS4_TENSOR_Q8_0 ||
+           down_type == DS4_TENSOR_IQ2_XXS ||
            down_type == DS4_TENSOR_Q2_K ||
            down_type == DS4_TENSOR_Q4_K ||
            down_type == DS4_TENSOR_Q5_K ||
@@ -16607,6 +17001,9 @@ static bool glm_graph_down_type_supported(uint32_t down_type) {
 }
 
 static float glm_routed_moe_dot_f32(uint32_t type, int n, const uint8_t *row, const float *x) {
+    if (type == DS4_TENSOR_Q8_0) {
+        return dot_q8_0_row_f32_ref(row, x, (uint64_t)n, ((uint64_t)n + 31u) / 32u);
+    }
     if (type == DS4_TENSOR_IQ2_XXS) {
         return ds4_vec_dot_iq2_xxs_f32(n, (const block_iq2_xxs *)row, x);
     }
@@ -17013,6 +17410,400 @@ static void output_logits_glm_one(
 
     free(norm);
 }
+
+/* KDA with an empty recurrent/conv state.  This is deliberately a first-token
+ * reference: decay does not contribute until a prior state exists, while the
+ * delta update reduces to beta * outer(v, k).  It gives us an end-to-end CPU
+ * oracle before the persistent Kimi cache is wired into the graph backends. */
+static void kimi_matvec_f32_ref(
+        float            *out,
+        const ds4_model  *model,
+        const ds4_tensor *weight,
+        const float      *input) {
+    if (weight->type == DS4_TENSOR_Q8_0) {
+        matvec_q8_0_f32_ref(out, model, weight, input);
+    } else {
+        matvec_any(out, model, weight, input);
+    }
+}
+
+static void layer_kimi_kda_first_token_attention_one(
+        float                   *out,
+        const ds4_model         *model,
+        const ds4_layer_weights *layer,
+        const float             *x) {
+    const uint32_t heads = DS4_KIMI_KDA_NUM_HEADS;
+    const uint32_t dim = DS4_N_KDA_HEAD_DIM;
+    const uint64_t projection = (uint64_t)heads * dim;
+    float *norm = xmalloc((size_t)DS4_N_EMBD * sizeof(norm[0]));
+    float *q = xmalloc((size_t)projection * sizeof(q[0]));
+    float *k = xmalloc((size_t)projection * sizeof(k[0]));
+    float *v = xmalloc((size_t)projection * sizeof(v[0]));
+    float *beta = xmalloc((size_t)heads * sizeof(beta[0]));
+    float *low = xmalloc((size_t)dim * sizeof(low[0]));
+    float *gate = xmalloc((size_t)projection * sizeof(gate[0]));
+    float *o = xmalloc((size_t)projection * sizeof(o[0]));
+    const float *cq = tensor_data(model, layer->kda_q_conv);
+    const float *ck = tensor_data(model, layer->kda_k_conv);
+    const float *cv = tensor_data(model, layer->kda_v_conv);
+    const float *ow = tensor_data(model, layer->kda_o_norm);
+
+    rms_norm_weight(norm, x, tensor_data(model, layer->attn_norm),
+                    DS4_N_EMBD, DS4_RMS_EPS);
+    kimi_matvec_f32_ref(q, model, layer->kda_q, norm);
+    kimi_matvec_f32_ref(k, model, layer->kda_k, norm);
+    kimi_matvec_f32_ref(v, model, layer->kda_v, norm);
+    kimi_matvec_f32_ref(beta, model, layer->kda_beta, norm);
+    kimi_matvec_f32_ref(low, model, layer->kda_g_a, norm);
+    kimi_matvec_f32_ref(gate, model, layer->kda_g_b, low);
+
+    /* ShortConvolution stores [kernel, 1, channel, 1].  With an empty causal
+     * history only the final coefficient multiplies the current projection. */
+    for (uint64_t i = 0; i < projection; i++) {
+        q[i] = silu(q[i] * cq[i * DS4_N_KDA_CONV + DS4_N_KDA_CONV - 1u]);
+        k[i] = silu(k[i] * ck[i * DS4_N_KDA_CONV + DS4_N_KDA_CONV - 1u]);
+        v[i] = silu(v[i] * cv[i * DS4_N_KDA_CONV + DS4_N_KDA_CONV - 1u]);
+    }
+
+    for (uint32_t h = 0; h < heads; h++) {
+        float *qh = q + (uint64_t)h * dim;
+        float *kh = k + (uint64_t)h * dim;
+        float *vh = v + (uint64_t)h * dim;
+        float *oh = o + (uint64_t)h * dim;
+        const float *gh = gate + (uint64_t)h * dim;
+        double qss = 0.0, kss = 0.0;
+        for (uint32_t d = 0; d < dim; d++) {
+            qss += (double)qh[d] * qh[d];
+            kss += (double)kh[d] * kh[d];
+        }
+        const float qs = 1.0f / sqrtf((float)qss + 1.0e-6f) / sqrtf((float)dim);
+        const float ks = 1.0f / sqrtf((float)kss + 1.0e-6f);
+        float qk = 0.0f;
+        for (uint32_t d = 0; d < dim; d++) qk += qh[d] * qs * kh[d] * ks;
+        const float b = sigmoid_stable(beta[h]);
+        double oss = 0.0;
+        for (uint32_t d = 0; d < dim; d++) {
+            oh[d] = qk * b * vh[d];
+            oss += (double)oh[d] * oh[d];
+        }
+        const float os = 1.0f / sqrtf((float)(oss / dim) + DS4_RMS_EPS);
+        for (uint32_t d = 0; d < dim; d++) {
+            oh[d] = oh[d] * os * ow[d] * sigmoid_stable(gh[d]);
+        }
+    }
+    kimi_matvec_f32_ref(out, model, layer->kda_output, o);
+
+    free(o);
+    free(gate);
+    free(low);
+    free(beta);
+    free(v);
+    free(k);
+    free(q);
+    free(norm);
+}
+
+static void layer_kimi_first_token_one(
+        float                   *out,
+        const ds4_model         *model,
+        const ds4_layer_weights *layer,
+        const float             *x,
+        uint32_t                 il) {
+    float *attn = xmalloc((size_t)DS4_N_EMBD * sizeof(attn[0]));
+    float *residual = xmalloc((size_t)DS4_N_EMBD * sizeof(residual[0]));
+    float *ffn = xmalloc((size_t)DS4_N_EMBD * sizeof(ffn[0]));
+
+    if (DS4_KIMI_IS_KDA_LAYER(il)) {
+        layer_kimi_kda_first_token_attention_one(attn, model, layer, x);
+    } else {
+        /* For one visible token MLA's softmax is exactly one, so only its
+         * normalized compressed-value projection and output projection matter. */
+        layer_glm_first_token_attention_one_f32_ref(attn, model, layer, x);
+    }
+    const bool trace = getenv("DS4_KIMI_FT_TRACE") != NULL;
+    if (trace) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) sum += attn[i];
+        fprintf(stderr, "kimi layer %u attn sum=%.9g\n", il, sum);
+    }
+    for (uint32_t i = 0; i < DS4_N_EMBD; i++) residual[i] = x[i] + attn[i];
+    layer_glm_ffn_one_f32_ref(ffn, model, layer, residual, il);
+    for (uint32_t i = 0; i < DS4_N_EMBD; i++) out[i] = residual[i] + ffn[i];
+    if (trace) {
+        double residual_sum = 0.0, ffn_sum = 0.0, out_sum = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            residual_sum += residual[i];
+            ffn_sum += ffn[i];
+            out_sum += out[i];
+        }
+        fprintf(stderr,
+                "kimi layer %u ffn_inp sum=%.9g ffn sum=%.9g out sum=%.9g "
+                "edge=[%.6g %.6g %.6g ... %.6g %.6g %.6g]\n",
+                il, residual_sum, ffn_sum, out_sum,
+                out[0], out[1], out[2],
+                out[DS4_N_EMBD - 3u], out[DS4_N_EMBD - 2u], out[DS4_N_EMBD - 1u]);
+    }
+
+    free(ffn);
+    free(residual);
+    free(attn);
+}
+
+static void forward_kimi_first_token_cpu(
+        float             *out_hidden,
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token) {
+    float *cur = xmalloc((size_t)DS4_N_EMBD * sizeof(cur[0]));
+    float *next = xmalloc((size_t)DS4_N_EMBD * sizeof(next[0]));
+    embed_token_any(model, weights, token, cur);
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        layer_kimi_first_token_one(next, model, &weights->layer[il], cur, il);
+        float *tmp = cur;
+        cur = next;
+        next = tmp;
+    }
+    memcpy(out_hidden, cur, (size_t)DS4_N_EMBD * sizeof(out_hidden[0]));
+    free(next);
+    free(cur);
+}
+
+static void output_logits_kimi_one(
+        float             *logits,
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        const float       *hidden) {
+    float *norm = xmalloc((size_t)DS4_N_EMBD * sizeof(norm[0]));
+    rms_norm_weight(norm, hidden, tensor_data(model, weights->output_norm),
+                    DS4_N_EMBD, DS4_RMS_EPS);
+    matvec_any(logits, model, weights->output, norm);
+    free(norm);
+}
+
+#ifndef DS4_NO_GPU
+static int kimi_gpu_kda_test(
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token) {
+    uint32_t il = 0;
+    while (il < DS4_N_LAYER && !DS4_KIMI_IS_KDA_LAYER(il)) il++;
+    if (il == DS4_N_LAYER) return 0;
+    const ds4_layer_weights *l = &weights->layer[il];
+    const uint32_t heads = DS4_KIMI_KDA_NUM_HEADS;
+    const uint64_t projection = (uint64_t)heads * DS4_N_KDA_HEAD_DIM;
+    const uint64_t emb_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    const uint64_t proj_bytes = projection * sizeof(float);
+    const uint64_t conv_bytes = 3u * (DS4_N_KDA_CONV - 1u) * proj_bytes;
+    const uint64_t recurrent_bytes = projection * DS4_N_KDA_HEAD_DIM * sizeof(float);
+    float *cur = xmalloc((size_t)emb_bytes);
+    float *next = xmalloc((size_t)emb_bytes);
+    float *norm = xmalloc((size_t)emb_bytes);
+    float *cpu = xmalloc((size_t)emb_bytes);
+    float *gpu = xmalloc((size_t)emb_bytes);
+
+    embed_token_any(model, weights, token, cur);
+    for (uint32_t prev = 0; prev < il; prev++) {
+        layer_kimi_first_token_one(next, model, &weights->layer[prev], cur, prev);
+        float *tmp = cur; cur = next; next = tmp;
+    }
+    rms_norm_weight(norm, cur, tensor_data(model, l->attn_norm),
+                    DS4_N_EMBD, DS4_RMS_EPS);
+    layer_kimi_kda_first_token_attention_one(cpu, model, l, cur);
+
+#define KIMI_KDA_ALLOC(name_, bytes_) \
+    ds4_gpu_tensor *name_ = ds4_gpu_tensor_alloc((bytes_))
+    KIMI_KDA_ALLOC(x, emb_bytes);
+    KIMI_KDA_ALLOC(q, proj_bytes);
+    KIMI_KDA_ALLOC(k, proj_bytes);
+    KIMI_KDA_ALLOC(v, proj_bytes);
+    KIMI_KDA_ALLOC(low, (uint64_t)DS4_N_KDA_HEAD_DIM * sizeof(float));
+    KIMI_KDA_ALLOC(raw_gate, proj_bytes);
+    KIMI_KDA_ALLOC(raw_beta, (uint64_t)heads * sizeof(float));
+    KIMI_KDA_ALLOC(output_gate, proj_bytes);
+    KIMI_KDA_ALLOC(kda_out, proj_bytes);
+    KIMI_KDA_ALLOC(out, emb_bytes);
+    KIMI_KDA_ALLOC(conv_state, conv_bytes);
+    KIMI_KDA_ALLOC(recurrent_state, recurrent_bytes);
+#undef KIMI_KDA_ALLOC
+    int ok = x && q && k && v && low && raw_gate && raw_beta &&
+             output_gate && kda_out && out && conv_state && recurrent_state;
+    if (ok) ok = ds4_gpu_tensor_write(x, 0, norm, emb_bytes) != 0;
+    if (ok) ok = ds4_gpu_tensor_fill_f32(conv_state, 0.0f,
+                                         conv_bytes / sizeof(float)) != 0;
+    if (ok) ok = ds4_gpu_tensor_fill_f32(recurrent_state, 0.0f,
+                                         recurrent_bytes / sizeof(float)) != 0;
+#define KIMI_KDA_MATMUL(dst_, weight_, in_, out_, src_) \
+    ds4_gpu_matmul_quant_tensor((dst_), model->map, model->size, \
+        (weight_)->abs_offset, (weight_)->type, (in_), (out_), (src_), 1)
+    if (ok) ok = KIMI_KDA_MATMUL(q, l->kda_q, DS4_N_EMBD, projection, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(k, l->kda_k, DS4_N_EMBD, projection, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(v, l->kda_v, DS4_N_EMBD, projection, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(low, l->kda_f_a, DS4_N_EMBD,
+                                  DS4_N_KDA_HEAD_DIM, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(raw_gate, l->kda_f_b,
+                                  DS4_N_KDA_HEAD_DIM, projection, low) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(raw_beta, l->kda_beta,
+                                  DS4_N_EMBD, heads, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(low, l->kda_g_a, DS4_N_EMBD,
+                                  DS4_N_KDA_HEAD_DIM, x) != 0;
+    if (ok) ok = KIMI_KDA_MATMUL(output_gate, l->kda_g_b,
+                                  DS4_N_KDA_HEAD_DIM, projection, low) != 0;
+#undef KIMI_KDA_MATMUL
+    if (ok) ok = ds4_gpu_glm53_kda_decode(
+        kda_out, conv_state, recurrent_state, q, k, v, raw_gate, raw_beta,
+        output_gate, model->map, model->size,
+        l->kda_q_conv->abs_offset, l->kda_k_conv->abs_offset,
+        l->kda_v_conv->abs_offset, l->kda_a_log->abs_offset,
+        l->kda_dt_bias->abs_offset, l->kda_o_norm->abs_offset,
+        heads, 1, DS4_KDA_GATE_LOWER_BOUND, DS4_RMS_EPS) != 0;
+    if (ok) ok = ds4_gpu_matmul_quant_tensor(
+        out, model->map, model->size, l->kda_output->abs_offset,
+        l->kda_output->type, projection, DS4_N_EMBD, kda_out, 1) != 0;
+    if (ok) ok = ds4_gpu_tensor_read(out, 0, gpu, emb_bytes) != 0;
+    if (ok) {
+        float max_abs = 0.0f;
+        double sq = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            const float err = fabsf(cpu[i] - gpu[i]);
+            if (!isfinite(gpu[i])) ok = 0;
+            if (err > max_abs) max_abs = err;
+            sq += (double)err * err;
+        }
+        printf("  kimi_layer%u_kda: max_abs=%g rmse=%g%s\n", il,
+               (double)max_abs, sqrt(sq / DS4_N_EMBD),
+               ok && max_abs <= 1.0e-1f ? " [ok]" : " [mismatch]");
+        ok = ok && max_abs <= 1.0e-1f;
+    } else {
+        fprintf(stderr, "ds4: Kimi CUDA KDA test failed to execute\n");
+    }
+
+    ds4_gpu_tensor_free(recurrent_state); ds4_gpu_tensor_free(conv_state);
+    ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(kda_out);
+    ds4_gpu_tensor_free(output_gate); ds4_gpu_tensor_free(raw_beta);
+    ds4_gpu_tensor_free(raw_gate); ds4_gpu_tensor_free(low);
+    ds4_gpu_tensor_free(v); ds4_gpu_tensor_free(k); ds4_gpu_tensor_free(q);
+    ds4_gpu_tensor_free(x);
+    free(gpu); free(cpu); free(norm); free(next); free(cur);
+    return ok ? 0 : 1;
+}
+
+/* Exercise Kimi's production Q8_0 routed-MoE CUDA dispatch independently of
+ * attention. The input is the real normalized FFN input of the first sparse
+ * layer, produced by the CPU oracle. */
+static int kimi_gpu_routed_moe_test(
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token) {
+    const uint32_t il = DS4_KIMI_FIRST_DENSE;
+    if (il >= DS4_N_LAYER) return 0;
+    const ds4_layer_weights *l = &weights->layer[il];
+    uint64_t gate_in = 0, gate_out = 0, gate_row_bytes = 0;
+    uint64_t up_in = 0, up_out = 0, up_row_bytes = 0;
+    uint64_t down_in = 0, down_out = 0, down_row_bytes = 0;
+    if (!l->ffn_gate_exps || !l->ffn_up_exps || !l->ffn_down_exps ||
+        l->ffn_gate_exps->type != DS4_TENSOR_Q8_0 ||
+        l->ffn_up_exps->type != DS4_TENSOR_Q8_0 ||
+        l->ffn_down_exps->type != DS4_TENSOR_Q8_0 ||
+        !tensor_expert_bytes(model, l->ffn_gate_exps, 0,
+                             &gate_in, &gate_out, &gate_row_bytes) ||
+        !tensor_expert_bytes(model, l->ffn_up_exps, 0,
+                             &up_in, &up_out, &up_row_bytes) ||
+        !tensor_expert_bytes(model, l->ffn_down_exps, 0,
+                             &down_in, &down_out, &down_row_bytes) ||
+        gate_in != DS4_N_EMBD || up_in != DS4_N_EMBD ||
+        gate_out != DS4_N_FF_EXP || up_out != DS4_N_FF_EXP ||
+        down_in != DS4_N_FF_EXP || down_out != DS4_N_EMBD) {
+        fprintf(stderr, "ds4: Kimi CUDA MoE test found an unexpected expert layout\n");
+        return 1;
+    }
+
+    const uint64_t emb_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    const uint64_t mid_bytes = (uint64_t)DS4_N_EXPERT_USED *
+                               DS4_N_FF_EXP * sizeof(float);
+    const uint64_t down_bytes = (uint64_t)DS4_N_EXPERT_USED *
+                                DS4_N_EMBD * sizeof(float);
+    float *cur = xmalloc((size_t)emb_bytes);
+    float *next = xmalloc((size_t)emb_bytes);
+    float *attn = xmalloc((size_t)emb_bytes);
+    float *residual = xmalloc((size_t)emb_bytes);
+    float *norm = xmalloc((size_t)emb_bytes);
+    float *cpu = xmalloc((size_t)emb_bytes);
+    float *cpu_mid = xmalloc((size_t)mid_bytes);
+    float *gpu = xmalloc((size_t)emb_bytes);
+    int selected[DS4_MAX_EXPERT_USED] = {0};
+    int32_t selected32[DS4_MAX_EXPERT_USED] = {0};
+    float route_weights[DS4_MAX_EXPERT_USED] = {0};
+
+    embed_token_any(model, weights, token, cur);
+    for (uint32_t prev = 0; prev < il; prev++) {
+        layer_kimi_first_token_one(next, model, &weights->layer[prev], cur, prev);
+        float *tmp = cur; cur = next; next = tmp;
+    }
+    if (DS4_KIMI_IS_KDA_LAYER(il)) {
+        layer_kimi_kda_first_token_attention_one(attn, model, l, cur);
+    } else {
+        layer_glm_first_token_attention_one_f32_ref(attn, model, l, cur);
+    }
+    for (uint32_t i = 0; i < DS4_N_EMBD; i++) residual[i] = cur[i] + attn[i];
+    rms_norm_weight(norm, residual, tensor_data(model, l->ffn_norm),
+                    DS4_N_EMBD, DS4_RMS_EPS);
+    layer_glm_router_selected_experts(selected, route_weights, model, l, norm);
+    for (uint32_t i = 0; i < DS4_N_EXPERT_USED; i++) selected32[i] = selected[i];
+    layer_glm_routed_moe_one_f32_ref(cpu, cpu_mid, model, l, norm,
+                                     selected, route_weights);
+
+    ds4_gpu_tensor *x = ds4_gpu_tensor_alloc(emb_bytes);
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(emb_bytes);
+    ds4_gpu_tensor *gate = ds4_gpu_tensor_alloc(mid_bytes);
+    ds4_gpu_tensor *up = ds4_gpu_tensor_alloc(mid_bytes);
+    ds4_gpu_tensor *mid = ds4_gpu_tensor_alloc(mid_bytes);
+    ds4_gpu_tensor *down = ds4_gpu_tensor_alloc(down_bytes);
+    ds4_gpu_tensor *sel = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT_USED * sizeof(int32_t));
+    ds4_gpu_tensor *rw = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT_USED * sizeof(float));
+    int ok = x && out && gate && up && mid && down && sel && rw;
+    if (ok) ok = ds4_gpu_tensor_write(x, 0, norm, emb_bytes) != 0;
+    if (ok) ok = ds4_gpu_tensor_write(sel, 0, selected32,
+                                      (uint64_t)DS4_N_EXPERT_USED * sizeof(int32_t)) != 0;
+    if (ok) ok = ds4_gpu_tensor_write(rw, 0, route_weights,
+                                      (uint64_t)DS4_N_EXPERT_USED * sizeof(float)) != 0;
+    if (ok) ok = ds4_gpu_routed_moe_one_tensor(
+        out, gate, up, mid, down, model->map, model->size,
+        l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+        l->ffn_down_exps->abs_offset,
+        l->ffn_gate_exps->type, l->ffn_down_exps->type,
+        gate_out * gate_row_bytes, gate_row_bytes,
+        down_out * down_row_bytes, down_row_bytes,
+        DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD,
+        sel, rw, DS4_N_EXPERT, DS4_N_EXPERT_USED, 0.0f, x, NULL, il, true) != 0;
+    if (ok) ok = ds4_gpu_tensor_read(out, 0, gpu, emb_bytes) != 0;
+    if (ok) {
+        float max_abs = 0.0f;
+        double sq = 0.0;
+        for (uint32_t i = 0; i < DS4_N_EMBD; i++) {
+            const float err = fabsf(cpu[i] - gpu[i]);
+            if (!isfinite(gpu[i])) ok = 0;
+            if (err > max_abs) max_abs = err;
+            sq += (double)err * err;
+        }
+        printf("  kimi_layer1_q8_routed_moe: max_abs=%g rmse=%g%s\n",
+               (double)max_abs, sqrt(sq / DS4_N_EMBD),
+               ok && max_abs <= 1.0e-1f ? " [ok]" : " [mismatch]");
+        ok = ok && max_abs <= 1.0e-1f;
+    } else {
+        fprintf(stderr, "ds4: Kimi CUDA Q8_0 routed-MoE test failed to execute\n");
+    }
+
+    ds4_gpu_tensor_free(rw); ds4_gpu_tensor_free(sel);
+    ds4_gpu_tensor_free(down); ds4_gpu_tensor_free(mid);
+    ds4_gpu_tensor_free(up); ds4_gpu_tensor_free(gate);
+    ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(x);
+    free(gpu); free(cpu_mid); free(cpu); free(norm); free(residual);
+    free(attn); free(next); free(cur);
+    return ok ? 0 : 1;
+}
+#endif
 
 /* Allocation-free logits head for CPU decode. */
 static void output_logits_one_decode_scratch(
@@ -39060,12 +39851,17 @@ static uint32_t glm_graph_compact_cache_is_f16(void) {
 
 static bool glm_graph_expanded_kv_cache_enabled(bool ssd_streaming) {
     (void)ssd_streaming;
+    /* Kimi Linear has no compact DSA/indexer representation for its MLA
+     * layers.  Their dense K/V cache must therefore cover the complete
+     * logical context, even though prefill is still submitted in chunks. */
+    if (ds4_model_is_kimi_linear()) return true;
     /* Absorbed MLA keeps the shared latent cache through the dense prefix,
      * then reuses it for sparse DSA without materializing per-head K/V. */
     return false;
 }
 
 static bool glm_graph_layer_uses_full_indexer(uint32_t il) {
+    if (ds4_model_is_kimi_linear()) return false;
     if (ds4_model_is_glm53()) return !ds4_glm53_layer_is_kda(il);
     if (il < DS4_N_LEADING_DENSE) return true;
     return il >= 6u && ((il - 6u) % 4u) == 0u;
@@ -39094,6 +39890,19 @@ static uint32_t glm53_graph_kda_layer_count_range(uint32_t layer_start,
     uint32_t n = 0;
     for (uint32_t il = layer_start; il <= layer_end; il++) {
         if (ds4_glm53_layer_is_kda(il)) n++;
+    }
+    return n;
+}
+
+static uint32_t glm_graph_attention_layer_count_range(uint32_t layer_start,
+                                                       uint32_t layer_end) {
+    if (layer_start > layer_end) return 0;
+    if (ds4_model_is_glm53()) {
+        return glm_graph_full_indexer_layer_count_range(layer_start, layer_end);
+    }
+    uint32_t n = 0;
+    for (uint32_t il = layer_start; il <= layer_end; il++) {
+        if (!ds4_model_is_kimi_linear() || !DS4_KIMI_IS_KDA_LAYER(il)) n++;
     }
     return n;
 }
@@ -39300,6 +40109,7 @@ static void glm_graph_indexed_prefill_tracef(const char *fmt, ...) {
 static uint32_t glm_graph_compact_cache_initial_cap(
         uint32_t ctx_size,
         uint32_t full_attention_cap) {
+    if (ds4_model_is_kimi_linear()) return 0;
     if (ds4_model_is_glm53()) {
         return ctx_size;
     }
@@ -39316,6 +40126,13 @@ static uint32_t glm_graph_batch_row_cap(
         uint32_t full_attention_cap,
         uint32_t indexed_prefill_cap,
         bool     expanded_kv) {
+    if (ds4_model_is_kimi_linear()) {
+        uint32_t cap = full_attention_cap;
+        if (cap > DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT) {
+            cap = DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT;
+        }
+        return cap != 0 ? cap : 1u;
+    }
     if (ds4_model_is_glm53()) {
         uint32_t cap = full_attention_cap;
         if (cap > DS4_GLM53_PREFILL_CHUNK_TOKENS) {
@@ -39398,6 +40215,7 @@ static uint64_t glm_graph_workspace_add_bytes(
 }
 
 static uint32_t glm_graph_indexed_decode_split_blocks(void);
+static uint32_t glm_graph_attention_partial_blocks(void);
 
 static uint64_t glm_graph_workspace_bytes_for_cap(
         uint32_t full_attention_cap,
@@ -39437,7 +40255,7 @@ static uint64_t glm_graph_workspace_bytes_for_cap(
     const uint64_t qk_low_elems =
         (uint64_t)DS4_N_HEAD * DS4_N_KV_LORA;
     const uint64_t split_attn_blocks =
-        glm_graph_indexed_decode_split_blocks();
+        glm_graph_attention_partial_blocks();
 
     uint64_t bytes =
         glm_graph_indexed_scratch_bytes_for_cap(full_attention_cap,
@@ -39570,10 +40388,8 @@ static ds4_context_memory glm_graph_context_memory_estimate_for_compact_cap_slic
         return m;
     }
     if (layer_end >= normal_layers) layer_end = normal_layers - 1u;
-    const uint32_t layer_count = layer_end - layer_start + 1u;
-    const uint32_t attention_layer_count = ds4_model_is_glm53() ?
-        glm_graph_full_indexer_layer_count_range(layer_start, layer_end) :
-        layer_count;
+    const uint32_t attention_layer_count =
+        glm_graph_attention_layer_count_range(layer_start, layer_end);
     if (compact_cap > ctx) compact_cap = ctx;
 
     const bool expanded_kv = glm_graph_expanded_kv_cache_enabled(ssd_streaming);
@@ -39675,7 +40491,8 @@ ds4_context_memory ds4_context_memory_estimate_with_prefill_mode(
         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41)
             return ds41_graph_memory(ctx);
 #endif
-        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
+        if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+            ds4_model_is_kimi_linear()) {
             const uint32_t work_ctx =
                 glm_graph_full_attention_cap(ctx, ssd_streaming);
             const uint32_t compact_cap =
@@ -42196,6 +43013,7 @@ struct ds4_vocab {
     int arg_value_end_id;
     int dsml_id;
     int im_start_id;
+    int im_middle_id;
     int im_end_id;
     int endoftext_id;
     str_i32_table token_to_id;
@@ -43064,12 +43882,35 @@ static qwen4_char_info qwen4_char_at(const char *s, uint64_t len, uint64_t pos) 
     return c;
 }
 
+static bool kimi_is_han(uint32_t cp) {
+    return (cp >= 0x3400u && cp <= 0x4DBFu) ||
+           (cp >= 0x4E00u && cp <= 0x9FFFu) ||
+           (cp >= 0xF900u && cp <= 0xFAFFu) ||
+           (cp >= 0x20000u && cp <= 0x2FA1Fu) ||
+           (cp >= 0x30000u && cp <= 0x323AFu);
+}
+
+static uint64_t kimi_contraction_end(const char *text, uint64_t len, uint64_t pos) {
+    if (pos >= len || text[pos] != '\'') return pos;
+    const uint64_t p1 = pos + 1u;
+    if (p1 >= len) return pos;
+    const uint8_t c1 = (uint8_t)ascii_tolower_cp((uint8_t)text[p1]);
+    if (c1 == 's' || c1 == 't' || c1 == 'm' || c1 == 'd') return p1 + 1u;
+    if (p1 + 1u >= len) return pos;
+    const uint8_t c2 = (uint8_t)ascii_tolower_cp((uint8_t)text[p1 + 1u]);
+    if ((c1 == 'r' && c2 == 'e') ||
+        (c1 == 'v' && c2 == 'e') ||
+        (c1 == 'l' && c2 == 'l')) return p1 + 2u;
+    return pos;
+}
+
 /* Qwen3.8 pre-tokenization (tokenizer.ggml.pre = "qwen35"), the ordered
  * alternation
  *   (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+ | \p{N} |
  *    ?[^\s\p{L}\p{M}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+
  * with the Unicode classes generated from the `regex` module. */
-static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, token_vec *out) {
+static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text,
+                                     bool kimi, token_vec *out) {
     const uint64_t len = strlen(text);
     uint64_t pos = 0;
 
@@ -43077,6 +43918,17 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
         const uint64_t start = pos;
         qwen4_char_info cur = qwen4_char_at(text, len, pos);
         if (!cur.valid) break;
+
+        if (kimi && kimi_is_han(cur.cp)) {
+            pos = cur.next;
+            while (pos < len) {
+                qwen4_char_info scan = qwen4_char_at(text, len, pos);
+                if (!scan.valid || !kimi_is_han(scan.cp)) break;
+                pos = scan.next;
+            }
+            bpe_emit_piece(vocab, (ds4_str){ text + start, pos - start }, out);
+            continue;
+        }
 
         if (cur.cp == '\'' && cur.next < len) {
             qwen4_char_info n1 = qwen4_char_at(text, len, cur.next);
@@ -43110,9 +43962,11 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
                 pos = run;
                 while (pos < len) {
                     qwen4_char_info scan = qwen4_char_at(text, len, pos);
-                    if (!scan.valid || !(scan.letter || scan.mark)) break;
+                    if (!scan.valid || !(scan.letter || scan.mark) ||
+                        (kimi && kimi_is_han(scan.cp))) break;
                     pos = scan.next;
                 }
+                if (kimi) pos = kimi_contraction_end(text, len, pos);
                 bpe_emit_piece(vocab, (ds4_str){ text + start, pos - start }, out);
                 continue;
             }
@@ -43120,6 +43974,13 @@ static void bpe_tokenize_text_qwen35(const ds4_vocab *vocab, const char *text, t
 
         if (cur.number) {
             pos = cur.next;
+            if (kimi) {
+                for (uint32_t n = 1; n < 3u && pos < len; n++) {
+                    qwen4_char_info scan = qwen4_char_at(text, len, pos);
+                    if (!scan.valid || !scan.number) break;
+                    pos = scan.next;
+                }
+            }
             bpe_emit_piece(vocab, (ds4_str){ text + start, pos - start }, out);
             continue;
         }
@@ -43201,8 +44062,8 @@ static void bpe_tokenize_text(const ds4_vocab *vocab, const char *text, token_ve
         bpe_tokenize_text_glm4(vocab, text, out);
         return;
     }
-    if (ds4_model_is_qwen4()) {
-        bpe_tokenize_text_qwen35(vocab, text, out);
+    if (ds4_model_is_qwen4() || ds4_model_is_kimi_linear()) {
+        bpe_tokenize_text_qwen35(vocab, text, ds4_model_is_kimi_linear(), out);
         return;
     }
 
@@ -43325,8 +44186,35 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         table_put(&vocab->merge_rank, merge, (int)i);
     }
     vocab->im_start_id = -1;
+    vocab->im_middle_id = -1;
     vocab->im_end_id = -1;
     vocab->endoftext_id = -1;
+
+    if (ds4_model_is_kimi_linear()) {
+        if (!model_get_token_id(model, "tokenizer.ggml.bos_token_id", &vocab->bos_id))
+            vocab->bos_id = vocab_lookup(vocab, "[BOS]");
+        if (!model_get_token_id(model, "tokenizer.ggml.eos_token_id", &vocab->eos_id))
+            vocab->eos_id = vocab_lookup(vocab, "[EOS]");
+        vocab->im_end_id = vocab_lookup(vocab, "<|im_end|>");
+        vocab->im_middle_id = vocab_lookup(vocab, "<|im_middle|>");
+        vocab->system_id = vocab_lookup_optional(vocab, "<|im_system|>");
+        vocab->user_id = vocab_lookup(vocab, "<|im_user|>");
+        vocab->assistant_id = vocab_lookup(vocab, "<|im_assistant|>");
+        vocab->observation_id = -1;
+        vocab->sop_id = -1;
+        vocab->think_start_id = vocab_lookup_optional(vocab, "<think>");
+        vocab->think_end_id = vocab_lookup_optional(vocab, "</think>");
+        vocab->tool_call_start_id = vocab_lookup_optional(vocab, "<|tool_call_begin|>");
+        vocab->tool_call_end_id = vocab_lookup_optional(vocab, "<|tool_call_end|>");
+        vocab->tool_response_start_id = -1;
+        vocab->tool_response_end_id = -1;
+        vocab->arg_key_start_id = -1;
+        vocab->arg_key_end_id = -1;
+        vocab->arg_value_start_id = -1;
+        vocab->arg_value_end_id = -1;
+        vocab->dsml_id = -1;
+        return;
+    }
 
     if (ds4_model_is_qwen4()) {
         /* ChatML without BOS; <|endoftext|> is the document separator and a
@@ -43508,6 +44396,16 @@ static void qwen4_chat_system(const ds4_vocab *vocab, const char *system, ds4_th
     qwen4_chat_close(vocab, out);
 }
 
+static void kimi_chat_turn(const ds4_vocab *vocab, int role_token,
+                           const char *role, const char *content,
+                           bool close, token_vec *out) {
+    token_vec_push(out, role_token);
+    bpe_tokenize_text(vocab, role, out);
+    token_vec_push(out, vocab->im_middle_id);
+    if (content && content[0]) bpe_tokenize_text(vocab, content, out);
+    if (close) token_vec_push(out, vocab->im_end_id);
+}
+
 static void encode_chat_prompt(
         const ds4_vocab *vocab,
         const char      *system,
@@ -43524,6 +44422,18 @@ static void encode_chat_prompt(
         bpe_tokenize_text(vocab, prompt, out);
         qwen4_chat_close(vocab, out);
         qwen4_chat_assistant_prefix(vocab, think_mode, out);
+        return;
+    }
+    if (ds4_model_is_kimi_linear()) {
+        if (vocab->system_id < 0 || vocab->user_id < 0 ||
+            vocab->assistant_id < 0 || vocab->im_middle_id < 0 ||
+            vocab->im_end_id < 0) {
+            ds4_die("this tokenizer does not provide the Kimi chat markers; use raw prompt tokenization");
+        }
+        if (system && system[0])
+            kimi_chat_turn(vocab, vocab->system_id, "system", system, true, out);
+        kimi_chat_turn(vocab, vocab->user_id, "user", prompt, true, out);
+        kimi_chat_turn(vocab, vocab->assistant_id, "assistant", NULL, false, out);
         return;
     }
     const bool need_think_start =
@@ -43592,7 +44502,11 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         {"</arg_value>",           vocab->arg_value_end_id},
         {"｜DSML｜",                vocab->dsml_id},
         {"<|im_start|>",           vocab->im_start_id},
+        {"<|im_middle|>",          vocab->im_middle_id},
         {"<|im_end|>",             vocab->im_end_id},
+        {"<|im_system|>",          vocab->system_id},
+        {"<|im_user|>",            vocab->user_id},
+        {"<|im_assistant|>",       vocab->assistant_id},
         {"<|endoftext|>",          vocab->endoftext_id},
     };
 
@@ -43643,6 +44557,9 @@ void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out
 }
 
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens) {
+    /* Kimi's im_* chat template has no BOS token.  Each turn starts with its
+     * role marker instead (the one-shot encoder follows the same rule). */
+    if (ds4_model_is_kimi_linear()) return;
     chat_push_bos_sequence(&e->vocab, tokens);
 }
 
@@ -43731,6 +44648,26 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
         return;
     }
 
+    if (ds4_model_is_kimi_linear()) {
+        if (!strcmp(role, "tool_declare")) {
+            kimi_chat_turn(vocab, vocab->system_id, "tool_declare", content,
+                           true, tokens);
+        } else if (!strcmp(role, "tool") || !strcmp(role, "function")) {
+            kimi_chat_turn(vocab, vocab->system_id, "tool", content,
+                           true, tokens);
+        } else if (!strcmp(role, "system") || !strcmp(role, "developer")) {
+            kimi_chat_turn(vocab, vocab->system_id, "system", content,
+                           true, tokens);
+        } else if (!strcmp(role, "assistant")) {
+            kimi_chat_turn(vocab, vocab->assistant_id, "assistant", content,
+                           true, tokens);
+        } else {
+            kimi_chat_turn(vocab, vocab->user_id, "user", content,
+                           true, tokens);
+        }
+        return;
+    }
+
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         if (!strcmp(role, "system") || !strcmp(role, "developer")) {
             if (vocab->system_id >= 0) token_vec_push(tokens, vocab->system_id);
@@ -43779,6 +44716,12 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
 void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode think_mode) {
     if (ds4_model_is_qwen4()) {
         qwen4_chat_assistant_prefix(&e->vocab, think_mode, tokens);
+        return;
+    }
+    if (ds4_model_is_kimi_linear()) {
+        (void)think_mode;
+        kimi_chat_turn(&e->vocab, e->vocab.assistant_id, "assistant", NULL,
+                       false, tokens);
         return;
     }
     token_vec_push(tokens, e->vocab.assistant_id);
@@ -43901,6 +44844,8 @@ static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
     if (!vocab || token < 0) return false;
     if (token == vocab->eos_id) return true;
     if (vocab->endoftext_id >= 0 && token == vocab->endoftext_id) return true;
+    if (ds4_model_is_kimi_linear() && vocab->im_end_id >= 0 &&
+        token == vocab->im_end_id) return true;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         return (vocab->system_id >= 0 && token == vocab->system_id) ||
                (vocab->user_id >= 0 && token == vocab->user_id) ||
@@ -45127,6 +46072,7 @@ typedef struct ds4_glm_gpu_graph {
     bool ssd_streaming_cold;
     bool generic_routed_moe;
     bool glm53;
+    bool kimi;
     ds4_imatrix_collector *imatrix;
     ds4_gpu_tensor *directional_steering_dirs_by_tier[DS4_MAX_GPUS];
     float directional_steering_attn_scale;
@@ -45274,8 +46220,15 @@ static bool imatrix_collect_glm_one(
                                         1);
 }
 
+static bool glm_graph_layer_is_kda(
+        const ds4_glm_gpu_graph *g,
+        uint32_t                 il) {
+    return g && ((g->glm53 && ds4_glm53_layer_is_kda(il)) ||
+                 (g->kimi && DS4_KIMI_IS_KDA_LAYER(il)));
+}
+
 static bool glm_graph_reset_kda_state(ds4_glm_gpu_graph *g) {
-    if (!g || !g->glm53) return true;
+    if (!g || (!g->glm53 && !g->kimi)) return true;
     for (uint32_t il = g->layer_start; il <= g->layer_end; il++) {
         ds4_gpu_tensor *conv = g->layer_kda_conv_state[il];
         ds4_gpu_tensor *recurrent = g->layer_kda_recurrent_state[il];
@@ -45748,6 +46701,10 @@ static bool glm_graph_memory_guard_slice_with_transient(
 
 static uint32_t glm_graph_full_attention_cap(uint32_t ctx_size,
                                              bool     ssd_streaming) {
+    /* Unlike GLM DSA, Kimi Linear cannot spill older MLA rows into a compact
+     * indexed cache.  Keep all dense MLA rows; batch sizing is capped
+     * independently by glm_graph_batch_row_cap(). */
+    if (ds4_model_is_kimi_linear()) return ctx_size != 0 ? ctx_size : 1u;
     uint32_t cap = ssd_streaming ?
         DS4_GLM_METAL_STREAMING_FULL_ATTN_CONTEXT :
         DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT;
@@ -45834,6 +46791,14 @@ static uint32_t glm_graph_indexed_decode_split_blocks(void) {
         glm53_graph_indexer_selected_limit() :
         glm_graph_indexer_top_k_limit();
     return (top_k + block_rows - 1u) / block_rows;
+}
+
+static uint32_t glm_graph_attention_partial_blocks(void) {
+    /* Dense Kimi MLA uses one partition per 512 cache rows through 32K.
+     * Its metadata has no meaningful DSA top-k, so it must not inherit the
+     * much smaller indexed-attention scratch capacity. */
+    return ds4_model_is_kimi_linear() ? 64u :
+        glm_graph_indexed_decode_split_blocks();
 }
 
 static uint32_t glm_graph_indexed_decode_split_block_rows_for(uint32_t n_selected) {
@@ -46079,7 +47044,8 @@ static bool glm_graph_layer_uses_generic_routed_moe(
            l->ffn_gate_exps &&
            l->ffn_up_exps &&
            l->ffn_down_exps &&
-           l->ffn_gate_exps->type == DS4_TENSOR_IQ2_XXS;
+           (l->ffn_gate_exps->type == DS4_TENSOR_IQ2_XXS ||
+            l->ffn_gate_exps->type == DS4_TENSOR_Q8_0);
 }
 
 static bool glm_tp_validate_ownership_kernels(
@@ -46472,6 +47438,60 @@ static bool glm_graph_validate_layer_layout(
     const uint64_t hc_mix = (uint64_t)DS4_N_HC * (DS4_N_HC + 2u);
     const uint64_t kda_projection =
         (uint64_t)DS4_N_KDA_HEAD * DS4_N_KDA_HEAD_DIM;
+    if (ds4_model_is_kimi_linear()) {
+        if (DS4_KIMI_IS_KDA_LAYER(il)) {
+            if (!glm_graph_tensor_layout(l->attn_norm, DS4_TENSOR_F32, 1,
+                                         DS4_N_EMBD, 0, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_q, 2,
+                                               DS4_N_EMBD, kda_projection, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_k, 2,
+                                               DS4_N_EMBD, kda_projection, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_v, 2,
+                                               DS4_N_EMBD, kda_projection, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_f_a, 2,
+                                               DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_f_b, 2,
+                                               DS4_N_KDA_HEAD_DIM, kda_projection, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_beta, 2,
+                                               DS4_N_EMBD, DS4_N_KDA_HEAD, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_g_a, 2,
+                                               DS4_N_EMBD, DS4_N_KDA_HEAD_DIM, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_g_b, 2,
+                                               DS4_N_KDA_HEAD_DIM, kda_projection, 0) ||
+                !glm_graph_dense_tensor_layout(l->kda_output, 2,
+                                               kda_projection, DS4_N_EMBD, 0) ||
+                !glm_graph_tensor_layout(l->ffn_norm, DS4_TENSOR_F32, 1,
+                                         DS4_N_EMBD, 0, 0)) {
+                fprintf(stderr, "ds4: Kimi graph found unexpected KDA layout in layer %u\n", il);
+                return false;
+            }
+        } else {
+            if (!glm_graph_tensor_layout(l->attn_norm, DS4_TENSOR_F32, 1,
+                                         DS4_N_EMBD, 0, 0) ||
+                !glm_graph_dense_tensor_layout(l->attn_q_a, 2,
+                                               DS4_N_EMBD, q_dim, 0) ||
+                !l->attn_kv_a_mqa ||
+                !tensor_type_is_glm_dense_quant(l->attn_kv_a_mqa->type) ||
+                l->attn_kv_a_mqa->ndim != 2 ||
+                l->attn_kv_a_mqa->dim[0] != DS4_N_EMBD ||
+                kv_raw_dim < (uint64_t)DS4_N_KV_LORA + DS4_N_ROT ||
+                !glm_graph_tensor_layout(l->attn_kv_a_norm, DS4_TENSOR_F32, 1,
+                                         DS4_N_KV_LORA, 0, 0) ||
+                !glm_graph_dense_tensor_layout(l->attn_k_b, 3,
+                                               q_nope, DS4_N_KV_LORA, DS4_N_HEAD) ||
+                !glm_graph_dense_tensor_layout(l->attn_v_b, 3,
+                                               DS4_N_KV_LORA, DS4_N_VALUE_MLA, DS4_N_HEAD) ||
+                !glm_graph_dense_tensor_layout(l->attn_output, 2,
+                                               heads_dim, DS4_N_EMBD, 0) ||
+                !glm_graph_tensor_layout(l->ffn_norm, DS4_TENSOR_F32, 1,
+                                         DS4_N_EMBD, 0, 0)) {
+                fprintf(stderr, "ds4: Kimi graph found unexpected MLA layout in layer %u\n", il);
+                return false;
+            }
+            if (kv_raw_dim > *kv_raw_dim_out) *kv_raw_dim_out = kv_raw_dim;
+        }
+        goto validate_ffn;
+    }
     if (ds4_model_is_glm53()) {
         if (!glm_graph_tensor_layout(l->hc_attn_fn, DS4_TENSOR_BF16, 2,
                                      hc_dim, hc_mix, 0) ||
@@ -46607,6 +47627,7 @@ static bool glm_graph_validate_layout(
     g->has_token_embd = weights->token_embd != NULL;
     g->has_output_head = weights_have_output_head(weights);
     g->glm53 = ds4_model_is_glm53();
+    g->kimi = ds4_model_is_kimi_linear();
     if (require_token_embd && !g->has_token_embd) {
         fprintf(stderr, "ds4: GLM Metal graph layer slice requires token embeddings\n");
         return false;
@@ -47167,8 +48188,9 @@ static bool glm_graph_alloc_slice(
     }
     g->ctx_cap = glm_graph_full_attention_cap(g->ctx_size,
                                               g->ssd_streaming);
-    g->full_kv_cache = glm_graph_expanded_kv_cache_enabled(g->ssd_streaming);
-    g->compact_cache_cap =
+    g->full_kv_cache = g->kimi ||
+        glm_graph_expanded_kv_cache_enabled(g->ssd_streaming);
+    g->compact_cache_cap = g->kimi ? 0u :
         glm_graph_compact_cache_initial_cap(g->ctx_size, g->ctx_cap);
     g->indexed_prefill_cap =
         g->compact_cache_cap != 0 ?
@@ -47233,7 +48255,7 @@ static bool glm_graph_alloc_slice(
         (uint64_t)indexer_selected_pools * sizeof(uint32_t);
     const uint64_t qk_low_bytes =
         (uint64_t)DS4_N_HEAD * DS4_N_KV_LORA * sizeof(float);
-    const uint32_t split_attn_blocks = glm_graph_indexed_decode_split_blocks();
+    const uint32_t split_attn_blocks = glm_graph_attention_partial_blocks();
     const uint64_t attn_partial_lora_bytes =
         (uint64_t)split_attn_blocks * qk_low_bytes;
     const uint64_t attn_partial_ms_bytes =
@@ -47282,8 +48304,10 @@ static bool glm_graph_alloc_slice(
         (uint64_t)DS4_N_EXPERT_USED * DS4_N_FF_EXP * sizeof(float);
     const uint64_t routed_down_bytes =
         (uint64_t)DS4_N_EXPERT_USED * DS4_N_EMBD * sizeof(float);
-    const uint32_t attention_layers = g->glm53 ?
-        g->indexer_full_layers : g->layer_count;
+    uint32_t attention_layers = 0;
+    for (uint32_t il = g->layer_start; il <= g->layer_end; il++) {
+        if (!glm_graph_layer_is_kda(g, il)) attention_layers++;
+    }
     const double cache_gib =
         (double)(attention_layers * (key_cache_bytes + value_cache_bytes)) /
         (1024.0 * 1024.0 * 1024.0);
@@ -47361,6 +48385,8 @@ static bool glm_graph_alloc_slice(
         DS4_GLM_GRAPH_ALLOC_TENSOR(g->hc_output, emb_bytes);
         DS4_GLM_GRAPH_ALLOC_TENSOR(g->hc_mean_weights,
                                    (uint64_t)DS4_N_HC * sizeof(float));
+    }
+    if (g->glm53 || g->kimi) {
         DS4_GLM_GRAPH_ALLOC_TENSOR(g->kda_q, kda_projection_bytes);
         DS4_GLM_GRAPH_ALLOC_TENSOR(g->kda_k, kda_projection_bytes);
         DS4_GLM_GRAPH_ALLOC_TENSOR(g->kda_v, kda_projection_bytes);
@@ -47483,11 +48509,11 @@ static bool glm_graph_alloc_slice(
             ok = false; \
         } \
     } while (0)
-        if (g->full_kv_cache && !ds4_glm53_layer_is_kda(il)) {
+        if (g->full_kv_cache && !glm_graph_layer_is_kda(g, il)) {
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_key_cache[il], key_cache_bytes);
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_value_cache[il], value_cache_bytes);
         }
-        if (g->compact_cache_cap != 0 && !ds4_glm53_layer_is_kda(il)) {
+        if (g->compact_cache_cap != 0 && !glm_graph_layer_is_kda(g, il)) {
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_kv_lora_cache[il], compact_kv_lora_bytes);
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_k_rope_cache[il],
                                             compact_k_rope_bytes != 0 ?
@@ -47514,7 +48540,7 @@ static bool glm_graph_alloc_slice(
                 }
             }
         }
-        if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+        if (glm_graph_layer_is_kda(g, il)) {
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_kda_conv_state[il],
                                             kda_conv_state_bytes);
             DS4_GLM_GRAPH_ALLOC_TENSOR_TIER(g->layer_kda_recurrent_state[il],
@@ -47528,15 +48554,16 @@ static bool glm_graph_alloc_slice(
         glm_graph_free(g);
         return false;
     }
-    if (g->glm53) {
-        if (ds4_gpu_tensor_fill_f32(g->hc_mean_weights,
+    if (g->glm53 || g->kimi) {
+        if (g->glm53 &&
+            ds4_gpu_tensor_fill_f32(g->hc_mean_weights,
                                     1.0f / (float)DS4_N_HC,
                                     DS4_N_HC) == 0) {
             glm_graph_free(g);
             return false;
         }
         for (uint32_t il = g->layer_start; il <= g->layer_end; il++) {
-            if (ds4_glm53_layer_is_kda(il)) {
+            if (glm_graph_layer_is_kda(g, il)) {
                 if (ds4_gpu_tensor_fill_f32(g->layer_kda_conv_state[il], 0.0f,
                                             kda_conv_state_bytes / sizeof(float)) == 0 ||
                     ds4_gpu_tensor_fill_f32(g->layer_kda_recurrent_state[il], 0.0f,
@@ -47560,9 +48587,12 @@ static bool glm_graph_alloc_slice(
         }
     }
     if (g->glm53 &&
-        !glm53_graph_prefill_workspace_ensure(g, g->batch_cap)) {
+        !glm53_graph_prefill_workspace_ensure(
+            g,
+            g->batch_cap < DS4_GLM53_PREFILL_CHUNK_TOKENS ?
+                g->batch_cap : DS4_GLM53_PREFILL_CHUNK_TOKENS)) {
         fprintf(stderr,
-                "ds4: GLM graph could not allocate the static GLM-5.3 "
+                "ds4: GLM graph could not allocate the static linear-attention "
                 "prefill workspace\n");
         glm_graph_free(g);
         return false;
@@ -47636,7 +48666,7 @@ static void glm53_graph_prefill_workspace_free(ds4_glm_gpu_graph *g) {
 static bool glm53_graph_prefill_workspace_ensure(
         ds4_glm_gpu_graph *g,
         uint32_t rows) {
-    if (!g || !g->glm53 || rows == 0 ||
+    if (!g || (!g->glm53 && !g->kimi) || rows == 0 ||
         rows > DS4_GLM53_PREFILL_CHUNK_TOKENS) {
         return false;
     }
@@ -47655,12 +48685,14 @@ static bool glm53_graph_prefill_workspace_ensure(
         g->field_ = ds4_gpu_tensor_alloc((uint64_t)cap * (elems_) * sizeof(float)); \
         if (!g->field_) goto fail; \
     } while (0)
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_cur, hc_dim);
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_next, hc_dim);
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_flat, hc_dim);
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_mix, hc_mix);
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_split, hc_mix);
-    DS4_GLM53_PREFILL_ALLOC(batch_hc_after_attn, hc_dim);
+    if (g->glm53) {
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_cur, hc_dim);
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_next, hc_dim);
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_flat, hc_dim);
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_mix, hc_mix);
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_split, hc_mix);
+        DS4_GLM53_PREFILL_ALLOC(batch_hc_after_attn, hc_dim);
+    }
     DS4_GLM53_PREFILL_ALLOC(batch_kda_q, projection);
     DS4_GLM53_PREFILL_ALLOC(batch_kda_k, projection);
     DS4_GLM53_PREFILL_ALLOC(batch_kda_v, projection);
@@ -49502,6 +50534,217 @@ static bool glm_graph_encode_ffn_one_from(
                                                 true,
                                                 stage_profile,
                                                 stage_t0);
+}
+
+/* End-to-end one-token Kimi CUDA graph bring-up.  This deliberately reuses
+ * the production GLM/KDA/FFN primitives while keeping a compact diagnostic
+ * workspace; persistent per-layer state is added by the session graph next. */
+static int kimi_gpu_first_token_full_test(
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token,
+        const float       *cpu_logits) {
+    const uint64_t emb_bytes = (uint64_t)DS4_N_EMBD * sizeof(float);
+    const uint64_t projection =
+        (uint64_t)DS4_KIMI_KDA_NUM_HEADS * DS4_N_KDA_HEAD_DIM;
+    const uint64_t projection_bytes = projection * sizeof(float);
+    const uint64_t heads_dim = (uint64_t)DS4_N_HEAD * DS4_N_VALUE_MLA;
+    const uint64_t dense_hidden = weights->layer[0].ffn_gate->dim[1];
+    const uint64_t routed_mid = (uint64_t)DS4_N_EXPERT_USED * DS4_N_FF_EXP;
+    const uint64_t ffn_scratch = dense_hidden > routed_mid ? dense_hidden : routed_mid;
+    const uint64_t conv_bytes =
+        3u * (DS4_N_KDA_CONV - 1u) * projection_bytes;
+    const uint64_t recurrent_bytes =
+        projection * DS4_N_KDA_HEAD_DIM * sizeof(float);
+    float *gpu_logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
+
+    ds4_glm_gpu_graph g;
+    memset(&g, 0, sizeof(g));
+    g.weights = weights;
+    g.routed_gate = ds4_gpu_tensor_alloc(routed_mid * sizeof(float));
+    g.routed_up = ds4_gpu_tensor_alloc(routed_mid * sizeof(float));
+    g.routed_down = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT_USED * emb_bytes);
+    g.router_logits = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT * sizeof(float));
+    g.router_probs = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT * sizeof(float));
+    g.router_selected = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT_USED * sizeof(int32_t));
+    g.router_weights = ds4_gpu_tensor_alloc(
+        (uint64_t)DS4_N_EXPERT_USED * sizeof(float));
+
+#define KIMI_FULL_ALLOC(name_, elems_) \
+    ds4_gpu_tensor *name_ = ds4_gpu_tensor_alloc((uint64_t)(elems_) * sizeof(float))
+    KIMI_FULL_ALLOC(cur, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(next, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(attn_norm, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(attn_out, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(after_attn, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(ffn_norm, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(ffn_gate, ffn_scratch);
+    KIMI_FULL_ALLOC(ffn_up, ffn_scratch);
+    KIMI_FULL_ALLOC(ffn_mid, ffn_scratch);
+    KIMI_FULL_ALLOC(ffn_out, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(ffn_sum, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(kv_raw, DS4_N_KV_LORA + DS4_N_ROT);
+    KIMI_FULL_ALLOC(kv_norm, DS4_N_KV_LORA);
+    KIMI_FULL_ALLOC(heads, heads_dim);
+    KIMI_FULL_ALLOC(kda_q, projection);
+    KIMI_FULL_ALLOC(kda_k, projection);
+    KIMI_FULL_ALLOC(kda_v, projection);
+    KIMI_FULL_ALLOC(kda_lowrank, DS4_N_KDA_HEAD_DIM);
+    KIMI_FULL_ALLOC(kda_raw_gate, projection);
+    KIMI_FULL_ALLOC(kda_raw_beta, DS4_KIMI_KDA_NUM_HEADS);
+    KIMI_FULL_ALLOC(kda_output_gate, projection);
+    KIMI_FULL_ALLOC(kda_out, projection);
+    KIMI_FULL_ALLOC(output_norm, DS4_N_EMBD);
+    KIMI_FULL_ALLOC(logits, DS4_N_VOCAB);
+#undef KIMI_FULL_ALLOC
+    ds4_gpu_tensor *conv_state = ds4_gpu_tensor_alloc(conv_bytes);
+    ds4_gpu_tensor *recurrent_state = ds4_gpu_tensor_alloc(recurrent_bytes);
+
+    g.attn_norm = attn_norm;
+    g.attn_out = attn_out;
+    g.after_attn = after_attn;
+    g.next = next;
+    g.ffn_norm = ffn_norm;
+    g.ffn_gate = ffn_gate;
+    g.ffn_up = ffn_up;
+    g.ffn_mid = ffn_mid;
+    g.ffn_out = ffn_out;
+    g.ffn_sum = ffn_sum;
+    g.kda_q = kda_q;
+    g.kda_k = kda_k;
+    g.kda_v = kda_v;
+    g.kda_lowrank = kda_lowrank;
+    g.kda_raw_gate = kda_raw_gate;
+    g.kda_raw_beta = kda_raw_beta;
+    g.kda_output_gate = kda_output_gate;
+    g.kda_out = kda_out;
+
+    int ok = g.routed_gate && g.routed_up && g.routed_down &&
+        g.router_logits && g.router_probs && g.router_selected &&
+        g.router_weights && cur && next && attn_norm && attn_out &&
+        after_attn && ffn_norm && ffn_gate && ffn_up && ffn_mid &&
+        ffn_out && ffn_sum && kv_raw && kv_norm && heads && kda_q &&
+        kda_k && kda_v && kda_lowrank && kda_raw_gate && kda_raw_beta &&
+        kda_output_gate && kda_out && output_norm && logits &&
+        conv_state && recurrent_state;
+    if (ok) ok = ds4_gpu_embed_token_quant_tensor(
+        cur, model->map, model->size, weights->token_embd->abs_offset,
+        weights->token_embd->type, DS4_N_VOCAB, (uint32_t)token,
+        DS4_N_EMBD) != 0;
+
+    for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+        const ds4_layer_weights *l = &weights->layer[il];
+        ok = ds4_gpu_rms_norm_weight_tensor(
+            attn_norm, cur, model->map, model->size,
+            l->attn_norm->abs_offset, DS4_N_EMBD, DS4_RMS_EPS) != 0;
+        if (ok && DS4_KIMI_IS_KDA_LAYER(il)) {
+            g.layer_kda_conv_state[il] = conv_state;
+            g.layer_kda_recurrent_state[il] = recurrent_state;
+            ok = ds4_gpu_tensor_fill_f32(
+                conv_state, 0.0f, conv_bytes / sizeof(float)) != 0;
+            if (ok) ok = ds4_gpu_tensor_fill_f32(
+                recurrent_state, 0.0f, recurrent_bytes / sizeof(float)) != 0;
+            if (ok) ok = glm53_graph_kda_attention(&g, model, l, il);
+            g.layer_kda_conv_state[il] = NULL;
+            g.layer_kda_recurrent_state[il] = NULL;
+        } else if (ok) {
+            const uint64_t raw_dim = l->attn_kv_a_mqa->dim[1];
+            ok = ds4_gpu_matmul_quant_tensor(
+                kv_raw, model->map, model->size,
+                l->attn_kv_a_mqa->abs_offset, l->attn_kv_a_mqa->type,
+                DS4_N_EMBD, raw_dim, attn_norm, 1) != 0;
+            if (ok) ok = ds4_gpu_rms_norm_weight_tensor(
+                kv_norm, kv_raw, model->map, model->size,
+                l->attn_kv_a_norm->abs_offset,
+                DS4_N_KV_LORA, DS4_RMS_EPS) != 0;
+            if (ok) ok = ds4_gpu_matmul_quant_tensor(
+                heads, model->map, model->size,
+                l->attn_v_b->abs_offset, l->attn_v_b->type,
+                DS4_N_KV_LORA, heads_dim, kv_norm, 1) != 0;
+            if (ok) ok = ds4_gpu_matmul_quant_tensor(
+                attn_out, model->map, model->size,
+                l->attn_output->abs_offset, l->attn_output->type,
+                heads_dim, DS4_N_EMBD, heads, 1) != 0;
+        }
+        if (ok) ok = ds4_gpu_add_rms_norm_weight_tensor(
+            ffn_norm, after_attn, cur, attn_out,
+            model->map, model->size, l->ffn_norm->abs_offset,
+            DS4_N_EMBD, DS4_RMS_EPS) != 0;
+        if (ok) ok = glm_graph_encode_ffn_one_normed_from(
+            &g, model, l, il, 0, ffn_norm, after_attn, next,
+            ffn_gate, ffn_up, ffn_mid, ffn_out, ffn_sum, attn_out,
+            true, false, NULL);
+        if (ok) {
+            ds4_gpu_tensor *swap = cur; cur = next; next = swap;
+            g.next = next;
+        }
+    }
+    if (ok) ok = ds4_gpu_rms_norm_weight_tensor(
+        output_norm, cur, model->map, model->size,
+        weights->output_norm->abs_offset, DS4_N_EMBD, DS4_RMS_EPS) != 0;
+    if (ok) ok = ds4_gpu_matmul_quant_tensor(
+        logits, model->map, model->size, weights->output->abs_offset,
+        weights->output->type, DS4_N_EMBD, DS4_N_VOCAB,
+        output_norm, 1) != 0;
+    if (ok) ok = ds4_gpu_tensor_read(
+        logits, 0, gpu_logits,
+        (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    if (ok) {
+        double sx = 0.0, sy = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0;
+        double sq = 0.0;
+        float max_abs = 0.0f;
+        uint32_t cpu_top = 0, gpu_top = 0;
+        for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
+            const double xval = cpu_logits[i], yval = gpu_logits[i];
+            const float err = fabsf((float)(xval - yval));
+            if (!isfinite(yval)) ok = 0;
+            if (err > max_abs) max_abs = err;
+            sq += (xval - yval) * (xval - yval);
+            sx += xval; sy += yval; sxx += xval * xval;
+            syy += yval * yval; sxy += xval * yval;
+            if (cpu_logits[i] > cpu_logits[cpu_top]) cpu_top = i;
+            if (gpu_logits[i] > gpu_logits[gpu_top]) gpu_top = i;
+        }
+        const double n = DS4_N_VOCAB;
+        const double corr = (n * sxy - sx * sy) /
+            sqrt((n * sxx - sx * sx) * (n * syy - sy * sy));
+        const double rmse = sqrt(sq / n);
+        printf("  kimi_full_gpu_logits: max_abs=%g rmse=%g corr=%g "
+               "top1_cpu=%u top1_gpu=%u%s\n",
+               (double)max_abs, rmse, corr, cpu_top, gpu_top,
+               ok && corr >= 0.98 && cpu_top == gpu_top ? " [ok]" : " [mismatch]");
+        ok = ok && corr >= 0.98 && cpu_top == gpu_top;
+        const char *out_path = getenv("DS4_KIMI_GPU_FT_OUT");
+        if (out_path && out_path[0]) {
+            (void)write_f32_binary_file(out_path, gpu_logits, DS4_N_VOCAB);
+        }
+    } else {
+        fprintf(stderr, "ds4: Kimi full CUDA first-token forward failed\n");
+    }
+
+    ds4_gpu_tensor_free(recurrent_state); ds4_gpu_tensor_free(conv_state);
+    ds4_gpu_tensor_free(logits); ds4_gpu_tensor_free(output_norm);
+    ds4_gpu_tensor_free(kda_out); ds4_gpu_tensor_free(kda_output_gate);
+    ds4_gpu_tensor_free(kda_raw_beta); ds4_gpu_tensor_free(kda_raw_gate);
+    ds4_gpu_tensor_free(kda_lowrank); ds4_gpu_tensor_free(kda_v);
+    ds4_gpu_tensor_free(kda_k); ds4_gpu_tensor_free(kda_q);
+    ds4_gpu_tensor_free(heads); ds4_gpu_tensor_free(kv_norm);
+    ds4_gpu_tensor_free(kv_raw); ds4_gpu_tensor_free(ffn_sum);
+    ds4_gpu_tensor_free(ffn_out); ds4_gpu_tensor_free(ffn_mid);
+    ds4_gpu_tensor_free(ffn_up); ds4_gpu_tensor_free(ffn_gate);
+    ds4_gpu_tensor_free(ffn_norm); ds4_gpu_tensor_free(after_attn);
+    ds4_gpu_tensor_free(attn_out); ds4_gpu_tensor_free(attn_norm);
+    ds4_gpu_tensor_free(next); ds4_gpu_tensor_free(cur);
+    ds4_gpu_tensor_free(g.router_weights); ds4_gpu_tensor_free(g.router_selected);
+    ds4_gpu_tensor_free(g.router_probs); ds4_gpu_tensor_free(g.router_logits);
+    ds4_gpu_tensor_free(g.routed_down); ds4_gpu_tensor_free(g.routed_up);
+    ds4_gpu_tensor_free(g.routed_gate);
+    free(gpu_logits);
+    return ok ? 0 : 1;
 }
 
 static ds4_gpu_tensor *glm_graph_tensor_row_view_strided(
@@ -52112,7 +53355,8 @@ static bool glm_graph_forward_tokens(
         uint32_t           work_total) {
     if (!g || !model || !weights || !tokens ||
         n_tokens == 0 ||
-        (g->glm53 && n_tokens > DS4_GLM53_PREFILL_CHUNK_TOKENS) ||
+        ((g->glm53 || g->kimi) &&
+         n_tokens > DS4_GLM53_PREFILL_CHUNK_TOKENS) ||
         g->layer_count == 0 ||
         !glm_graph_span_fits_context(g, pos0, n_tokens)) {
         return false;
@@ -52135,7 +53379,8 @@ static bool glm_graph_forward_tokens(
     if (!input_hc && !g->has_token_embd) return false;
     if (input_hc && image_count != 0) return false;
     if (logits_out && !g->has_output_head) return false;
-    if (g->glm53 && !glm53_graph_prefill_workspace_ensure(g, n_tokens)) {
+    if ((g->glm53 || g->kimi) &&
+        !glm53_graph_prefill_workspace_ensure(g, n_tokens)) {
         return false;
     }
     glm_graph_reset_prefill_seed_capture(g);
@@ -52535,11 +53780,12 @@ static bool glm_graph_forward_tokens(
             }
         }
         const ds4_layer_weights *l = &weights->layer[il];
-        const bool glm53_kda = g->glm53 && ds4_glm53_layer_is_kda(il);
-        const uint32_t kv_raw_dim = glm53_kda ? 0u :
+        const bool linear_kda = glm_graph_layer_is_kda(g, il);
+        const uint32_t kv_raw_dim = linear_kda ? 0u :
             (uint32_t)l->attn_kv_a_mqa->dim[1];
         const float rope_base = layer_rope_freq_base(il);
         const float rope_scale = layer_rope_freq_scale(il);
+        const float kv_rope_scale = g->kimi ? 0.0f : rope_scale;
         const uint32_t cache_len = pos0 + n_tokens;
         const uint64_t residual_elems = (uint64_t)n_tokens * DS4_N_EMBD;
         const bool layer_stage_profile = metal_graph_layer_stage_profile_enabled(il);
@@ -52617,8 +53863,8 @@ static bool glm_graph_forward_tokens(
                                                      DS4_RMS_EPS) != 0;
         }
         DS4_GLM_PROFILE_PREFILL_STAGE("glm_attn", "attn_norm");
-        failed_stage = glm53_kda ? "KDA attention" : "DSA attention";
-        if (ok && glm53_kda) {
+        failed_stage = linear_kda ? "KDA attention" : "MLA attention";
+        if (ok && linear_kda) {
             ok = glm53_graph_kda_attention_rows(g,
                                                 model,
                                                 l,
@@ -52654,30 +53900,41 @@ static bool glm_graph_forward_tokens(
             }
             goto glm53_batch_attention_done;
         }
-        failed_stage = "DSA query projection";
-        if (ok) ok = glm_graph_matmul_q8_0_tensor(g->batch_q_rank,
-                                                  model,
-                                                  l->attn_q_a->abs_offset,
-                                                  DS4_N_EMBD,
-                                                  DS4_N_LORA_Q,
-                                                  g->batch_attn_norm,
-                                                  n_tokens);
-        if (ok) ok = ds4_gpu_rms_norm_weight_rows_tensor(g->batch_q_rank_norm,
-                                                         g->batch_q_rank,
-                                                         model->map,
-                                                         model->size,
-                                                         l->attn_q_a_norm->abs_offset,
-                                                         DS4_N_LORA_Q,
-                                                         n_tokens,
-                                                         DS4_RMS_EPS) != 0;
-        if (ok) ok = glm_graph_matmul_q8_0_tensor(g->batch_q,
-                                                  model,
-                                                  l->attn_q_b->abs_offset,
-                                                  DS4_N_LORA_Q,
-                                                  g->q_dim,
-                                                  g->batch_q_rank_norm,
-                                                  n_tokens);
-        if (ok && DS4_N_ROT != 0) ok = ds4_gpu_rope_tail_tensor(
+        failed_stage = "MLA query projection";
+        if (ok && g->kimi) {
+            ok = glm53_graph_matmul_rows(g->batch_q,
+                                         model,
+                                         l->attn_q_a,
+                                         DS4_N_EMBD,
+                                         (uint32_t)g->q_dim,
+                                         g->batch_attn_norm,
+                                         n_tokens);
+        } else if (ok) {
+            ok = glm_graph_matmul_q8_0_tensor(g->batch_q_rank,
+                                              model,
+                                              l->attn_q_a->abs_offset,
+                                              DS4_N_EMBD,
+                                              DS4_N_LORA_Q,
+                                              g->batch_attn_norm,
+                                              n_tokens);
+            if (ok) ok = ds4_gpu_rms_norm_weight_rows_tensor(
+                    g->batch_q_rank_norm,
+                    g->batch_q_rank,
+                    model->map,
+                    model->size,
+                    l->attn_q_a_norm->abs_offset,
+                    DS4_N_LORA_Q,
+                    n_tokens,
+                    DS4_RMS_EPS) != 0;
+            if (ok) ok = glm_graph_matmul_q8_0_tensor(g->batch_q,
+                                                      model,
+                                                      l->attn_q_b->abs_offset,
+                                                      DS4_N_LORA_Q,
+                                                      g->q_dim,
+                                                      g->batch_q_rank_norm,
+                                                      n_tokens);
+        }
+        if (ok && !g->kimi && DS4_N_ROT != 0) ok = ds4_gpu_rope_tail_tensor(
                                               g->batch_q,
                                               n_tokens,
                                               DS4_N_HEAD,
@@ -52692,7 +53949,7 @@ static bool glm_graph_forward_tokens(
                                               1.0f,
                                               DS4_ROPE_YARN_BETA_FAST,
                                               DS4_ROPE_YARN_BETA_SLOW) != 0;
-        if (ok) {
+        if (ok && !g->kimi) {
             metal_graph_debug_dump_tensor(
                     "glm53_dsa_q_lora", g->batch_q_rank,
                     (uint64_t)n_tokens * DS4_N_LORA_Q, il, pos0);
@@ -52877,7 +54134,7 @@ static bool glm_graph_forward_tokens(
                                                              DS4_N_VALUE_MLA,
                                                              0,
                                                              rope_base,
-                                                             rope_scale,
+                                                             kv_rope_scale,
                                                              0.0f,
                                                              1.0f,
                                                              DS4_ROPE_YARN_BETA_FAST,
@@ -52900,7 +54157,7 @@ static bool glm_graph_forward_tokens(
                                                        DS4_N_VALUE_MLA,
                                                        0,
                                                        rope_base,
-                                                       rope_scale,
+                                                       kv_rope_scale,
                                                        0.0f,
                                                        1.0f,
                                                        DS4_ROPE_YARN_BETA_FAST,
@@ -53392,7 +54649,13 @@ glm53_batch_attention_done:
 }
 
 static uint32_t glm_graph_prefill_chunk_tokens(uint32_t full_attention_cap) {
-    return full_attention_cap ? full_attention_cap : DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT;
+    uint32_t cap = full_attention_cap ?
+        full_attention_cap : DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT;
+    if (ds4_model_is_kimi_linear() &&
+        cap > DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT) {
+        cap = DS4_GLM_METAL_FULL_ATTN_DEFAULT_CONTEXT;
+    }
+    return cap;
 }
 
 static bool glm_graph_forward_indexed_tokens(
@@ -55502,6 +56765,167 @@ static bool glm_graph_streaming_decode_sync_each_layer(void) {
 #endif
 }
 
+static bool kimi_graph_forward_token(
+        ds4_glm_gpu_graph *g,
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token,
+        uint32_t           pos,
+        float             *logits_out) {
+    if (!g || !g->kimi || !model || !weights ||
+        token < 0 || token >= (int)DS4_N_VOCAB ||
+        pos >= g->ctx_cap || !g->full_kv_cache) {
+        return false;
+    }
+    bool ok = glm_graph_begin_commands_if_needed();
+    if (ok) ok = ds4_gpu_embed_token_quant_tensor(
+        g->cur, model->map, model->size, weights->token_embd->abs_offset,
+        weights->token_embd->type, DS4_N_VOCAB, (uint32_t)token,
+        DS4_N_EMBD) != 0;
+    for (uint32_t il = g->layer_start; ok && il <= g->layer_end; il++) {
+        const ds4_layer_weights *l = &weights->layer[il];
+        ok = ds4_gpu_rms_norm_weight_tensor(
+            g->attn_norm, g->cur, model->map, model->size,
+            l->attn_norm->abs_offset, DS4_N_EMBD, DS4_RMS_EPS) != 0;
+        if (ok && glm_graph_layer_is_kda(g, il)) {
+            ok = glm53_graph_kda_attention(g, model, l, il);
+        } else if (ok) {
+            const uint32_t kv_raw_dim = (uint32_t)l->attn_kv_a_mqa->dim[1];
+            ok = glm53_graph_matmul(g->q, model, l->attn_q_a,
+                                    DS4_N_EMBD, (uint32_t)g->q_dim,
+                                    g->attn_norm);
+            if (ok) ok = glm53_graph_matmul(g->kv_raw, model,
+                                             l->attn_kv_a_mqa,
+                                             DS4_N_EMBD, kv_raw_dim,
+                                             g->attn_norm);
+            if (ok) ok = ds4_gpu_rms_norm_weight_tensor(
+                g->kv_norm, g->kv_raw, model->map, model->size,
+                l->attn_kv_a_norm->abs_offset,
+                DS4_N_KV_LORA, DS4_RMS_EPS) != 0;
+            if (ok) ok = ds4_gpu_glm_k_b_project_typed_tensor(
+                g->k_nope, g->kv_norm, model->map, model->size,
+                l->attn_k_b->abs_offset, l->attn_k_b->type, 1,
+                DS4_N_KV_LORA, (uint32_t)g->q_nope, DS4_N_HEAD) != 0;
+            if (ok) ok = glm53_graph_matmul(g->value, model, l->attn_v_b,
+                                             DS4_N_KV_LORA,
+                                             (uint32_t)g->heads_dim,
+                                             g->kv_norm);
+            if (ok) ok = ds4_gpu_glm_build_kv_cache_tensor(
+                g->layer_key_cache[il], g->layer_value_cache[il],
+                g->kv_raw, g->k_nope, g->value, pos, 1, g->ctx_cap,
+                DS4_N_HEAD, kv_raw_dim, DS4_N_KV_LORA,
+                (uint32_t)g->q_nope, DS4_N_ROT, DS4_N_VALUE_MLA,
+                0, DS4_ROPE_FREQ_BASE, 0.0f, 0.0f, 1.0f,
+                DS4_ROPE_YARN_BETA_FAST, DS4_ROPE_YARN_BETA_SLOW,
+                true) != 0;
+            if (ok) {
+                const uint32_t cache_len = pos + 1u;
+                const uint32_t split_capacity =
+                    glm_graph_attention_partial_blocks() * 2048u;
+                const bool use_split = cache_len >= 1024u &&
+                    cache_len <= split_capacity &&
+                    getenv("DS4_CUDA_KIMI_NO_SPLIT_ATTN") == NULL;
+                ok = use_split ?
+                    ds4_gpu_glm_attention_full_decode_split_tensor(
+                        g->heads, g->attn_partial_lora, g->attn_partial_ms,
+                        g->q, g->layer_key_cache[il],
+                        g->layer_value_cache[il], cache_len, g->ctx_cap,
+                        DS4_N_HEAD, DS4_N_KEY_MLA, DS4_N_VALUE_MLA,
+                        glm_graph_attention_partial_blocks(), true) != 0 :
+                    ds4_gpu_glm_attention_full_tensor(
+                        g->heads, g->q, g->layer_key_cache[il],
+                        g->layer_value_cache[il], pos, 1, cache_len,
+                        g->ctx_cap, DS4_N_HEAD, DS4_N_KEY_MLA,
+                        DS4_N_VALUE_MLA, true) != 0;
+            }
+            if (ok) ok = glm53_graph_matmul(g->attn_out, model,
+                                             l->attn_output,
+                                             (uint32_t)g->heads_dim,
+                                             DS4_N_EMBD, g->heads);
+        }
+        if (ok) ok = ds4_gpu_add_rms_norm_weight_tensor(
+            g->ffn_norm, g->after_attn, g->cur, g->attn_out,
+            model->map, model->size, l->ffn_norm->abs_offset,
+            DS4_N_EMBD, DS4_RMS_EPS) != 0;
+        if (ok) ok = glm_graph_encode_ffn_one_normed_from(
+            g, model, l, il, pos, g->ffn_norm, g->after_attn, g->next,
+            g->ffn_gate, g->ffn_up, g->ffn_mid, g->ffn_out, g->ffn_sum,
+            g->attn_out, true, false, NULL);
+        if (ok) {
+            ds4_gpu_tensor *tmp = g->cur;
+            g->cur = g->next;
+            g->next = tmp;
+        }
+    }
+    if (ok && logits_out) ok = glm_graph_encode_output_head(g, model, weights);
+    if (ok) ok = glm_graph_end_commands_if_active();
+    if (ok && logits_out) ok = ds4_gpu_tensor_read(
+        g->logits, 0, logits_out,
+        (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    if (!ok) (void)ds4_gpu_synchronize();
+    return ok;
+}
+
+static int kimi_gpu_persistent_graph_test(
+        const ds4_model   *model,
+        const ds4_weights *weights,
+        int                token,
+        const float       *cpu_logits) {
+    ds4_glm_gpu_graph g;
+    memset(&g, 0, sizeof(g));
+    if (!glm_graph_alloc(&g, model, weights, 16, false, false)) {
+        fprintf(stderr, "ds4: Kimi persistent CUDA graph allocation failed\n");
+        return 1;
+    }
+    float *gpu = xmalloc((size_t)DS4_N_VOCAB * sizeof(float));
+    int ok = kimi_graph_forward_token(&g, model, weights, token, 0, gpu);
+    uint32_t cpu_top = 0, gpu_top = 0;
+    double sq = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0;
+    if (ok) {
+        for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
+            const double x = cpu_logits[i], y = gpu[i];
+            if (!isfinite(y)) ok = 0;
+            const double d = x - y;
+            sq += d * d; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+            if (cpu_logits[i] > cpu_logits[cpu_top]) cpu_top = i;
+            if (gpu[i] > gpu[gpu_top]) gpu_top = i;
+        }
+    }
+    double corr = 0.0, rmse = 0.0;
+    if (ok) {
+        const double n = DS4_N_VOCAB;
+        corr = (n * sxy - sx * sy) /
+            sqrt((n * sxx - sx * sx) * (n * syy - sy * sy));
+        rmse = sqrt(sq / n);
+        ok = corr >= 0.98 && cpu_top == gpu_top;
+    }
+    printf("  kimi_persistent_graph_pos0: rmse=%g corr=%g "
+           "top1_cpu=%u top1_gpu=%u%s\n",
+           rmse, corr, cpu_top, gpu_top, ok ? " [ok]" : " [mismatch]");
+
+    /* Decode one more token without clearing KDA or MLA state.  A dedicated
+     * multi-token oracle is added separately; here non-finite output catches
+     * cache addressing and recurrent-state lifetime failures immediately. */
+    if (ok) ok = kimi_graph_forward_token(&g, model, weights,
+                                           (int)gpu_top, 1, gpu);
+    if (ok) {
+        gpu_top = 0;
+        for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
+            if (!isfinite(gpu[i])) { ok = 0; break; }
+            if (gpu[i] > gpu[gpu_top]) gpu_top = i;
+        }
+        const char *pos1_out = getenv("DS4_KIMI_GPU_POS1_OUT");
+        if (pos1_out && pos1_out[0]) {
+            (void)write_f32_binary_file(pos1_out, gpu, DS4_N_VOCAB);
+        }
+    }
+    printf("  kimi_persistent_graph_pos1: top1=%u%s\n",
+           gpu_top, ok ? " [finite]" : " [failed]");
+    free(gpu);
+    glm_graph_free(&g);
+    return ok ? 0 : 1;
+}
+
 static bool glm_graph_forward_token(
         ds4_glm_gpu_graph *g,
         const ds4_model   *model,
@@ -55512,6 +56936,13 @@ static bool glm_graph_forward_token(
         float             *output_hc,
         float             *logits_out,
         bool               defer_completion) {
+    if (g && g->kimi) {
+        (void)input_hc;
+        (void)output_hc;
+        if (defer_completion) return false;
+        return kimi_graph_forward_token(g, model, weights, token, pos,
+                                        logits_out);
+    }
 #define DS4_GLM_FT_FAIL(why) do { \
         if (getenv("DS4_GLM_TP_DEBUG")) \
             fprintf(stderr, "ds4: glm forward_token fail pos=%u: %s\n", pos, why); \
@@ -60925,7 +62356,7 @@ static uint64_t session_glm_payload_live_tensor_bytes(const ds4_glm_gpu_graph *g
     if (!g) return 0;
     uint64_t bytes = 0;
     for (uint32_t il = 0; il < g->normal_layers; il++) {
-        if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+        if (glm_graph_layer_is_kda(g, il)) {
             bytes += session_glm_kda_conv_state_bytes();
             bytes += session_glm_kda_recurrent_state_bytes();
             continue;
@@ -60978,7 +62409,8 @@ static bool glm_layer_payload_tensor_bytes(uint32_t layer,
         value_dim != DS4_N_VALUE_MLA)
         return false;
 
-    if (ds4_model_is_glm53() && ds4_glm53_layer_is_kda(layer)) {
+    if ((ds4_model_is_glm53() && ds4_glm53_layer_is_kda(layer)) ||
+        (ds4_model_is_kimi_linear() && DS4_KIMI_IS_KDA_LAYER(layer))) {
         if (compact_live != 0 || index_live != 0) return false;
         *out = session_glm_kda_conv_state_bytes() +
                session_glm_kda_recurrent_state_bytes();
@@ -61237,7 +62669,9 @@ static void ds4_session_dspark_capture_note_checkpoint(ds4_session *s) {
 }
 
 static bool ds4_session_is_glm(const ds4_session *s) {
-    return s && s->engine && DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA;
+    return s && s->engine &&
+           (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+            ds4_model_is_kimi_linear());
 }
 
 static bool ds4_session_is_qwen4(const ds4_session *s) {
@@ -61479,7 +62913,7 @@ int ds4_session_save_layer_payload(ds4_session *s, FILE *fp,
         uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
         int rc = 0;
         for (uint32_t il = layer_start; rc == 0 && il <= layer_end; il++) {
-            if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+            if (glm_graph_layer_is_kda(g, il)) {
                 rc = payload_write_tensor_span(
                     fp, g->layer_kda_conv_state[il], 0,
                     session_glm_kda_conv_state_bytes(), buf,
@@ -61832,7 +63266,7 @@ int ds4_session_load_layer_payload(ds4_session *s, FILE *fp,
         int rc = 0;
         for (uint32_t i = 0; rc == 0 && i < n_layers; i++) {
             const uint32_t il = layer_start + i;
-            if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+            if (glm_graph_layer_is_kda(g, il)) {
                 rc = payload_read_tensor_span(
                     fp, g->layer_kda_conv_state[il], 0,
                     session_glm_kda_conv_state_bytes(), buf,
@@ -62910,7 +64344,7 @@ int ds4_session_save_payload(ds4_session *s, FILE *fp, char *err, size_t errlen)
         uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
         int rc = 0;
         for (uint32_t il = 0; rc == 0 && il < g->normal_layers; il++) {
-            if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+            if (glm_graph_layer_is_kda(g, il)) {
                 rc = payload_write_tensor_span(
                     fp, g->layer_kda_conv_state[il], 0,
                     session_glm_kda_conv_state_bytes(), buf,
@@ -63362,7 +64796,7 @@ int ds4_session_load_payload(ds4_session *s, FILE *fp, uint64_t payload_bytes, c
         uint8_t *buf = xmalloc(DS4_SESSION_IO_CHUNK);
         int rc = 0;
         for (uint32_t il = 0; rc == 0 && il < g->normal_layers; il++) {
-            if (g->glm53 && ds4_glm53_layer_is_kda(il)) {
+            if (glm_graph_layer_is_kda(g, il)) {
                 rc = payload_read_tensor_span(
                     fp, g->layer_kda_conv_state[il], 0,
                     session_glm_kda_conv_state_bytes(), buf,
@@ -65047,18 +66481,19 @@ int ds4_engine_generate_argmax(
                     ds4_backend_name(e->backend));
             return 1;
         }
-        if (e->multi_tier || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        if (e->multi_tier || DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ||
+            ds4_model_is_kimi_linear()) {
             ds4_session *s = NULL;
             char err[256] = {0};
             const double t_prefill0 = now_sec();
             if (ds4_session_create(&s, e, ctx_size) != 0) {
-                fprintf(stderr, "ds4: failed to create multi-tier graph session\n");
+                fprintf(stderr, "ds4: failed to create persistent graph session\n");
                 return 1;
             }
             ds4_session_set_progress(s, progress, progress_ud);
             if (ds4_session_sync(s, prompt, err, sizeof(err)) != 0) {
                 ds4_session_set_progress(s, NULL, NULL);
-                fprintf(stderr, "ds4: multi-tier prefill failed: %s\n", err);
+                fprintf(stderr, "ds4: graph prefill failed: %s\n", err);
                 ds4_session_free(s);
                 return 1;
             }
@@ -65072,7 +66507,7 @@ int ds4_engine_generate_argmax(
             int token = ds4_session_argmax(s);
             for (int i = 0; i < n_predict && ds4_session_pos(s) < ctx_size; i++) {
                 if (token < 0) {
-                    fprintf(stderr, "ds4: multi-tier argmax failed\n");
+                    fprintf(stderr, "ds4: graph argmax failed\n");
                     rc = 1;
                     break;
                 }
@@ -65088,7 +66523,7 @@ int ds4_engine_generate_argmax(
                     token = -1;
                 }
                 if (token < 0) {
-                    fprintf(stderr, "ds4: multi-tier decode failed: %s\n", err);
+                    fprintf(stderr, "ds4: graph decode failed: %s\n", err);
                     rc = 1;
                     break;
                 }
@@ -68002,6 +69437,65 @@ int ds4_engine_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
         return qwen4_first_token_test(model, vocab, weights, prompt, ds4_backend_uses_graph(e->backend));
     }
 
+    if (ds4_model_is_kimi_linear()) {
+#ifndef DS4_NO_GPU
+        if (ds4_backend_uses_graph(e->backend)) {
+            if (kimi_gpu_kda_test(model, weights, prompt->v[0]) != 0 ||
+                kimi_gpu_routed_moe_test(model, weights, prompt->v[0]) != 0) {
+                return 1;
+            }
+        }
+#endif
+        float *hidden = xmalloc((size_t)DS4_N_EMBD * sizeof(hidden[0]));
+        float *logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(logits[0]));
+
+        forward_kimi_first_token_cpu(hidden, model, weights, prompt->v[0]);
+        print_vec_stats("first-token final_hidden", hidden, DS4_N_EMBD);
+        output_logits_kimi_one(logits, model, weights, hidden);
+        print_vec_stats("first-token logits", logits, DS4_N_VOCAB);
+#ifndef DS4_NO_GPU
+        if (ds4_backend_uses_graph(e->backend) &&
+            kimi_gpu_first_token_full_test(
+                model, weights, prompt->v[0], logits) != 0) {
+            free(logits);
+            free(hidden);
+            return 1;
+        }
+        if (ds4_backend_uses_graph(e->backend) &&
+            kimi_gpu_persistent_graph_test(
+                model, weights, prompt->v[0], logits) != 0) {
+            free(logits);
+            free(hidden);
+            return 1;
+        }
+#endif
+
+        const char *out_path = getenv("DS4_KIMI_FT_OUT");
+        if (out_path && out_path[0]) {
+            qwen4_dump_f32(out_path, logits, DS4_N_VOCAB);
+        }
+
+        int best[8];
+        for (int i = 0; i < 8; i++) best[i] = -1;
+        for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
+            for (int j = 0; j < 8; j++) {
+                if (best[j] < 0 || logits[i] > logits[best[j]]) {
+                    for (int k = 7; k > j; k--) best[k] = best[k - 1];
+                    best[j] = (int)i;
+                    break;
+                }
+            }
+        }
+        printf("top logits after Kimi Linear first-token CPU pass:\n");
+        for (int i = 0; i < 8; i++) {
+            printf("  %6d  %9.4f  %.*s\n", best[i], logits[best[i]],
+                   (int)vocab->token[best[i]].len, vocab->token[best[i]].ptr);
+        }
+        free(logits);
+        free(hidden);
+        return 0;
+    }
+
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         float *hidden = xmalloc((size_t)DS4_N_EMBD * sizeof(hidden[0]));
         float *logits = xmalloc((size_t)DS4_N_VOCAB * sizeof(logits[0]));
@@ -70798,6 +72292,53 @@ static int ds4_engine_open_internal(ds4_engine **out,
         if (engine_warm_full_model(opt)) model_warm_weights(&e->model);
     }
 #endif
+    if (ds4_model_is_kimi_linear()) {
+        if (opt->inspect_only) {
+            *out = e;
+            return 0;
+        }
+        const bool backend_ok =
+            e->backend == DS4_BACKEND_CUDA ||
+            (opt->first_token_test && e->backend == DS4_BACKEND_CPU);
+        if (!backend_ok ||
+            opt->tp.role != DS4_TP_NONE || opt->cuda_tensor_parallel ||
+            opt->distributed.role != DS4_DISTRIBUTED_NONE || load_slice ||
+            e->ssd_streaming || opt->dspark || opt->glm_mtp ||
+            (opt->mtp_path && opt->mtp_path[0]) ||
+            (opt->directional_steering_file &&
+             opt->directional_steering_file[0]) ||
+            e->power_percent != 100) {
+            fprintf(stderr,
+                    "ds4: Kimi Linear currently supports --inspect, "
+                    "single-GPU CUDA generation, and CPU/CUDA "
+                    "--first-token-test; tensor parallelism, pipeline "
+                    "execution, SSD streaming, DSpark, steering, external "
+                    "MTP models and power throttling are not supported\n");
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+        if (opt->first_token_test) {
+#ifndef DS4_NO_GPU
+            if (e->backend == DS4_BACKEND_CUDA) {
+                bool ready = ds4_gpu_init() &&
+                    ds4_gpu_set_model_map(e->model.map, e->model.size);
+                if (ready) {
+                    (void)ds4_gpu_set_model_fd_for_map(e->model.fd, e->model.map);
+                }
+                if (!ready) {
+                    fprintf(stderr, "ds4: Kimi CUDA test model map setup failed\n");
+                    ds4_engine_close(e);
+                    *out = NULL;
+                    return 1;
+                }
+            }
+#endif
+            vocab_load(&e->vocab, &e->model);
+            *out = e;
+            return 0;
+        }
+    }
     if (ds4_model_is_qwen4()) {
         if (opt->inspect_only) {
             *out = e;
@@ -70836,12 +72377,13 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
     }
 
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+        ds4_model_is_kimi_linear()) {
         if (opt->inspect_only) {
             *out = e;
             return 0;
         }
-        if (!ds4_model_is_glm53() &&
+        if (!ds4_model_is_kimi_linear() && !ds4_model_is_glm53() &&
             ((opt->directional_steering_file && opt->directional_steering_file[0]) ||
              opt->directional_steering_attn != 0.0f ||
              opt->directional_steering_ffn != 0.0f)) {
@@ -70915,7 +72457,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
             return 1;
         }
 #ifndef DS4_NO_GPU
-        if (opt->context_size > 0) {
+        if (opt->context_size > 0 && !ds4_model_is_kimi_linear()) {
             uint32_t guard_ctx = 0;
             if (!glm_graph_context_request(opt->context_size, &guard_ctx) ||
                 !(load_slice ?
@@ -71239,7 +72781,9 @@ static int ds4_engine_open_internal(ds4_engine **out,
             return 1;
         }
         ds4_gpu_set_quality(e->quality);
-        ds4_gpu_set_glm_model(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA);
+        ds4_gpu_set_glm_model(
+                DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+                ds4_model_is_kimi_linear());
         ds4_gpu_set_ssd_streaming(e->ssd_streaming);
         if (!ds4_engine_configure_streaming_auto_cache(e, opt->context_size)) {
             ds4_engine_close(e);
@@ -71824,6 +73368,11 @@ bool ds4_engine_is_glm53(ds4_engine *e) {
 bool ds4_engine_is_qwen4(ds4_engine *e) {
     (void)e;
     return ds4_model_is_qwen4();
+}
+
+bool ds4_engine_is_kimi_linear(ds4_engine *e) {
+    (void)e;
+    return ds4_model_is_kimi_linear();
 }
 
 /* The official template's default effort is xhigh; medium adds no text. */
@@ -72929,7 +74478,8 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
         return 0;
     }
 #endif
-    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
+    if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
+        ds4_model_is_kimi_linear()) {
         const uint32_t normal_layers = glm_graph_normal_layer_count();
         uint32_t layer_start = 0;
         uint32_t layer_end = normal_layers ? normal_layers - 1u : 0;
@@ -75497,6 +77047,102 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                 snprintf(err, errlen, "%s GLM KDA state reset failed", backend_name);
                 return 1;
             }
+        }
+
+        /* Kimi uses its layer-major KDA/MLA prefill by default. Keep the
+         * established token-major path available as a diagnostic fallback. */
+        if (s->glm_graph.kimi) {
+            const bool batch_prefill = !glm_graph_env_truthy(
+                    getenv("DS4_KIMI_DISABLE_BATCH_PREFILL"));
+            if (batch_prefill) {
+                for (int i = start; i < prompt->len; ) {
+                    if (ds4_session_cancelled(s)) {
+                        snprintf(err, errlen, "interrupted");
+                        s->checkpoint_valid = s->checkpoint.len > 0;
+                        s->mtp_draft_valid = false;
+                        return DS4_SESSION_SYNC_INTERRUPTED;
+                    }
+                    const uint32_t pos = (uint32_t)s->checkpoint.len;
+                    uint32_t chunk = (uint32_t)(prompt->len - i);
+                    if (chunk > DS4_GLM53_PREFILL_CHUNK_TOKENS) {
+                        chunk = DS4_GLM53_PREFILL_CHUNK_TOKENS;
+                    }
+                    if (chunk > s->glm_graph.batch_cap) {
+                        chunk = s->glm_graph.batch_cap;
+                    }
+                    float *chunk_logits = i + (int)chunk == prompt->len ?
+                        s->logits : NULL;
+                    if (!glm_graph_forward_tokens(&s->glm_graph,
+                                                  &e->model,
+                                                  &e->weights,
+                                                  prompt->v + i,
+                                                  NULL,
+                                                  NULL,
+                                                  0,
+                                                  pos,
+                                                  chunk,
+                                                  NULL,
+                                                  chunk_logits,
+                                                  s->display_progress,
+                                                  s->display_progress_ud,
+                                                  (uint32_t)start,
+                                                  (uint32_t)(i - start),
+                                                  (uint32_t)(prompt->len - start))) {
+                        snprintf(err, errlen,
+                                 "%s Kimi Linear batch prefill failed at token %d",
+                                 backend_name, i);
+                        s->checkpoint_valid = false;
+                        s->mtp_draft_valid = false;
+                        return 1;
+                    }
+                    for (uint32_t j = 0; j < chunk; j++) {
+                        token_vec_push(&s->checkpoint, prompt->v[i + (int)j]);
+                    }
+                    s->checkpoint_valid = true;
+                    s->mtp_draft_valid = false;
+                    ds4_session_glm_note_dense_cache(s, pos, chunk);
+                    i += (int)chunk;
+                    if (s->progress) {
+                        s->progress(s->progress_ud, "prefill_chunk", i,
+                                    prompt->len);
+                    }
+                }
+                return 0;
+            }
+            for (int i = start; i < prompt->len; i++) {
+                if (ds4_session_cancelled(s)) {
+                    snprintf(err, errlen, "interrupted");
+                    s->checkpoint_valid = s->checkpoint.len > 0;
+                    s->mtp_draft_valid = false;
+                    return DS4_SESSION_SYNC_INTERRUPTED;
+                }
+                const uint32_t pos = (uint32_t)s->checkpoint.len;
+                if (!glm_graph_forward_token(&s->glm_graph,
+                                             &e->model,
+                                             &e->weights,
+                                             prompt->v[i],
+                                             NULL,
+                                             pos,
+                                             NULL,
+                                             s->logits,
+                                             false)) {
+                    snprintf(err, errlen,
+                             "%s Kimi Linear prefill failed at token %d",
+                             backend_name, i);
+                    s->checkpoint_valid = false;
+                    s->mtp_draft_valid = false;
+                    return 1;
+                }
+                token_vec_push(&s->checkpoint, prompt->v[i]);
+                s->checkpoint_valid = true;
+                s->mtp_draft_valid = false;
+                ds4_session_glm_note_dense_cache(s, pos, 1);
+                if (s->progress) {
+                    s->progress(s->progress_ud, "prefill_chunk", i + 1,
+                                prompt->len);
+                }
+            }
+            return 0;
         }
 
         /* GLM-5.3 uses bounded layer-major chunks for mHC and recurrent KDA.

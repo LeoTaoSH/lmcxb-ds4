@@ -4249,6 +4249,9 @@ struct mmq_args {
     // ignored; soa_blocks = pair count (Q2_K) or block count (IQ2_XXS).
     // Trailing fields so existing aggregate initializers value-init them.
     const char * x_soa; int64_t soa_blocks;
+    // MoE-only compact expert-tile launch. The worklist is built from
+    // expert_bounds on device, so empty rectangle tiles are not scheduled.
+    bool compact_moe;
 };
 
 template<ggml_type type>
@@ -4259,6 +4262,89 @@ static size_t mmq_get_nbytes_shared(const int mmq_x, const int mmq_y, const int 
     const size_t nbs_x = (turing_mma_available(cc) || amd_mfma_available(cc) || amd_wmma_available(cc)) ? mmq_y*mmq_tile_x_k*sizeof(int) : txs.qs*sizeof(int) + txs.dm*sizeof(half2) + txs.sc*sizeof(int);
     const size_t nbs_y = mmq_x * (sizeof(block_q8_1_mmq));
     return nbs_ids + nbs_x + GGML_PAD(nbs_y, nwarps*warp_size*sizeof(int));
+}
+
+template <int mmq_x>
+static __global__ void mmq_build_compact_moe_worklist(
+        const int32_t * __restrict__ expert_bounds,
+        int * __restrict__ work,
+        int * __restrict__ n_items,
+        int n_experts) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int cursor = 0;
+    for (int expert = 0; expert < n_experts; ++expert) {
+        const int count = expert_bounds[expert + 1] - expert_bounds[expert];
+        const int tiles = count > 0 ? (count + mmq_x - 1) / mmq_x : 0;
+        for (int jt = 0; jt < tiles; ++jt) {
+            work[cursor++] = (expert << 16) | jt;
+        }
+    }
+    *n_items = cursor;
+}
+
+template<ggml_type type, int mmq_x, bool need_check>
+static __global__ void mul_mat_q_moe_compact(
+        const char * __restrict__ x,
+        const int * __restrict__ y,
+        const int32_t * __restrict__ ids_dst,
+        const int32_t * __restrict__ expert_bounds,
+        const int * __restrict__ work,
+        const int * __restrict__ n_items,
+        float * __restrict__ dst,
+        const uint3 blocks_per_ne00,
+        int nrows_x,
+        int stride_row_x,
+        int ncols_y,
+        int stride_col_dst,
+        int stride_channel_x,
+        const char * __restrict__ x_soa,
+        int64_t soa_blocks) {
+    if (mmq_x > get_mmq_x_max_device() ||
+        mmq_x % mmq_get_granularity_device(mmq_x) != 0) {
+        NO_DEVICE_CODE;
+        return;
+    }
+
+    const int item = (int)blockIdx.y;
+    if (item >= *n_items) return;
+    const int packed = work[item];
+    const int expert = packed >> 16;
+    const int jt = packed & 0xffff;
+    const int it = (int)blockIdx.x;
+
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int mmq_y = get_mmq_y_device();
+    extern __shared__ int ids_dst_shared[];
+
+    const int col_low = expert_bounds[expert];
+    const int col_high = expert_bounds[expert + 1];
+    const int col_diff = col_high - col_low;
+    const int tile_col0 = jt * mmq_x;
+    if (tile_col0 >= col_diff) return;
+
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += nwarps * warp_size) {
+        const int j = j0 + threadIdx.y * warp_size + threadIdx.x;
+        if (j0 + nwarps * warp_size > mmq_x && j >= mmq_x) break;
+        ids_dst_shared[j] = tile_col0 + j < col_diff
+            ? ids_dst[col_low + tile_col0 + j] : 0;
+    }
+    __syncthreads();
+
+    const int offset_x = expert * stride_channel_x + it * mmq_y * stride_row_x;
+    const int offset_y = (col_low + tile_col0) *
+        (sizeof(block_q8_1_mmq) / sizeof(int));
+    const int offset_dst = it * mmq_y;
+    const int tile_x_max_i = nrows_x - it * mmq_y - 1;
+    const int tile_y_max_j = col_diff - tile_col0 - 1;
+
+    constexpr bool fixup = false;
+    mul_mat_q_process_tile<type, mmq_x, need_check, fixup>(
+        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst,
+        nullptr, stride_row_x, ncols_y, stride_col_dst,
+        tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00.z,
+        x_soa, soa_blocks);
 }
 
 template <ggml_type type, int mmq_x>
@@ -4276,6 +4362,10 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
 
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x, false>), nbytes_shared);
     CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, mmq_x,  true>), nbytes_shared);
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q_moe_compact<type, mmq_x, false>), nbytes_shared);
+        CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q_moe_compact<type, mmq_x,  true>), nbytes_shared);
+    }
 
     const int nty  = (args.nrows_x   + mmq_y - 1) / mmq_y;
     const int ntx  = (args.ncols_max + mmq_x - 1) / mmq_x;
@@ -4293,6 +4383,41 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const uint3 nsamples_y_fd      = init_fastdiv_values(args.nsamples_y);
     const uint3 channel_ratio_fd   = init_fastdiv_values(channel_ratio);
     const uint3 sample_ratio_fd    = init_fastdiv_values(sample_ratio);
+
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        if (args.compact_moe) {
+            GGML_ASSERT(args.ids_dst != nullptr && args.expert_bounds != nullptr);
+            GGML_ASSERT(args.nsamples_y == 1 && args.nchannels_x == args.nchannels_y);
+            const int capacity =
+                (int)((args.ncols_dst + mmq_x - 1) / mmq_x + args.nchannels_y);
+            ggml_cuda_pool_alloc<int> compact_work(ctx.pool(id), capacity + 1);
+            int *n_items = compact_work.get() + capacity;
+            mmq_build_compact_moe_worklist<mmq_x><<<1, 1, 0, stream>>>(
+                args.expert_bounds, compact_work.get(), n_items,
+                (int)args.nchannels_y);
+            const dim3 compact_grid(nty, capacity, 1);
+            if (args.nrows_x % mmq_y == 0) {
+                mul_mat_q_moe_compact<type, mmq_x, false>
+                    <<<compact_grid, block_dims, nbytes_shared, stream>>>(
+                        args.x, args.y, args.ids_dst, args.expert_bounds,
+                        compact_work.get(), n_items, args.dst,
+                        blocks_per_ne00_fd, (int)args.nrows_x,
+                        (int)args.stride_row_x, (int)args.ncols_y,
+                        (int)args.nrows_dst, (int)args.stride_channel_x,
+                        args.x_soa, args.soa_blocks);
+            } else {
+                mul_mat_q_moe_compact<type, mmq_x, true>
+                    <<<compact_grid, block_dims, nbytes_shared, stream>>>(
+                        args.x, args.y, args.ids_dst, args.expert_bounds,
+                        compact_work.get(), n_items, args.dst,
+                        blocks_per_ne00_fd, (int)args.nrows_x,
+                        (int)args.stride_row_x, (int)args.ncols_y,
+                        (int)args.nrows_dst, (int)args.stride_channel_x,
+                        args.x_soa, args.soa_blocks);
+            }
+            return;
+        }
+    }
 
     if (!args.use_stream_k) {
         if (args.nrows_x % mmq_y == 0) {
@@ -4390,6 +4515,38 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
 
     int mmq_x_best  = 0;
     int ntiles_x_best = INT_MAX;
+    int64_t tile_selection_cols = args.ncols_max;
+    if constexpr (type == GGML_TYPE_Q8_0) {
+        const char *tile_env = getenv("DS4_CUDA_Q8_MOE_TILE");
+        /* The sub-mean selector below is a measured GB10 policy, not a
+         * generally proven CUDA heuristic.  Keep other architectures on the
+         * upstream worst-case selector unless the operator explicitly opts in
+         * with DS4_CUDA_Q8_MOE_TILE. */
+        const bool use_narrow_tile =
+            cc == 1210 || (tile_env != nullptr && tile_env[0] != '\0');
+        if (args.compact_moe &&
+            getenv("DS4_CUDA_Q8_MOE_NO_NARROW_TILE") == nullptr &&
+            use_narrow_tile &&
+            args.nchannels_y > 0) {
+            // The compact launcher tolerates multiple tiles for a busy
+            // expert. Select against the mean bucket occupancy rather than
+            // the top-k worst case, which otherwise pads ~28 live columns
+            // to a 128-column MMA tile on Kimi Linear.
+            const int64_t mean_bucket =
+                (args.ncols_dst + args.nchannels_y - 1) / args.nchannels_y;
+            // A slightly sub-mean tile minimizes padding without fragmenting
+            // the busiest buckets too aggressively (GB10 sweep at 881x8/256:
+            // 24 columns beats 16/32/40/128).
+            tile_selection_cols = std::max<int64_t>(8, (3 * mean_bucket + 3) / 4);
+            if (tile_env && tile_env[0]) {
+                char *end = nullptr;
+                const long requested = strtol(tile_env, &end, 10);
+                if (end != tile_env && requested >= 8 && requested <= 128) {
+                    tile_selection_cols = requested;
+                }
+            }
+        }
+    }
 
     for (int mmq_x = 8; mmq_x <= mmq_x_max && ntiles_x_best > 1; mmq_x += 8) {
         const int granularity = mmq_get_granularity_host(mmq_x, cc);
@@ -4398,7 +4555,7 @@ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cuda
             continue;
         }
 
-        const int ntiles_x = (args.ncols_max + mmq_x - 1) / mmq_x;
+        const int ntiles_x = (tile_selection_cols + mmq_x - 1) / mmq_x;
 
         if (ntiles_x < ntiles_x_best) {
             mmq_x_best = mmq_x;

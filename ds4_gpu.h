@@ -1437,6 +1437,8 @@ int ds4_gpu_glm_build_kv_cache_tensor(
         uint32_t              value_dim,
         uint32_t              n_ctx_orig,
         float                 freq_base,
+        /* freq_scale == 0 preserves the qk_rope tail without rotating it
+         * (Kimi Linear MLA); positive values apply RoPE as usual. */
         float                 freq_scale,
         float                 ext_factor,
         float                 attn_factor,
@@ -1480,6 +1482,24 @@ int ds4_gpu_glm_attention_full_tensor(
         uint32_t              n_head,
         uint32_t              qk_dim,
         uint32_t              value_dim,
+        bool                  cache_f16);
+
+/* One-token dense MLA attention split across independent KV ranges.  The
+ * caller owns the per-session scratch, so concurrent graphs never share
+ * partial softmax state. */
+int ds4_gpu_glm_attention_full_decode_split_tensor(
+        ds4_gpu_tensor       *heads,
+        ds4_gpu_tensor       *partial_values,
+        ds4_gpu_tensor       *partial_ms,
+        const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_cache,
+        const ds4_gpu_tensor *value_cache,
+        uint32_t              cache_len,
+        uint32_t              cache_cap,
+        uint32_t              n_head,
+        uint32_t              qk_dim,
+        uint32_t              value_dim,
+        uint32_t              max_splits,
         bool                  cache_f16);
 
 int ds4_gpu_glm_fill_selected_range_tensor(

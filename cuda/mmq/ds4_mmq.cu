@@ -939,7 +939,8 @@ int ds4_mmq_moe_impl(
         /* ds4 (P3): false skips the whole-buffer nonfinite pass; only valid
          * when every consumer sanitizes at read (the routed-MoE swiglu/sum
          * kernels do). */
-        bool            sanitize_out = true) {
+        bool            sanitize_out = true,
+        int64_t         ncols_max_hint = 0) {
 
     if (!W || !X_f32 || !ids || !out_f32) {
         fprintf(stderr, "%s: null pointer\n", tag);
@@ -1151,9 +1152,12 @@ int ds4_mmq_moe_impl(
         /*stride_sample_y=*/s13_mmq,
         /*stride_sample_dst=*/0,
         /*use_stream_k=*/use_stream_k,
-        /*ncols_max=*/ne_get_rows,
+        /*ncols_max=*/ncols_max_hint > 0 && ncols_max_hint < ne_get_rows
+            ? ncols_max_hint : ne_get_rows,
         /*x_soa=*/x_soa,
         /*soa_blocks=*/soa_blocks,
+        /*compact_moe=*/type == GGML_TYPE_Q8_0 &&
+            getenv("DS4_CUDA_Q8_MOE_NO_COMPACT") == NULL,
     };
 
     mul_mat_q_case<type>(*ctx, args, stream);
@@ -1461,14 +1465,15 @@ int ds4_mmq_moe_pair_impl(
      * token cannot select the same expert twice, so no expert bucket can
      * exceed n_tokens rows. Keep the conservative gathered-row bound for all
      * generic MMQ callers, including DSpark/MTP. */
-    /* The IQ2 gate/up route is a true top-k selection: one token contributes
-     * at most one row to any expert. The default gathered-row upper bound
-     * overlaunches empty expert tiles by top_k; keep this opt-in until the
-     * compact expert-tile launch replaces the rectangular grid entirely. */
-    const bool tight_iq2_ncols =
-        type == GGML_TYPE_IQ2_XXS &&
-        ds4_mmq_gfx1151_flag("DS4_ROCM_MMQ_TIGHT_NCOLS", cc);
-    const int64_t routed_ncols_max = (fused_down || tight_iq2_ncols)
+    /* Q8 pair callers and the target IQ2 route carry a true top-k selection:
+     * one token contributes at most one row to any expert.  The default
+     * gathered-row bound overlaunches empty expert tiles by top_k. */
+    const bool tight_topk_ncols =
+        (type == GGML_TYPE_Q8_0 &&
+         getenv("DS4_CUDA_Q8_MOE_NO_TIGHT_BOUND") == NULL) ||
+        (type == GGML_TYPE_IQ2_XXS &&
+         ds4_mmq_gfx1151_flag("DS4_ROCM_MMQ_TIGHT_NCOLS", cc));
+    const int64_t routed_ncols_max = (fused_down || tight_topk_ncols)
         ? (int64_t)n_tokens
         : ne_get_rows;
 
@@ -1721,6 +1726,8 @@ int ds4_mmq_moe_pair_impl(
         /*ncols_max=*/routed_ncols_max,
         /*x_soa=*/xa_soa,
         /*soa_blocks=*/soa_blocks,
+        /*compact_moe=*/type == GGML_TYPE_Q8_0 &&
+            getenv("DS4_CUDA_Q8_MOE_NO_COMPACT") == NULL,
     };
 
     {
@@ -1894,6 +1901,18 @@ extern "C" int ds4_mmq_q8_0_moe(
                                             n_tokens, n_experts, n_expert_used, stream);
 }
 
+extern "C" int ds4_mmq_q8_0_moe_bounded(
+        const void * W, const float * X, const int32_t * ids, float * out,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        int max_rows_per_expert, cudaStream_t stream) {
+    if (max_rows_per_expert <= 0) return -1;
+    return ds4_mmq_moe_impl<GGML_TYPE_Q8_0>(
+        "ds4_mmq_q8_0_moe_bounded", W, X, ids, out, M, K,
+        n_tokens, n_experts, n_expert_used, stream,
+        /*x_soa=*/NULL, /*soa_blocks=*/0, /*sanitize_out=*/true,
+        max_rows_per_expert);
+}
+
 extern "C" int ds4_mmq_q2_K_moe(
         const void * W, const float * X, const int32_t * ids, float * out,
         int M, int K, int n_tokens, int n_experts, int n_expert_used,
@@ -1946,6 +1965,16 @@ extern "C" int ds4_mmq_mxfp4_moe(
         cudaStream_t stream) {
     return ds4_mmq_moe_impl<GGML_TYPE_MXFP4>("ds4_mmq_mxfp4_moe", W, X, ids, out, M, K,
                                              n_tokens, n_experts, n_expert_used, stream);
+}
+
+extern "C" int ds4_mmq_q8_0_moe_pair(
+        const void * W_a, const void * W_b,
+        const float * X, const int32_t * ids, float * out_a, float * out_b,
+        int M, int K, int n_tokens, int n_experts, int n_expert_used,
+        cudaStream_t stream) {
+    return ds4_mmq_moe_pair_impl<GGML_TYPE_Q8_0>(
+        "ds4_mmq_q8_0_moe_pair", W_a, W_b, X, ids, out_a, out_b,
+        M, K, n_tokens, n_experts, n_expert_used, stream);
 }
 
 extern "C" int ds4_mmq_iq2_xxs_moe_pair(
