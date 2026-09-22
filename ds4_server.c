@@ -14989,6 +14989,7 @@ static void *slot_worker_main(void *arg) {
 typedef struct {
     char method[8];
     char path[256];
+    char query[128];
     char *body;
     size_t body_len;
 } http_request;
@@ -14996,6 +14997,22 @@ typedef struct {
 static void http_request_free(http_request *r) {
     free(r->body);
     memset(r, 0, sizeof(*r));
+}
+
+static bool http_query_has(const http_request *r, const char *key) {
+    const char *p = r->query;
+    while (*p) {
+        while (*p == '&' || *p == ' ') p++;
+        const char *k = p;
+        while (*p && *p != '=' && *p != '&') p++;
+        if (*p == '=') {
+            size_t klen = p - k;
+            if (klen == strlen(key) && !strncmp(k, key, klen)) return true;
+            p++;
+            while (*p && *p != '&') p++;
+        }
+    }
+    return false;
 }
 
 static ssize_t header_end(const char *p, size_t n) {
@@ -15049,8 +15066,12 @@ static bool read_http_request(int fd, http_request *r) {
     }
     line[i] = '\0';
     if (sscanf(line, "%7s %255s", r->method, r->path) != 2) goto fail;
+    r->query[0] = '\0';
     char *q = strchr(r->path, '?');
-    if (q) *q = '\0';
+    if (q) {
+        snprintf(r->query, sizeof(r->query), "%s", q + 1);
+        *q = '\0';
+    }
 
     long clen = content_length(b.ptr, (size_t)hend);
     if (clen < 0 || (size_t)clen > max_body) goto fail;
@@ -15132,8 +15153,56 @@ static bool send_model(server *s, int fd, const char *id) {
     return ok;
 }
 
+static void append_kimi_model_json(buf *b, const server *s, const char *id) {
+    /* Models are entries of a JSON object, so emit the id as the key */
+    json_escape(b, id);
+    buf_puts(b, ":{\"id\":");
+    json_escape(b, id);
+    buf_puts(b,
+        ",\"name\":");
+    json_escape(b, ds4_engine_model_name(s->engine));
+    buf_printf(b,
+        ",\"limit\":{\"context\":%d,\"output\":%d}}",
+        s->ctx_size,
+        s->default_tokens < s->ctx_size ? s->default_tokens : s->ctx_size);
+}
+
+static bool send_kimi_registry(server *s, int fd) {
+    buf b = {0};
+    buf_puts(&b, "{\"spark\":{\"id\":\"spark\",\"name\":\"DS4 Local\",\"api\":\"http://spark:8000/v1\",\"type\":\"openai\",\"models\":{");
+    /* Emit models the same way send_models does */
+    if (ds4_engine_is_deepseek41(s->engine)) {
+        append_kimi_model_json(&b, s, server_model_id_from_engine(s->engine));
+    } else if (ds4_engine_is_qwen4(s->engine)) {
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next-chat");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next-reasoner");
+    } else if (ds4_engine_is_glm_dsa(s->engine)) {
+        const char *base = server_model_id_from_engine(s->engine);
+        append_kimi_model_json(&b, s, base);
+        buf_putc(&b, ',');
+        char variant[64];
+        snprintf(variant, sizeof(variant), "%s-chat", base);
+        append_kimi_model_json(&b, s, variant);
+        buf_putc(&b, ',');
+        snprintf(variant, sizeof(variant), "%s-reasoner", base);
+        append_kimi_model_json(&b, s, variant);
+    } else {
+        append_kimi_model_json(&b, s, "deepseek-v4-flash");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "deepseek-v4-pro");
+    }
+    buf_puts(&b, "}}}\n");
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    return ok;
+}
+
 static bool send_models(server *s, int fd) {
     buf b = {0};
+    /* OpenAI-compatible models list */
     buf_puts(&b, "{\"object\":\"list\",\"data\":[");
     if (ds4_engine_is_deepseek41(s->engine)) {
         append_model_json(&b, s, server_model_id_from_engine(s->engine));
@@ -15158,7 +15227,33 @@ static bool send_models(server *s, int fd) {
         buf_putc(&b, ',');
         append_model_json(&b, s, "deepseek-v4-pro");
     }
-    buf_puts(&b, "]}\n");
+    buf_puts(&b, "],");
+    /* Kimi custom-registry provider entry — OpenAI clients ignore extra keys */
+    buf_puts(&b, "\"spark\":{\"id\":\"spark\",\"name\":\"DS4 Local\",\"api\":\"http://spark:8000/v1\",\"type\":\"openai\",\"models\":{");
+    if (ds4_engine_is_deepseek41(s->engine)) {
+        append_kimi_model_json(&b, s, server_model_id_from_engine(s->engine));
+    } else if (ds4_engine_is_qwen4(s->engine)) {
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next-chat");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "qwen3.8-flash-next-reasoner");
+    } else if (ds4_engine_is_glm_dsa(s->engine)) {
+        const char *base = server_model_id_from_engine(s->engine);
+        append_kimi_model_json(&b, s, base);
+        buf_putc(&b, ',');
+        char variant[64];
+        snprintf(variant, sizeof(variant), "%s-chat", base);
+        append_kimi_model_json(&b, s, variant);
+        buf_putc(&b, ',');
+        snprintf(variant, sizeof(variant), "%s-reasoner", base);
+        append_kimi_model_json(&b, s, variant);
+    } else {
+        append_kimi_model_json(&b, s, "deepseek-v4-flash");
+        buf_putc(&b, ',');
+        append_kimi_model_json(&b, s, "deepseek-v4-pro");
+    }
+    buf_puts(&b, "}}}\n");
     bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
     buf_free(&b);
     return ok;
@@ -15285,10 +15380,17 @@ static void *client_main(void *arg) {
         goto done;
     }
 
-    if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
-        send_models(s, fd);
-        http_request_free(&hr);
-        goto done;
+    if (!strcmp(hr.method, "GET")) {
+        if (!strcmp(hr.path, "/api.json")) {
+            send_kimi_registry(s, fd);
+            http_request_free(&hr);
+            goto done;
+        }
+        if (!strcmp(hr.path, "/v1/models")) {
+            send_models(s, fd);
+            http_request_free(&hr);
+            goto done;
+        }
     }
     const char *model_path_prefix = "/v1/models/";
     const size_t model_path_prefix_len = strlen(model_path_prefix);
