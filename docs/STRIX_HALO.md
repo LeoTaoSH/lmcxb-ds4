@@ -33,21 +33,13 @@ the container. Do not mix header versions as a general workaround.
 
 ## GPU-visible memory
 
-Check the memory pool reported by `rocminfo`. Some 128 GB configurations expose
-only about 62 GB to the GPU, which is insufficient for resident Flash Q2 plus
-runtime buffers. Firmware and kernel GTT/TTM settings control this limit.
-
-The native reference setup used these memory parameters:
+Check the GPU-visible memory pool reported by `rocminfo`. Some 128 GB systems expose only about 62 GiB to the GPU. The tested 128 GB Fedora Linux Strix Halo system, running a recent kernel and ROCm 10.0, used these boot parameters:
 
 ```text
-amdgpu.gttsize=126976 ttm.pages_limit=32505856 ttm.page_pool_size=32505856
+amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856
 ```
 
-They are a system-specific starting point, not an allocation budget for
-DwarfStar. Preserve existing boot options and consult your kernel's settings
-before changing them. Keep RAM available for the OS even when the GPU can
-address most of it. Do not disable the IOMMU merely to copy another host's
-configuration; doing so changes device isolation.
+The GTT/TTM settings expose about 124 GiB to the GPU. An SSD expert-cache request such as `92GB` is fitted to that GPU-visible limit as well as available system RAM; a stock ~62 GiB pool can therefore yield a much smaller cache. `amd_iommu=off` was part of the tested setup, but is not required for GTT sizing and disables DMA isolation. Keep RAM available for the OS. See the [host configuration guide](https://strix-halo-toolboxes.com/#config) for Fedora, Ubuntu/Debian, and systemd-boot instructions.
 
 ## Build and run Flash
 
@@ -61,6 +53,126 @@ make strix-halo
 larger mixed and Q4 models have substantially higher memory requirements.
 Flash's ROCm resident and pipeline paths should not be confused with the GLM
 SSD-streaming path.
+
+## DeepSeek V4.1 Flash
+
+- ROCm 10.0 supports calibrated V4.1 Flash Q2 text/vision, resident experts, SSD streaming and [two-machine TCP/RoCE](CLUSTERING_ROCM.md). Engram remains disk-backed in every mode.
+- Tested SSD configuration: 128 GB Framework Desktop, 16-core Strix Halo engineering sample `100-000001243-50_Y`, Radeon `gfx1151`; Kingston FURY Renegade 2 TB (`SFYRD2000G`, PCIe 4.0 ×4, btrfs) holds the model.
+- Linux `7.2.5-100.fc43.x86_64`, ROCm SDK `10.0.0-4` / HIP `7.15.26333`; TuneD **`accelerator-performance`**, fans at maximum speed. Existing boot flags: the [GTT/TTM settings above](#gpu-visible-memory), plus `pci=realloc pcie_aspm=off`; their individual effects were not isolated.
+
+### SSD performance
+
+Native `ds4-bench`, full fresh text prefix, greedy decoding, no DSpark or images; 92 GiB expert/staging cache. One run per row, startup and a separate GPU readiness warmup excluded; **tokens/s**:
+
+| Prompt tokens | Allocated context | Generated tokens | Prefill | Decode |
+|---:|---:|---:|---:|---:|
+| 16,384 | 69,632 | 512 | 301.23 | 9.73 |
+| 65,536 | 69,632 | 128 | 350.03 | 9.08 |
+
+- All 129,280 frontier logits and complete printed continuations match the corresponding resident runs. Minimum usable RAM: 12.25 GiB; no OOM. Host zram swap-out pages in table order: 0, 0. No cold-cache claim; other qualification runs recorded nonzero host swap.
+- The tuned Engram matrix path requires hipBLASLt 100401, revision `8d1ae90e`; other library versions retain the existing fallback and may have different prefill performance.
+- Actual prompts reach 65,536 tokens; populated 256K was not tested. Cache admission depends on available RAM, context and sessions; images may need a smaller cache. The GPU-visible limit shares system RAM and is not a cache budget.
+- Six resident image/state cases and two focused SSD cases (photo and screenshot) pass on this source. Official probability results are mixed; see [quality and limitations](../QA_BEFORE_RELEASES.md#deepseek-v41-flash-rocmgfx1151). No image-conditioned prefill timing is included.
+
+### Run text or vision
+
+```bash
+make strix-halo ROCM_ARCH=gfx1151
+./download_model.sh ds41f-q2
+./download_model.sh ds41f-vision
+MODEL=gguf/DeepSeek-V4.1-Flash-Q2.gguf
+VISION=gguf/DeepSeek-V4.1-Flash-Vision.gguf
+
+# CLI, text
+./ds4 --rocm -m "$MODEL" --ssd-streaming \
+  --ssd-streaming-cache-experts 92GB --ctx 69632
+
+# HTTP server, text and images; --vision takes the matching sidecar.
+./ds4-server --rocm -m "$MODEL" --vision "$VISION" \
+  --ssd-streaming --ssd-streaming-cache-experts 92GB --ctx 69632 \
+  --batched-session 1 --host 127.0.0.1 --port 8080
+```
+
+For a machine with sufficient RAM for resident experts, omit both SSD options. Keep `--vision` for image requests and set `--ctx` to the required allocation. See [image request examples](MODELS.md#vision).
+
+### Q4 attention weights
+
+V4.1 attention projections accept Q4_K weights on ROCm, including output A/B
+with independent Q4_K or Q8_0 types. This applies to decode and batched prefill,
+resident or SSD-streamed experts, and TP2. Q-A, Q-B and KV use the existing
+typed dense kernels. The output path processes packed token/group rows directly,
+without a per-token graph loop. Q8/Q8 retains its previous kernels.
+
+Output A follows the existing Q4 policy: eligible resident gfx1151 batches use
+FP16 WMMA operands with F32 accumulation; SSD streaming and quality mode keep
+Q8_K activation quantization. Output B keeps Q8_K activation quantization.
+Both paths round the intermediate low projection to BF16. TP2 slices output
+B's columns while retaining its full weight row stride, and rounds the output
+only after summing the F32 rank partials. Both nodes must load the same attention
+quantization; the TP model identifier includes the five projection types.
+
+Use a GGUF whose attention projections have already been requantized to Q4_K;
+`--ssd-streaming` changes expert storage and does not convert attention weights.
+The standard V4.1 `q4` conversion recipe quantizes the experts, while keeping
+attention in Q8_0. To select Q4_K attention, the converter also needs
+`--attention-proj q4_k`; a filename ending in `Q4.gguf` alone is not sufficient.
+
+The V4 decode graph also checks both output projection types before selecting
+its Q8-only kernel. In particular, Q8_0 output A with Q4_K output B must use the
+typed path. Previously, checking only A could interpret B's Q4_K bytes as Q8_0.
+This mixed-type decode fix does not establish the cause of an all-Q4 prefill
+failure reported against an older checkout.
+
+Run the model-free checks before full-model logits and throughput comparisons:
+
+```sh
+# Host checks; no AMD GPU required.
+make test-rocm-q4-attention-host test-rocm-v41-q4-output-host \
+  test-deepseek41-rocm-output-dispatch-host
+
+# Native production-shape numerical checks on the ROCm machine.
+make test-rocm-q4-attention-projections ROCM_ARCH=gfx1151
+make test-rocm-v41-q4-output ROCM_ARCH=gfx1151
+```
+
+The projection test exercises the public Q4_K API for V4 and V4.1 Q-A, Q-B and
+KV shapes in resident, quality and SSD modes, including the 1280-wide V4.1 Q-B
+input and 256-row batches eligible for resident WMMA. It checks sampled CPU
+reference dots, finite outputs and buffer guards. Its inputs are exactly
+representable in both FP16 and Q8_K; it does not measure general-input WMMA
+drift. The separate V4.1 output test covers A/B and mixed Q4_K/Q8_0 recipes.
+
+This integration has host validation only at the time of implementation.
+HIP compilation, native numerical results, full-model quality and Q4/Q8
+throughput comparisons still need to be measured on AMD hardware. The SSD
+performance figures above describe the earlier Q8-attention configuration.
+Include the branch and commit, ROCm version, model architecture, attention
+tensor types and complete command in a failure report: V4 and V4.1 use distinct
+graph implementations, even though they share some low-level kernels.
+
+### Reproduce SSD measurements
+
+Run one configuration per process; preserve the CSV, full frontier files and printed output. The timing input is the repository's `speed-bench/promessi_sposi.txt`.
+
+```bash
+tuned-adm active    # Expect accelerator-performance during the workload
+tuned-adm verify
+MODEL=/absolute/path/DeepSeek-V4.1-Flash-Q2.gguf
+DEPTH=16384
+ALLOC=69632
+GEN=512
+# Other row: DEPTH=65536 ALLOC=69632 GEN=128
+
+DS4_METAL_CB_TIMES=1 ./ds4-bench --backend rocm -m "$MODEL" \
+  --ssd-streaming --ssd-streaming-cache-experts 92GB \
+  --prompt-file speed-bench/promessi_sposi.txt \
+  --ctx-start "$DEPTH" --ctx-max "$DEPTH" --ctx-alloc "$ALLOC" \
+  --gen-tokens "$GEN" --show-output --csv "ssd-$DEPTH-$GEN.csv" \
+  --dump-frontier-logits-dir "ssd-frontiers-$DEPTH-$GEN"
+```
+
+- `DS4_METAL_CB_TIMES` is scoped to this command and prints the measured prefill time window on ROCm too. No tuning override is needed.
+- Check the active power profile during the measurement; save revision/build flags, model filename/size and existing provenance, cache/KV configuration, actual prompt/output counts, and memory/swap/OOM counters. Do not substitute HTTP timings for this native table.
 
 ## GLM 5.3 Flash
 

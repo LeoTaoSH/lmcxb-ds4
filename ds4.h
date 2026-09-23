@@ -122,6 +122,7 @@ typedef struct {
     int leader_port;
     ds4_tp_transport transport;
     const char *rdma_device;
+    int rdma_port;              /* Linux RoCE port; zero selects port 1 */
     int rdma_gid_index;
     bool rdma_gid_index_set;
     bool glm_token_prefill;
@@ -303,7 +304,8 @@ bool ds4_engine_glm_layer_payload_bytes(ds4_engine *e,
                                         uint64_t *out);
 /* Stable id for cache compatibility.  0 is the original Flash shape, so old
  * KV files with the previously-zero reserved byte remain Flash-compatible;
- * Pro and later shapes must use nonzero ids. */
+ * Pro and later shapes must use nonzero ids. V4.1 with non-Q8 attention uses
+ * an opaque type-layout id; callers must not interpret it as a shape enum. */
 int ds4_engine_model_id(ds4_engine *e);
 bool ds4_engine_is_glm_dsa(ds4_engine *e);
 bool ds4_engine_is_glm53(ds4_engine *e);
@@ -405,6 +407,12 @@ void ds4_engine_tp_unbind(ds4_engine *e);
 
 int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size);
 void ds4_session_free(ds4_session *s);
+/* Prepare one-shot prompt resources without advancing session state.
+ * Timed callers may invoke this before ds4_session_sync(). */
+int ds4_session_prepare_sync(ds4_session *s,
+                             const ds4_tokens *prompt,
+                             char *err,
+                             size_t errlen);
 int ds4_session_power(ds4_session *s);
 int ds4_session_set_power(ds4_session *s, int power_percent);
 float ds4_session_directional_steering_ffn(ds4_session *s);
@@ -520,7 +528,8 @@ int ds4_test_speculative_delta_sample(const float *target_logits,
                                       uint64_t *rng,
                                       float *target_probs);
 int ds4_test_argmax_excluding_logits(const float *logits, uint32_t n_vocab,
-                                     int excluded_id);
+                                      int excluded_id);
+int ds4_test_indexer_q_type_supported(uint32_t type);
 uint64_t ds4_test_mixed_native_count(void);
 uint64_t ds4_test_ds41_batch_count(void);
 #endif

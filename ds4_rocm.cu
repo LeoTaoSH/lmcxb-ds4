@@ -41,8 +41,21 @@
 
 #include "ds4_gpu.h"
 #include "ds4_image.h"
+#include "ds4_indexer_plan.h"
 
 static thread_local bool g_dspark_verify_mode;
+static thread_local ds4_gpu_execution_phase g_execution_phase = DS4_GPU_PHASE_AUTO;
+
+extern "C" ds4_gpu_execution_phase ds4_gpu_get_execution_phase(void) {
+    return g_execution_phase;
+}
+
+extern "C" ds4_gpu_execution_phase ds4_gpu_exchange_execution_phase(
+        ds4_gpu_execution_phase phase) {
+    const ds4_gpu_execution_phase previous = g_execution_phase;
+    g_execution_phase = phase;
+    return previous;
+}
 
 extern "C" void ds4_gpu_set_dspark_verify_mode(bool enabled) {
     g_dspark_verify_mode = enabled;
@@ -81,6 +94,7 @@ struct ds4_gpu_tensor {
     void *ptr;
     uint64_t bytes;
     int owner;
+    void *host_ptr = nullptr; /* coherent host allocation or view; otherwise NULL */
 };
 
 typedef struct {
@@ -124,6 +138,8 @@ __device__ __constant__ static const int8_t cuda_mxfp4_values_x2[16] = {
 
 #include "ds4_iq2_tables_cuda.inc"
 
+static int ds4_rocm_is_gfx1151(void);
+
 #include "rocm/ds4_rocm_runtime.cuh"
 
 #include "rocm/ds4_rocm_common.cuh"
@@ -131,6 +147,8 @@ __device__ __constant__ static const int8_t cuda_mxfp4_values_x2[16] = {
 extern "C" int ds4_gpu_dspark_gfx1151_fast_path(void) {
     return ds4_rocm_is_gfx1151();
 }
+
+#include "rocm/ds4_rocm_q4_qb_sidecar.cuh"
 
 #include "rocm/ds4_rocm_q8.cuh"
 
@@ -163,6 +181,8 @@ extern "C" int ds4_gpu_dspark_gfx1151_fast_path(void) {
 
 #include "rocm/ds4_rocm_moe.cuh"
 
+#include "rocm/ds4_rocm_q4.cuh"
+
 #include "rocm/ds4_rocm_moe_launch.cuh"
 
 #include "rocm/ds4_rocm_glm.cuh"
@@ -171,21 +191,13 @@ extern "C" int ds4_gpu_dspark_gfx1151_fast_path(void) {
 
 #include "rocm/ds4_rocm_current_api_compat.cuh"
 
+#include "rocm/ds4_rocm_v41.cuh"
+
 #include "ds4_glm53_vision_gpu.cuh"
 #include "ds4_deepseek4_vision_gpu.cuh"
 #include "rocm/ds4_rocm_deepseek4_vision.cuh"
 
-/* Tensor-parallel gates are Metal-only; stubs keep shared graph code
- * linkable (TP option validation rejects non-Metal backends). */
-extern "C" int ds4_gpu_tp_gate_encode(uint32_t layer, uint32_t gate) {
-    (void)layer; (void)gate;
-    fprintf(stderr, DS4_GPU_LOG_PREFIX "tensor parallelism is Metal-only\n");
-    return 0;
-}
-
-extern "C" void ds4_gpu_tp_set_batch_exchange(ds4_gpu_tp_batch_exchange_fn fn) {
-    (void)fn;
-}
+#include "rocm/ds4_rocm_tp.cuh"
 
 extern "C" void ds4_gpu_tp_suspend_expert_sharding(int suspend) {
     (void)suspend;
@@ -201,24 +213,6 @@ extern "C" void ds4_gpu_tp_set_attn_head_split(int enabled) {
 
 extern "C" void ds4_gpu_model_residency_skip(int skip) {
     (void)skip;
-}
-
-extern "C" void ds4_gpu_tp_set_big_exchange(ds4_gpu_tp_big_exchange_fn fn) {
-    (void)fn;
-}
-
-extern "C" int ds4_gpu_tp_big_gate_encode(uint32_t layer, uint32_t rows,
-                                          const ds4_gpu_tensor *out_t,
-                                          ds4_gpu_tensor *in_t,
-                                          uint64_t bytes) {
-    (void)layer; (void)rows; (void)out_t; (void)in_t; (void)bytes;
-    return 0;
-}
-
-extern "C" int ds4_gpu_tp_batch_gate_encode(uint32_t layer, uint32_t rows) {
-    (void)layer; (void)rows;
-    fprintf(stderr, DS4_GPU_LOG_PREFIX "tensor parallelism is Metal-only\n");
-    return 0;
 }
 
 extern "C" int ds4_gpu_matmul_q8_0_kslice_tensor(
