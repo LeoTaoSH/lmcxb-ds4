@@ -41266,12 +41266,17 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
     uint32_t ids[2][DS4_ENGRAM_COLS];
     ds4_engram_history next_history = g->history;
     if (!ds41_hash_tokens(g, &next_history, &token, 1, &ids[0][0])) return false;
-    for (uint32_t i = 0; !ds41_image_at(g, g->pos) && i < 2; i++) {
+    if (!ds41_image_at(g, g->pos)) {
 #ifdef __APPLE__
-        if (!ds4_engram_read_batch(&g->table[i], ids[i], 1, DS4_ENGRAM_COLS, g->rows[i]))
-            return false;
+        for (uint32_t i = 0; i < 2; i++)
+            if (!ds4_engram_read_batch(&g->table[i], ids[i], 1, DS4_ENGRAM_COLS, g->rows[i]))
+                return false;
 #else
-        if (!ds4_engram_read(&g->table[i], ids[i], DS4_ENGRAM_COLS, g->rows[i])) return false;
+        /* Both tables in one probe/fan-out: cached rows inline, misses in parallel. */
+        const ds4_engram_table *tables[2] = {&g->table[0], &g->table[1]};
+        const uint32_t *table_ids[2] = {ids[0], ids[1]};
+        float *outs[2] = {g->rows[0], g->rows[1]};
+        if (!ds4_engram_read_sets(tables, table_ids, outs, 2)) return false;
 #endif
     }
     const float initial_pre[] = {1, 0, 0, 0};
@@ -42059,6 +42064,7 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
         ok = queries[i] && heads[i];
     }
     const float initial_pre[] = {1, 0, 0, 0};
+#ifdef __APPLE__
     for (int i = 0; ok && i < count; i++) {
         ds41_gpu_graph *s = graphs[i];
         uint32_t ids[2][DS4_ENGRAM_COLS];
@@ -42074,6 +42080,35 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             ds4_gpu_embed_token_hc_tensor(g->rows_view[i].residual, model->map, model->size,
                 weights->token_embd->abs_offset, DS4_N_VOCAB, (uint32_t)tokens[i], DS4_N_EMBD, DS4_N_HC);
     }
+#else
+    /* Hash every row, read all their Engram rows in one probe/fan-out (cached
+     * rows inline, misses in parallel), then stage the GPU inputs in order. */
+    uint32_t row_ids[DS4_TP_BATCH_MAX_ROWS][2][DS4_ENGRAM_COLS];
+    const ds4_engram_table *set_tables[2 * DS4_TP_BATCH_MAX_ROWS];
+    const uint32_t *set_ids[2 * DS4_TP_BATCH_MAX_ROWS];
+    float *set_out[2 * DS4_TP_BATCH_MAX_ROWS];
+    size_t n_sets = 0;
+    for (int i = 0; ok && i < count; i++) {
+        ds41_gpu_graph *s = graphs[i];
+        const bool continued = i > 0 && (uint32_t)i < prefill_rows;
+        positions[i] = s->pos + (continued ? (uint32_t)i : 0u);
+        history[i] = continued ? history[i - 1] : s->history;
+        ok = ds4_engram_hash(&s->engram, &history[i], &tokens[i], NULL, 1, &row_ids[i][0][0]);
+        float (*disk_rows)[DS4_ENGRAM_COLS * DS4_ENGRAM_DIM] =
+            engram && (uint32_t)i < prefill_rows ? engram[i] : s->rows;
+        for (unsigned table = 0; ok && table < 2; table++) {
+            set_tables[n_sets] = &s->table[table];
+            set_ids[n_sets] = row_ids[i][table];
+            set_out[n_sets] = disk_rows[table];
+            n_sets++;
+        }
+    }
+    if (ok) ok = ds4_engram_read_sets(set_tables, set_ids, set_out, n_sets);
+    for (int i = 0; ok && i < count; i++)
+        ok = ds4_gpu_tensor_write(g->rows_view[i].pre, 0, initial_pre, sizeof(initial_pre)) &&
+            ds4_gpu_embed_token_hc_tensor(g->rows_view[i].residual, model->map, model->size,
+                weights->token_embd->abs_offset, DS4_N_VOCAB, (uint32_t)tokens[i], DS4_N_EMBD, DS4_N_HC);
+#endif
     if (ok) ok = ds4_gpu_tensor_write(g->prefill_tokens, 0, tokens, rows * sizeof(int));
     uint32_t il = 0;
     for (; ok && il < DS4_N_LAYER; il++) {

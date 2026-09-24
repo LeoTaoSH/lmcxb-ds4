@@ -232,9 +232,75 @@ static void test_all_scaled_values(void) {
     close(fd);
 }
 
+/* Decode sets must match ds4_engram_read() whether a row is decoded from the
+ * page cache inline or fetched by a reader thread after a cache miss. */
+static void test_sets(void) {
+    char path[] = "/tmp/ds4-engram-sets-XXXXXX";
+    const int fd = mkstemp(path);
+    assert(fd >= 0);
+    enum { ROWS = 97, SETS = 3, WIDTH = DS4_ENGRAM_COLS * DS4_ENGRAM_DIM };
+    /* Unaligned rows so that some of them straddle a page boundary. */
+    const uint64_t offset = 4096 + 8;
+    uint8_t raw[ROWS][DS4_ENGRAM_ROW_BYTES];
+    for (uint32_t r = 0; r < ROWS; r++) {
+        for (uint32_t i = 0; i < DS4_ENGRAM_DIM; i++) {
+            uint8_t code = (uint8_t)(r * 31 + i * 7);
+            if ((code & 127) == 127) code ^= 1;
+            raw[r][i] = code;
+        }
+        for (uint32_t i = DS4_ENGRAM_DIM; i < DS4_ENGRAM_ROW_BYTES; i++)
+            raw[r][i] = (uint8_t)(120 + (r + i) % 16);
+    }
+    assert(pwrite(fd, raw, sizeof(raw), offset) == sizeof(raw));
+    ds4_engram_table table[2];
+    assert(ds4_engram_table_open(&table[0], path, offset, ROWS));
+    assert(ds4_engram_table_open(&table[1], path, offset + 10 * DS4_ENGRAM_ROW_BYTES, ROWS - 10));
+    uint32_t ids[SETS][DS4_ENGRAM_COLS];
+    for (uint32_t k = 0; k < SETS; k++)
+        for (uint32_t j = 0; j < DS4_ENGRAM_COLS; j++)
+            ids[k][j] = (k * 13 + j * 5) % (k == 1 ? ROWS - 10 : ROWS);
+    static float got[SETS * WIDTH], want[SETS * WIDTH];
+    const ds4_engram_table *tables[SETS] = {&table[0], &table[1], &table[0]};
+    const uint32_t *set_ids[SETS] = {ids[0], ids[1], ids[2]};
+    float *outs[SETS] = {got, got + WIDTH, got + 2 * WIDTH};
+    for (uint32_t k = 0; k < SETS; k++)
+        assert(ds4_engram_read(tables[k], set_ids[k], DS4_ENGRAM_COLS, want + k * WIDTH));
+    for (int pass = 0; pass < 2; pass++) {
+#if defined(__linux__)
+        /* First pass with the rows dropped from the page cache: misses. */
+        if (pass == 0) {
+            assert(fsync(fd) == 0);
+            (void)posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        }
+#endif
+        memset(got, 0xff, sizeof(got));
+        assert(ds4_engram_read_sets(tables, set_ids, outs, SETS));
+        assert(memcmp(got, want, sizeof(got)) == 0);
+    }
+    assert(ds4_engram_read_sets(NULL, NULL, NULL, 0));
+    ids[2][5] = ROWS;
+    errno = 0;
+    assert(!ds4_engram_read_sets(tables, set_ids, outs, SETS) && errno == EINVAL);
+    ids[2][5] = 0;
+    const uint8_t nan = 127;
+    assert(pwrite(fd, &nan, 1, offset) == 1);
+    errno = 0;
+    assert(!ds4_engram_read_sets(tables, set_ids, outs, SETS) && errno == EDOM);
+    assert(pwrite(fd, raw, 1, offset) == 1);
+    assert(ftruncate(fd, offset + (ROWS - 1) * DS4_ENGRAM_ROW_BYTES + 100) == 0);
+    ids[0][0] = ROWS - 1;
+    errno = 0;
+    assert(!ds4_engram_read_sets(tables, set_ids, outs, SETS) && errno == EIO);
+    ds4_engram_table_close(&table[0]);
+    ds4_engram_table_close(&table[1]);
+    close(fd);
+    assert(unlink(path) == 0);
+}
+
 int main(void) {
     test_hash();
     test_rows();
+    test_sets();
     test_all_scaled_values();
     puts("Engram hashes, history and bounded disk rows: PASS");
     return 0;

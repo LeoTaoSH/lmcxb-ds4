@@ -59,5 +59,11 @@ bool ds4_engram_read(const ds4_engram_table *table, const uint32_t *rows,
  * On macOS, large batches use bounded concurrent pread readers. */
 bool ds4_engram_read_batch(const ds4_engram_table *table, const uint32_t *rows,
                            size_t tokens, size_t stride, float *out);
+/* Read DS4_ENGRAM_COLS rows for each (table, ids, out) set, e.g. both tables of
+ * a decode token or of a small row batch. On Linux, rows already in the page
+ * cache are decoded inline and only the misses go to parallel readers. */
+bool ds4_engram_read_sets(const ds4_engram_table *const *tables,
+                          const uint32_t *const *ids, float *const *out,
+                          size_t sets);
 
 #endif

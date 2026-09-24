@@ -15,6 +15,7 @@
 #include <dispatch/dispatch.h>
 #else
 #include <pthread.h>
+#include <sys/uio.h>
 #endif
 
 bool ds4_engram_layout_valid(const ds4_engram_layout *l) {
@@ -144,6 +145,27 @@ static float e4m3(uint8_t byte) {
     return byte & 128 ? -value : value;
 }
 
+static bool decode_row(const uint8_t raw[DS4_ENGRAM_ROW_BYTES], float *out) {
+    for (int j = 0; j < DS4_ENGRAM_DIM; j++) {
+        uint8_t code = raw[j], scale = raw[DS4_ENGRAM_DIM + j / 32];
+        if ((code & 127) == 127 || scale == 255) {
+            errno = EDOM;
+            return false;
+        }
+        float value = ldexpf(e4m3(code), (int)scale - 127);
+        uint32_t bits;
+        memcpy(&bits, &value, sizeof(bits));
+        bits = (bits + 0x7fffu + ((bits >> 16) & 1u)) & 0xffff0000u;
+        memcpy(&value, &bits, sizeof(value));
+        if (!isfinite(value)) {
+            errno = EDOM;
+            return false;
+        }
+        out[j] = value;
+    }
+    return true;
+}
+
 bool ds4_engram_read(const ds4_engram_table *t, const uint32_t *rows,
                      size_t count, float *out) {
     if (!t || t->fd < 0 || (count && (!rows || !out)) ||
@@ -160,23 +182,7 @@ bool ds4_engram_read(const ds4_engram_table *t, const uint32_t *rows,
     uint8_t raw[DS4_ENGRAM_ROW_BYTES];
     for (size_t i = 0; i < count; i++) {
         if (!read_row(t->fd, t->offset + (uint64_t)rows[i] * sizeof(raw), raw)) return false;
-        for (int j = 0; j < DS4_ENGRAM_DIM; j++) {
-            uint8_t code = raw[j], scale = raw[DS4_ENGRAM_DIM + j / 32];
-            if ((code & 127) == 127 || scale == 255) {
-                errno = EDOM;
-                return false;
-            }
-            float value = ldexpf(e4m3(code), (int)scale - 127);
-            uint32_t bits;
-            memcpy(&bits, &value, sizeof(bits));
-            bits = (bits + 0x7fffu + ((bits >> 16) & 1u)) & 0xffff0000u;
-            memcpy(&value, &bits, sizeof(value));
-            if (!isfinite(value)) {
-                errno = EDOM;
-                return false;
-            }
-            out[i * DS4_ENGRAM_DIM + j] = value;
-        }
+        if (!decode_row(raw, out + i * DS4_ENGRAM_DIM)) return false;
     }
     return true;
 }
@@ -311,4 +317,142 @@ bool ds4_engram_read_batch(const ds4_engram_table *t, const uint32_t *rows,
     free(request);
     errno = saved;
     return ok;
+}
+
+#ifndef __APPLE__
+/* Decode reads only 24 rows per table, below the batch reader's threshold, so
+ * they used to run as serial preads. With a cold page cache each is a random
+ * NVMe read: on two GB10 nodes 48 serial rows took ~15 ms per token, 16 readers
+ * ~3.7 ms, and uncached V4.1 decode ran ~17 t/s against ~22 t/s cached. */
+typedef struct {
+    const ds4_engram_table *table;
+    uint32_t row;
+    float *out;
+} engram_miss;
+
+typedef struct {
+    const engram_miss *miss;
+    size_t count, readers;
+    int error[ENGRAM_READERS];
+} engram_miss_batch;
+
+typedef struct {
+    engram_miss_batch *batch;
+    size_t part;
+} engram_miss_reader;
+
+static void read_miss_part(engram_miss_batch *batch, size_t part) {
+    const size_t begin = batch->count * part / batch->readers;
+    const size_t end = batch->count * (part + 1) / batch->readers;
+    for (size_t i = begin; i < end; i++) {
+        const engram_miss *m = &batch->miss[i];
+        if (!ds4_engram_read(m->table, &m->row, 1, m->out)) {
+            batch->error[part] = errno ? errno : EIO;
+            return;
+        }
+    }
+}
+
+static void *read_miss_thread(void *context) {
+    engram_miss_reader *reader = context;
+    read_miss_part(reader->batch, reader->part);
+    return NULL;
+}
+
+/* DS4_ENGRAM_DECODE_PARALLEL=0 restores the serial reads (A/B checks). */
+static bool engram_sets_parallel(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("DS4_ENGRAM_DECODE_PARALLEL");
+        cached = !(s && s[0] == '0');
+    }
+    return cached != 0;
+}
+#endif
+
+bool ds4_engram_read_sets(const ds4_engram_table *const *tables,
+                          const uint32_t *const *ids, float *const *out,
+                          size_t sets) {
+    if (sets && (!tables || !ids || !out)) {
+        errno = EINVAL;
+        return false;
+    }
+#ifndef __APPLE__
+    if (sets && engram_sets_parallel() &&
+        sets <= SIZE_MAX / DS4_ENGRAM_COLS / sizeof(engram_miss)) {
+        const size_t total = sets * DS4_ENGRAM_COLS;
+        engram_miss local[2 * DS4_ENGRAM_COLS];
+        engram_miss *miss = total <= 2 * DS4_ENGRAM_COLS ? local :
+            malloc(total * sizeof(*miss));
+        if (miss) {
+            bool ok = true;
+            size_t n_miss = 0;
+            for (size_t k = 0; ok && k < sets; k++) {
+                const ds4_engram_table *t = tables[k];
+                if (!t || t->fd < 0 || !ids[k] || !out[k]) {
+                    errno = EINVAL;
+                    ok = false;
+                    break;
+                }
+                for (size_t j = 0; j < DS4_ENGRAM_COLS; j++) {
+                    const uint32_t row = ids[k][j];
+                    float *dst = out[k] + j * DS4_ENGRAM_DIM;
+                    if (row >= t->rows) {
+                        errno = EINVAL;
+                        ok = false;
+                        break;
+                    }
+                    /* A cached row costs one copy: probe without waiting for I/O. */
+                    uint8_t raw[DS4_ENGRAM_ROW_BYTES];
+                    struct iovec iov = {raw, sizeof(raw)};
+                    const ssize_t n = preadv2(t->fd, &iov, 1,
+                        (off_t)(t->offset + (uint64_t)row * sizeof(raw)), RWF_NOWAIT);
+                    if (n == (ssize_t)sizeof(raw)) {
+                        if (!decode_row(raw, dst)) {
+                            ok = false;
+                            break;
+                        }
+                    } else {
+                        miss[n_miss++] = (engram_miss){t, row, dst};
+                    }
+                }
+            }
+            if (ok && n_miss) {
+                engram_miss_batch batch = {.miss = miss, .count = n_miss,
+                    .readers = n_miss < ENGRAM_READERS ? n_miss : ENGRAM_READERS};
+                pthread_t threads[ENGRAM_READERS - 1];
+                engram_miss_reader readers[ENGRAM_READERS - 1];
+                size_t started = 0;
+                for (size_t part = 1; part < batch.readers; part++) {
+                    readers[started] = (engram_miss_reader){&batch, part};
+                    if (pthread_create(&threads[started], NULL, read_miss_thread,
+                                       &readers[started])) break;
+                    started++;
+                }
+                read_miss_part(&batch, 0);
+                /* Thread exhaustion only reduces concurrency, not correctness. */
+                for (size_t part = started + 1; part < batch.readers; part++)
+                    read_miss_part(&batch, part);
+                for (size_t part = 0; part < started; part++)
+                    if (pthread_join(threads[part], NULL)) abort();
+                for (size_t i = 0; i < batch.readers; i++) {
+                    if (batch.error[i]) {
+                        errno = batch.error[i];
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if (miss != local) {
+                int saved = errno;
+                free(miss);
+                errno = saved;
+            }
+            return ok;
+        }
+    }
+#endif
+    for (size_t k = 0; k < sets; k++)
+        if (!ds4_engram_read(tables[k], ids[k], DS4_ENGRAM_COLS, out[k])) return false;
+    return true;
 }
