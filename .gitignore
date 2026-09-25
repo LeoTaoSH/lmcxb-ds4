@@ -73,6 +73,10 @@
 /tests/test_qwen4_ngram_state
 /tests/test_deepseek41_graph
 /tests/test_deepseek41_prefill
+/tests/test_deepseek41_packed
+/tests/test_imatrix_checkpoint
+/tests/test_imatrix_dataset
+/tests/test_imatrix_cli
 /tests/test_deepseek41_cli
 /tests/test_engram
 *.o
