@@ -77,6 +77,10 @@ before speculation resumes. Measure speed on your prompts: acceptance and SSD
 cache size both matter. V4.1 DSpark can still be slower than ordinary decoding,
 including in TP mode.
 
+The earlier M3 Ultra campaign measured a separate Q8_0 drafter and exact
+verification implementation; its [historical measurements](../speed-bench/ds41f-m3ultra-perf/mxfp4/README.md)
+do not qualify the current upstream drafter.
+
 ## GLM: built-in MTP
 
 GLM's draft block is already in its main GGUF:
