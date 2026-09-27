@@ -14149,8 +14149,15 @@ __global__ static void __launch_bounds__(512) indexer_topk_stream512_kernel(
         }
         __syncthreads();
 
-        if (s_cnt > STREAM_CAP - tile) {
-            const uint32_t cnt = s_cnt;
+        /* Every thread must take the same compaction decision: read s_cnt
+         * once, then barrier before any warp can atomicAdd the next tile.
+         * Without it a fast warp advances, bumps s_cnt, and a slow warp
+         * sees a different count, entering compaction alone (divergent
+         * __syncthreads) or skipping it while buf overflows STREAM_CAP. */
+        const uint32_t cnt_now = s_cnt;
+        __syncthreads();
+        if (cnt_now > STREAM_CAP - tile) {
+            const uint32_t cnt = cnt_now;
             uint64_t keys[STREAM_ITEMS];
 #pragma unroll
             for (uint32_t k = 0; k < STREAM_ITEMS; k++) {
