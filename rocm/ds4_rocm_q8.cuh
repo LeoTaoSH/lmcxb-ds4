@@ -286,6 +286,60 @@ __global__ static void matmul_q8_0_preq_batch_warp8_kernel(
     if (lane == 0) out[tok * out_dim + row] = acc;
 }
 
+/* Reuse packed Q8 weights across two activation rows, with the same
+ * per-token integer dots and wave reduction as ordinary prequant decode. */
+__global__ static void matmul_q8_0_preq_batch_warp8_tok2_kernel(
+        float *out,
+        const unsigned char *w,
+        const int8_t *xq,
+        const float *xscale,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        uint64_t blocks,
+        int use_dp4a) {
+    const uint64_t row = (uint64_t)blockIdx.x * 8u + (threadIdx.x >> 5u);
+    const uint32_t lane = threadIdx.x & 31u;
+    if (row >= out_dim) return;
+
+    const unsigned char *wr = w + row * blocks * 34u;
+    const int8_t *xqr0 = xq;
+    const int8_t *xqr1 = xq + blocks * 32u;
+    const float *xsr0 = xscale;
+    const float *xsr1 = xscale + blocks;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    for (uint64_t b = lane; b < blocks; b += 32u) {
+        const uint64_t i0 = b * 32u;
+        const uint64_t bn = in_dim - i0 < 32u ? in_dim - i0 : 32u;
+        const __half *scale_h = (const __half *)(wr + b * 34u);
+        const int8_t *qs = (const int8_t *)(wr + b * 34u + 2u);
+        const int8_t *xqb0 = xqr0 + b * 32u;
+        const int8_t *xqb1 = xqr1 + b * 32u;
+        int dot0 = 0;
+        int dot1 = 0;
+        if (use_dp4a && bn == 32u) {
+#pragma unroll
+            for (uint32_t i = 0; i < 32u; i += 4u) {
+                const int32_t w4 = load_i8x4_i32_unaligned(qs + i);
+                dot0 = __dp4a(w4, load_i8x4_i32_aligned(xqb0 + i), dot0);
+                dot1 = __dp4a(w4, load_i8x4_i32_aligned(xqb1 + i), dot1);
+            }
+        } else {
+            dot0 = dot_i8_block(qs, xqb0, bn, use_dp4a);
+            dot1 = dot_i8_block(qs, xqb1, bn, use_dp4a);
+        }
+        const float ws = __half2float(*scale_h);
+        acc0 += ws * xsr0[b] * (float)dot0;
+        acc1 += ws * xsr1[b] * (float)dot1;
+    }
+    acc0 = warp_sum_f32(acc0);
+    acc1 = warp_sum_f32(acc1);
+    if (lane == 0) {
+        out[row] = acc0;
+        out[out_dim + row] = acc1;
+    }
+}
+
 __device__ static float q8_0_scale_scalar(const unsigned char *blk) {
     const uint16_t bits = (uint16_t)blk[0] | ((uint16_t)blk[1] << 8);
     return __half2float(__ushort_as_half((unsigned short)bits));
@@ -623,7 +677,7 @@ typedef float    __attribute__((ext_vector_type(8)))  ds4_q8_float8_t;
  * into LDS as f16, while each wave owns 16 output rows and computes four
  * 16-token WMMA columns.  It is opt-in from host code because it only wins once
  * the token batch is large enough to amortize the bigger tile. */
-template <uint32_t M_TILE, uint32_t WARPS>
+template <uint32_t M_TILE, uint32_t WARPS, uint32_t PAD=0>
 __launch_bounds__(WARPS * 32u, 1)
 __global__ static void matmul_q8_0_f32_batch_wmma_rowtile_kernel(
         float *out,
@@ -657,7 +711,7 @@ __global__ static void matmul_q8_0_f32_batch_wmma_rowtile_kernel(
     ds4_q8_float8_t acc2 = acc0;
     ds4_q8_float8_t acc3 = acc0;
 
-    __shared__ _Float16 lds_x[N_TILE * K_TILE];
+    __shared__ _Float16 lds_x[N_TILE * (K_TILE + PAD)];
 
     for (uint32_t bi = 0; bi < n_blocks; bi++) {
         for (uint32_t j = tid * 2u; j < N_TILE * K_TILE; j += blockDim.x * 2u) {
@@ -669,7 +723,11 @@ __global__ static void matmul_q8_0_f32_batch_wmma_rowtile_kernel(
                 const float2 f = *(const float2 *)(x + (uint64_t)tok * in_dim + bi * 32u + kk);
                 xv = __floats2half2_rn(f.x, f.y);
             }
-            *(half2 *)(lds_x + j) = xv;
+            if constexpr (PAD == 0u) {
+                *(half2 *)(lds_x + j) = xv;
+            } else {
+                *(half2 *)(lds_x + nt * (K_TILE + PAD) + kk) = xv;
+            }
         }
         __syncthreads();
 
@@ -694,7 +752,7 @@ __global__ static void matmul_q8_0_f32_batch_wmma_rowtile_kernel(
 #pragma unroll
         for (uint32_t ntile = 0; ntile < N_TILES_PER_WARP; ntile++) {
             const uint32_t nt = ntile * 16u + lane16;
-            const _Float16 *xb = lds_x + nt * K_TILE;
+            const _Float16 *xb = lds_x + nt * (K_TILE + PAD);
             const ds4_q8_half16_t b0 = *(const ds4_q8_half16_t *)(xb);
             const ds4_q8_half16_t b1 = *(const ds4_q8_half16_t *)(xb + 16u);
             if (ntile == 0u) {

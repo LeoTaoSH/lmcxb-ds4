@@ -260,6 +260,118 @@ __global__ static void glm53_rocm_matvec_bf16_f32_kernel(
     }
 }
 
+// Read adjacent BF16 elements together on the large decode projections.
+// The two values share the same input row and the same output accumulator.
+__global__ static void glm53_rocm_matvec_bf16_pair_f32_kernel(
+        float *out,
+        const uint16_t *weights,
+        const float *x,
+        uint32_t in_dim,
+        uint32_t out_dim) {
+    const uint32_t warp = threadIdx.x >> 5u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t col = blockIdx.x * 4u + warp;
+    const uint32_t row = blockIdx.y;
+    float sum = 0.0f;
+    if (col < out_dim) {
+        const uint16_t *wrow = weights + (uint64_t)col * in_dim;
+        const float *xrow = x + (uint64_t)row * in_dim;
+        for (uint32_t i = lane * 2u; i < in_dim; i += 64u) {
+            const float w0 = __uint_as_float((uint32_t)wrow[i] << 16);
+            const float w1 = __uint_as_float((uint32_t)wrow[i + 1u] << 16);
+            sum = fmaf(w0, xrow[i], sum);
+            sum = fmaf(w1, xrow[i + 1u], sum);
+        }
+    }
+    sum = warp_sum_f32(sum);
+    if (lane == 0u && col < out_dim) {
+        out[(uint64_t)row * out_dim + col] = sum;
+    }
+}
+
+// Prefetch eight adjacent weight pairs per lane to cover memory latency.
+// Each token retains the paired matvec's FMA order and wave reduction.
+// Two-token verification shares the prefetched weights without extra storage.
+template<int TOKENS>
+__global__ static void glm53_rocm_matvec_bf16_prefetch_f32_kernel(
+        float *out,
+        const uint16_t *__restrict__ weights,
+        const float *__restrict__ x,
+        uint32_t in_dim,
+        uint32_t out_dim) {
+    constexpr uint32_t PAIRS = 8u;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t col = blockIdx.x * 2u + (threadIdx.x >> 5u);
+    const uint16_t *wrow = weights + (uint64_t)col * in_dim;
+    float sum[TOKENS] = {};
+    for (uint32_t base = lane * 2u; base < in_dim; base += 64u * PAIRS) {
+        float weight[PAIRS][2];
+        float input[PAIRS][TOKENS][2];
+        #pragma unroll
+        for (uint32_t pair = 0; pair < PAIRS; pair++) {
+            const uint32_t i = base + 64u * pair;
+            if (i + 1u < in_dim && col < out_dim) {
+                const uint32_t packed = *(const uint32_t *)(wrow + i);
+                weight[pair][0] = __uint_as_float(packed << 16);
+                weight[pair][1] = __uint_as_float(packed & 0xffff0000u);
+            } else {
+                weight[pair][0] = weight[pair][1] = 0.0f;
+            }
+            #pragma unroll
+            for (int token = 0; token < TOKENS; token++) {
+                #pragma unroll
+                for (uint32_t j = 0; j < 2u; j++) {
+                    input[pair][token][j] = i + j < in_dim
+                        ? x[(uint64_t)token * in_dim + i + j] : 0.0f;
+                }
+            }
+        }
+        #pragma unroll
+        for (uint32_t pair = 0; pair < PAIRS; pair++) {
+            if (base + 64u * pair >= in_dim) continue;
+            #pragma unroll
+            for (int token = 0; token < TOKENS; token++) {
+                sum[token] = fmaf(weight[pair][0], input[pair][token][0], sum[token]);
+                sum[token] = fmaf(weight[pair][1], input[pair][token][1], sum[token]);
+            }
+        }
+    }
+    #pragma unroll
+    for (int token = 0; token < TOKENS; token++) {
+        const float value = warp_sum_f32(sum[token]);
+        if (lane == 0u && col < out_dim) out[(uint64_t)token * out_dim + col] = value;
+    }
+}
+
+// Verify two tokens together, loading each BF16 weight once. Each token keeps
+// the paired matvec's FMA order and wave reduction, without a temporary buffer.
+__global__ static void glm53_rocm_matvec_bf16_pair_tok2_f32_kernel(
+        float *out,
+        const uint16_t *weights,
+        const float *x,
+        uint32_t in_dim,
+        uint32_t out_dim) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t col = blockIdx.x;
+    float sum0 = 0.0f;
+    float sum1 = 0.0f;
+    const uint16_t *wrow = weights + (uint64_t)col * in_dim;
+    for (uint32_t i = lane * 2u; i < in_dim; i += 64u) {
+        const float w0 = __uint_as_float((uint32_t)wrow[i] << 16);
+        const float w1 = __uint_as_float((uint32_t)wrow[i + 1u] << 16);
+        sum0 = fmaf(w0, x[i], sum0);
+        sum0 = fmaf(w1, x[i + 1u], sum0);
+        sum1 = fmaf(w0, x[(uint64_t)in_dim + i], sum1);
+        sum1 = fmaf(w1, x[(uint64_t)in_dim + i + 1u], sum1);
+    }
+    sum0 = warp_sum_f32(sum0);
+    sum1 = warp_sum_f32(sum1);
+    if (lane == 0u) {
+        out[col] = sum0;
+        out[(uint64_t)out_dim + col] = sum1;
+    }
+}
+
 __global__ static void glm53_rocm_matvec_bf16_row_f32_kernel(
         float *out,
         const uint16_t *weights,
@@ -362,6 +474,40 @@ extern "C" int ds4_gpu_glm53_matmul_bf16(
         "GLM-5.3 BF16 matrix");
     if (!weights) return 0;
     if (n_rows <= 8u) {
+        if (g_glm_model && ds4_rocm_is_gfx1151() &&
+            out_dim >= 4096u && in_dim >= 4096u &&
+            (in_dim & 1u) == 0u &&
+            getenv("DS4_ROCM_GLM_DISABLE_BF16_PAIR_MATVEC") == NULL) {
+            // Keep the lower-register two-token path for vocabulary-sized outputs.
+            if ((n_rows == 1u || (n_rows == 2u && out_dim <= 8192u)) &&
+                (weight_offset & 3u) == 0u) {
+                const dim3 grid((out_dim + 1u) / 2u, 1u, 1u);
+                if (n_rows == 1u) {
+                    glm53_rocm_matvec_bf16_prefetch_f32_kernel<1><<<grid, 64u>>>(
+                        (float *)out->ptr, (const uint16_t *)weights,
+                        (const float *)x->ptr, in_dim, out_dim);
+                } else {
+                    glm53_rocm_matvec_bf16_prefetch_f32_kernel<2><<<grid, 64u>>>(
+                        (float *)out->ptr, (const uint16_t *)weights,
+                        (const float *)x->ptr, in_dim, out_dim);
+                }
+                return cuda_ok(cudaGetLastError(),
+                               "GLM-5.3 BF16/F32 prefetch matvec launch");
+            }
+            if (n_rows == 2u) {
+                glm53_rocm_matvec_bf16_pair_tok2_f32_kernel<<<out_dim, 32u>>>(
+                    (float *)out->ptr, (const uint16_t *)weights,
+                    (const float *)x->ptr, in_dim, out_dim);
+                return cuda_ok(cudaGetLastError(),
+                               "GLM-5.3 BF16/F32 two-token matvec launch");
+            }
+            const dim3 pair_grid((out_dim + 3u) / 4u, n_rows, 1u);
+            glm53_rocm_matvec_bf16_pair_f32_kernel<<<pair_grid, 128u>>>(
+                (float *)out->ptr, (const uint16_t *)weights,
+                (const float *)x->ptr, in_dim, out_dim);
+            return cuda_ok(cudaGetLastError(),
+                           "GLM-5.3 BF16/F32 paired matvec launch");
+        }
         if (out_dim <= 128u && in_dim >= 4096u &&
             getenv("DS4_ROCM_GLM_DISABLE_BF16_ROW_MATVEC") == NULL) {
             const dim3 row_grid(out_dim, n_rows, 1u);
@@ -457,6 +603,21 @@ extern "C" int ds4_gpu_matmul_q4_K_tensor(
     const char *weight = cuda_model_range_ptr(
         model_map, weight_offset, weight_bytes, "GLM-5.3 Q4_K matrix");
     if (!weight) return 0;
+    // GLM-5.3 KDA Q/K bulk projection. MMQ uses 32-value Q8_1
+    // activation scales instead of this entry's 256-value Q8_K scales.
+    // Keep quality, streaming, small-row and other-model arithmetic intact.
+    if (g_glm_model && !g_quality_mode && !g_ssd_streaming_mode &&
+        ds4_rocm_is_gfx1151() && in_dim == 4096u && out_dim == 8192u &&
+        n_rows >= 128u && n_rows <= 2048u) {
+        const int rc = ds4_mmq_q4_K_dense(
+            weight, (const float *)x->ptr, (float *)out->ptr,
+            (int)out_dim, (int)n_rows, (int)in_dim, (cudaStream_t)0);
+        if (rc != 0) {
+            fprintf(stderr, "ds4: GLM-5.3 Q4_K MMQ failed (%d)\n", rc);
+            return 0;
+        }
+        return 1;
+    }
     cuda_block_q8_K *xq = (cuda_block_q8_K *)cuda_tmp_alloc(
         xq_bytes,
         "GLM-5.3 Q4_K activations");
@@ -722,6 +883,7 @@ __global__ static void glm53_rocm_kda_prefill_prepare_kernel(
     }
 }
 
+template<uint32_t WAVES>
 __global__ static void glm53_rocm_kda_prefill_recurrence_kernel(
         float *out,
         float *state,
@@ -733,7 +895,7 @@ __global__ static void glm53_rocm_kda_prefill_recurrence_kernel(
         uint32_t n_heads,
         uint32_t n_tokens) {
     const uint32_t head = blockIdx.x;
-    const uint32_t value = blockIdx.y * 4u + (threadIdx.x >> 5u);
+    const uint32_t value = blockIdx.y * WAVES + (threadIdx.x >> 5u);
     const uint32_t lane = threadIdx.x & 31u;
     if (head >= n_heads || value >= GLM53_ROCM_KDA_DIM) return;
     const uint32_t projection = n_heads * GLM53_ROCM_KDA_DIM;
@@ -935,12 +1097,24 @@ extern "C" int ds4_gpu_glm53_kda_prefill(
                  "GLM-5.3 KDA prefill prepare launch")) {
         return 0;
     }
-    const dim3 recurrence_grid(n_heads, 32u, 1u);
-    glm53_rocm_kda_prefill_recurrence_kernel<<<recurrence_grid, 128u>>>(
-        (float *)out->ptr, (float *)recurrent_state->ptr,
-        (const float *)q->ptr, (const float *)k->ptr,
-        (const float *)v->ptr, (const float *)raw_gate->ptr,
-        (const float *)raw_beta->ptr, n_heads, n_tokens);
+#ifdef __HIP_PLATFORM_AMD__
+    if (ds4_rocm_is_gfx1151()) {
+        glm53_rocm_kda_prefill_recurrence_kernel<16><<<
+            dim3(n_heads, 8u, 1u), 512u>>>(
+                (float *)out->ptr, (float *)recurrent_state->ptr,
+                (const float *)q->ptr, (const float *)k->ptr,
+                (const float *)v->ptr, (const float *)raw_gate->ptr,
+                (const float *)raw_beta->ptr, n_heads, n_tokens);
+    } else
+#endif
+    {
+        glm53_rocm_kda_prefill_recurrence_kernel<4><<<
+            dim3(n_heads, 32u, 1u), 128u>>>(
+                (float *)out->ptr, (float *)recurrent_state->ptr,
+                (const float *)q->ptr, (const float *)k->ptr,
+                (const float *)v->ptr, (const float *)raw_gate->ptr,
+                (const float *)raw_beta->ptr, n_heads, n_tokens);
+    }
     if (!cuda_ok(cudaGetLastError(),
                  "GLM-5.3 KDA prefill recurrence launch")) {
         return 0;
@@ -1511,6 +1685,56 @@ __global__ static void glm_indexer_scores_batch_kernel(
         __syncthreads();
     }
     if (threadIdx.x == 0u) *dst = score;
+}
+
+/* GLM-5.3 bulk scorer on gfx1151: one wave32 per pooled key/query pair.
+ * Keep FP32 queries, sequential head accumulation, and the scalar tree's
+ * 64/32/16/8/4/2/1 grouping. Four independent waves need no block barriers. */
+__global__ static void glm53_indexer_scores_wave32_kernel(
+        float *scores,
+        const float *q,
+        const float *weights,
+        const __half *indexer_key_cache,
+        uint32_t n_rows,
+        uint32_t n_tokens,
+        uint32_t pos0,
+        float scale) {
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t row = blockIdx.x * 4u + (threadIdx.x >> 5u);
+    const uint32_t token = blockIdx.y;
+    if (row >= n_rows || token >= n_tokens) return;
+    float *dst = scores + (uint64_t)token * n_rows + row;
+    if (row >= (pos0 + token + 1u) / 4u) {
+        if (lane == 0u) *dst = -INFINITY;
+        return;
+    }
+    const __half *kr = indexer_key_cache + (uint64_t)row * 128u + lane;
+    const float k0 = __half2float(kr[0]);
+    const float k1 = __half2float(kr[32]);
+    const float k2 = __half2float(kr[64]);
+    const float k3 = __half2float(kr[96]);
+    float score = 0.0f;
+    for (uint32_t h = 0; h < 32u; ++h) {
+        const float *qh = q + ((uint64_t)token * 32u + h) * 128u + lane;
+        float dot;
+        {
+            // Preserve the explicit pair tree. The gfx1151 backend can still
+            // fuse product pairs, so rounding differs from the scalar kernel.
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+            const float p0 = qh[0] * k0;
+            const float p1 = qh[32] * k1;
+            const float p2 = qh[64] * k2;
+            const float p3 = qh[96] * k3;
+            dot = (p0 + p2) + (p1 + p3);
+        }
+        dot = warp_sum_f32(dot);
+        if (lane == 0u) {
+            score += fmaxf(dot * scale, 0.0f) *
+                     weights[(uint64_t)token * 32u + h];
+        }
+    }
+    if (lane == 0u) *dst = score;
 }
 
 __global__ static void glm_attention_indexed_lora_kernel(
@@ -2944,6 +3168,19 @@ extern "C" int ds4_gpu_glm53_indexer_scores_batch_tensor(
         !cuda_tensor_has_elems2(weights, n_tokens, n_head, sizeof(float)) ||
         !glm_rocm_tensor_has_cache2(indexer_key_cache, n_rows, head_dim, elem)) {
         return 0;
+    }
+    if (g_glm_model && !g_quality_mode && !g_ssd_streaming_mode &&
+        ds4_rocm_is_gfx1151() &&
+        cache_f16 && n_head == 32u && head_dim == 128u &&
+        pool_size == 4u && n_tokens >= 128u) {
+        const dim3 grid(n_rows / 4u + (n_rows % 4u != 0u), n_tokens, 1u);
+        glm53_indexer_scores_wave32_kernel<<<grid, 128u>>>(
+                (float *)scores->ptr, (const float *)q->ptr,
+                (const float *)weights->ptr,
+                (const __half *)indexer_key_cache->ptr,
+                n_rows, n_tokens, pos0, scale);
+        return cuda_ok(cudaGetLastError(),
+                       "GLM-5.3 grouped indexer wave32 scores launch");
     }
     const dim3 grid(n_rows, n_tokens, 1u);
     glm_indexer_scores_batch_kernel<<<grid, 256u>>>(
