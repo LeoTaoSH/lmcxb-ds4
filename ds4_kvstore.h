@@ -31,6 +31,7 @@ typedef enum {
     DS4_KVSTORE_LOG_DEFAULT,
     DS4_KVSTORE_LOG_KVCACHE,
     DS4_KVSTORE_LOG_WARNING,
+    DS4_KVSTORE_LOG_DEBUG,  /* diagnostics the front end may drop */
 } ds4_kvstore_log_type;
 
 typedef struct {

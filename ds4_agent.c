@@ -1553,10 +1553,12 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
      * supplied -sys text: arbitrary user text containing <｜User｜>, <think>, or
      * ｜DSML｜ must remain plain content, not control tokens. */
     char *tools_prompt = agent_build_tools_prompt(engine, edit_upto);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
+    if (agent_tool_syntax_for_engine(engine) == AGENT_TOOL_SYNTAX_QWEN)
         ds4_chat_append_message(engine, tokens, "system", tools_prompt);
     else {
-        if (ds4_engine_is_deepseek41(engine))
+        /* GLM's tool prompt is control text too: its <tool_call>/<arg_key>
+         * examples must become the dedicated tokens. */
+        if (ds4_engine_is_deepseek41(engine) || ds4_engine_is_glm_dsa(engine))
             ds4_chat_append_message(engine, tokens, "system", "");
         ds4_tokenize_rendered_chat(engine, tools_prompt, tokens);
     }
@@ -1610,8 +1612,11 @@ static void agent_worker_maybe_append_system_prompt_reminder(agent_worker *w) {
     agent_publish_system_status(w, "Re-injecting system prompt reminder...");
     agent_trace(w, "system prompt reminder injected at transcript=%d",
                 w->transcript.len);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(w->engine))) {
+    if (agent_tool_syntax_for_engine(w->engine) == AGENT_TOOL_SYNTAX_QWEN) {
         ds4_chat_append_message(w->engine, &w->transcript, "system", reminder);
+    } else if (agent_tool_syntax_for_engine(w->engine) == AGENT_TOOL_SYNTAX_GLM) {
+        ds4_chat_append_message(w->engine, &w->transcript, "system", "");
+        ds4_tokenize_rendered_chat(w->engine, reminder, &w->transcript);
     } else {
         ds4_tokenize_rendered_chat(w->engine, reminder, &w->transcript);
     }

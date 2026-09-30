@@ -125,6 +125,13 @@ workloads, the controls are `--kv-cache-min-tokens`,
 `--kv-cache-boundary-trim-tokens`, and `--kv-cache-boundary-align-tokens`.
 Check `./ds4-server --help` for their defaults.
 
+Marker strings such as `<｜User｜>`, `<|user|>` or `<think>` that appear inside
+message content are tokenized as ordinary text. Internally the rendered prompt
+carries a `0x01` byte in front of such a string; the tokenizer drops it, and
+cache keys derived from tokens carry it too, so prompt text and cache keys
+stay byte-identical. Set `DS4_SERVER_KV_DEBUG=1` to log disk cache lookups
+that find no matching prefix.
+
 Quantization variants may share compatible prefixes. Add
 `--kv-cache-reject-different-quant` for same-quant reuse only.
 Cache files contain prompt text and model state: treat the directory as

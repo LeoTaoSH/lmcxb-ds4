@@ -70,6 +70,7 @@
 /tests/test_cuda_ssd_repack
 /tests/test_deepseek41_gguf
 /tests/test_qwen4_ngrams
+/tests/test_chat_markers
 /tests/test_qwen4_ngram_state
 /tests/test_deepseek41_graph
 /tests/test_deepseek41_prefill

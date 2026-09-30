@@ -370,7 +370,24 @@ void ds4_tokens_copy(ds4_tokens *dst, const ds4_tokens *src);
 bool ds4_tokens_starts_with(const ds4_tokens *tokens, const ds4_tokens *prefix);
 
 void ds4_tokenize_text(ds4_engine *e, const char *text, ds4_tokens *out);
+/* Tokenize a rendered chat: marker strings such as <｜User｜> or <|user|> become
+ * special tokens.  Message content must go through ds4_chat_escape_markers()
+ * first so its markers stay plain text; raw prompts that are documented to
+ * carry markers are passed as is. */
 void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out);
+/* Tokenizer-only engine (tests, tools): maps the GGUF and loads its vocabulary;
+ * no weights, no backend.  family is "deepseek4", "deepseek41", "glm" or
+ * "qwen4" to force the chat syntax for a tokenizer-only GGUF, or NULL to read
+ * it from a real model file.  Returns 0 on success. */
+int ds4_engine_open_vocab_only(ds4_engine **out, const char *model_path, const char *family);
+void ds4_engine_close_vocab_only(ds4_engine *e);
+#define DS4_CHAT_ESCAPE '\x01'
+/* Returns a malloc'd copy of text[0..len) in which every chat marker string is
+ * preceded by DS4_CHAT_ESCAPE (and a literal escape byte is doubled). */
+char *ds4_chat_escape_markers(const char *text, size_t len, size_t *out_len);
+/* Token to text in the form ds4_tokenize_rendered_chat() accepts: special
+ * tokens as their markers, marker strings inside plain tokens escaped. */
+char *ds4_tokens_render_chat_text(ds4_engine *e, const ds4_tokens *tokens, size_t *out_len);
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens);
 void ds4_encode_chat_prompt(
         ds4_engine *e,

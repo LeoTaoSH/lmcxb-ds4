@@ -12,10 +12,15 @@ It also records which checks were not completed. A smoke test is not full QA.
 Model-free checks include:
 
 ```sh
-make ds4_test ds4_agent_test test-session-state
+make ds4_test ds4_agent_test test-session-state test-chat-markers
 ./ds4_test --server
 ./ds4_agent_test
 ```
+
+`test-chat-markers` checks that chat marker strings in message content are
+tokenized as plain text for every model family, using synthetic vocabularies.
+`DS4_TEST_CHAT_MARKER_MODELS="a.gguf b.gguf"` also runs it on real vocabularies;
+those files are only memory-mapped, no backend is initialized.
 
 On Metal, small GPU tensor tests are available without loading a full GGUF:
 

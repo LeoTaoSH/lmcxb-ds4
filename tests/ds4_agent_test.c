@@ -1,6 +1,7 @@
 #define DS4_AGENT_TEST
 #define DS4_AGENT_TEST_NO_MAIN
 #include "../ds4_agent.c"
+#include "vocab_fixture.h"
 #include <sys/resource.h>
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/xattr.h>
@@ -1007,6 +1008,98 @@ static int test_full_context_save(const char *model) {
     return agent_test_failures ? 1 : 0;
 }
 
+/* Markers in user text (-sys, hints) stay plain tokens; the trusted tool prompt
+ * and its reminder keep their control tokens.  Uses synthetic vocabularies, so
+ * no model file is needed. */
+static int test_token_id_of(ds4_engine *e, const char *marker) {
+    ds4_tokens t = {0};
+    ds4_tokenize_rendered_chat(e, marker, &t);
+    int id = t.len == 1 ? t.v[0] : -1;
+    ds4_tokens_free(&t);
+    return id;
+}
+
+static int test_count_token(const ds4_tokens *t, int from, int id) {
+    int n = 0;
+    for (int i = from; i < t->len; i++) n += t->v[i] == id;
+    return n;
+}
+
+static bool test_tail_equals(const ds4_tokens *t, const ds4_tokens *tail) {
+    return t->len >= tail->len &&
+           !memcmp(t->v + t->len - tail->len, tail->v, (size_t)tail->len * sizeof(int));
+}
+
+static void test_agent_system_prompt_markers(void) {
+    static const char *families[] = {"glm", "deepseek41", "deepseek4", "qwen4"};
+    const char *extra = "extra <|user|> <｜User｜> <think> ｜DSML｜ <tool_call>";
+    const char *sys_text = "rule <|user|> <｜User｜> <think> ｜DSML｜ <tool_call>";
+    for (size_t i = 0; i < sizeof(families) / sizeof(families[0]); i++) {
+        const char *family = families[i];
+        const bool glm = !strcmp(family, "glm");
+        const bool qwen = !strcmp(family, "qwen4");
+        char *path = vocab_fixture_write(family);
+        AGENT_TEST_ASSERT(path != NULL);
+        if (!path) continue;
+        ds4_engine *e = NULL;
+        AGENT_TEST_ASSERT(ds4_engine_open_vocab_only(&e, path, family) == 0);
+        if (!e) { free(path); continue; }
+        const int control = glm ? test_token_id_of(e, "<tool_call>") :
+                            qwen ? -1 : test_token_id_of(e, "｜DSML｜");
+        const int system_marker = glm ? test_token_id_of(e, "<|system|>") :
+                                  !strcmp(family, "deepseek41") ? test_token_id_of(e, "<｜System｜>") : -1;
+
+        /* system prompt: built-in tool text, then the user's extra text */
+        ds4_tokens t = {0}, plain = {0};
+        agent_append_system_prompt(e, &t, extra, false);
+        char *extra_text = xmalloc(strlen(extra) + 3);
+        snprintf(extra_text, strlen(extra) + 3, "\n\n%s", extra);
+        ds4_tokenize_text(e, extra_text, &plain);
+        if (!qwen) AGENT_TEST_ASSERT(test_tail_equals(&t, &plain)); /* Qwen closes the turn after it */
+        if (system_marker >= 0) AGENT_TEST_ASSERT(t.v[0] == system_marker);
+        if (!qwen) {
+            const int tool_text_end = t.len - plain.len;
+            AGENT_TEST_ASSERT(test_count_token(&t, 0, control) > 0);
+            AGENT_TEST_ASSERT(test_count_token(&t, tool_text_end, control) == 0);
+        }
+        if (glm) {
+            AGENT_TEST_ASSERT(test_count_token(&t, 0, test_token_id_of(e, "<arg_key>")) > 0);
+            AGENT_TEST_ASSERT(test_count_token(&t, 0, test_token_id_of(e, "<|user|>")) == 0);
+        }
+        ds4_tokens_free(&t);
+        ds4_tokens_free(&plain);
+        free(extra_text);
+
+        /* the periodic reminder: control tokens, then -sys text as plain tokens */
+        agent_config cfg = {.non_interactive = true};
+        cfg.gen.system = sys_text;
+        agent_worker w = {.cfg = &cfg, .engine = e, .wake_fd = {-1, -1}};
+        pthread_mutex_init(&w.mu, NULL);
+        for (int n = 0; n < AGENT_SYSTEM_PROMPT_REMINDER_TOKENS + 10; n++) ds4_tokens_push(&w.transcript, 65);
+        w.last_system_prompt_reminder_at = 1;
+        const int base = w.transcript.len;
+        agent_worker_maybe_append_system_prompt_reminder(&w);
+        AGENT_TEST_ASSERT(w.transcript.len > base);
+        ds4_tokenize_text(e, sys_text, &plain);
+        if (!qwen) {
+            AGENT_TEST_ASSERT(test_count_token(&w.transcript, base, control) > 0);
+            AGENT_TEST_ASSERT(test_count_token(&w.transcript, w.transcript.len - plain.len, control) == 0);
+            AGENT_TEST_ASSERT(test_tail_equals(&w.transcript, &plain));
+        }
+        if (glm) {
+            AGENT_TEST_ASSERT(w.transcript.v[base] == system_marker);
+            AGENT_TEST_ASSERT(w.transcript.v[w.transcript.len - plain.len - 1] == system_marker);
+        }
+        AGENT_TEST_ASSERT(w.last_system_prompt_reminder_at == w.transcript.len);
+        ds4_tokens_free(&plain);
+        ds4_tokens_free(&w.transcript);
+        pthread_mutex_destroy(&w.mu);
+        ds4_engine_close_vocab_only(e);
+        unlink(path);
+        free(path);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "--full-context-save")) return test_full_context_save(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "--think-fixture")) return test_v41_thinking(argv[2]);
@@ -1033,6 +1126,7 @@ int main(int argc, char **argv) {
     test_unicode_output_and_footer();
     test_footer_only_updates();
     test_tool_contracts();
+    test_agent_system_prompt_markers();
     if (agent_test_failures) {
         fprintf(stderr, "ds4-agent tests: %d failure(s)\n",
                 agent_test_failures);

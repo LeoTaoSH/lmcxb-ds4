@@ -43569,40 +43569,55 @@ void ds4_tokenize_text(ds4_engine *e, const char *text, ds4_tokens *out) {
     bpe_tokenize_text(&e->vocab, text ? text : "", out);
 }
 
-static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, size_t *len) {
-    struct special {
-        const char *text;
-        int token;
-    } specials[] = {
-        {"<｜begin▁of▁sentence｜>", vocab->bos_id},
-        {"<｜end▁of▁sentence｜>",   vocab->eos_id},
-        {"[gMASK]",                vocab->bos_id},
-        {"<sop>",                  vocab->sop_id},
-        {"<|system|>",             vocab->system_id},
-        {"<｜System｜>",            DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ? vocab->system_id : -1},
-        {"<｜User｜>",              vocab->user_id},
-        {"<｜Assistant｜>",         vocab->assistant_id},
-        {"<|user|>",               vocab->user_id},
-        {"<|assistant|>",          vocab->assistant_id},
-        {"<|observation|>",        vocab->observation_id},
-        {"<think>",                vocab->think_start_id},
-        {"</think>",               vocab->think_end_id},
-        {"<tool_call>",            vocab->tool_call_start_id},
-        {"</tool_call>",           vocab->tool_call_end_id},
-        {"<tool_response>",        vocab->tool_response_start_id},
-        {"</tool_response>",       vocab->tool_response_end_id},
-        {"<arg_key>",              vocab->arg_key_start_id},
-        {"</arg_key>",             vocab->arg_key_end_id},
-        {"<arg_value>",            vocab->arg_value_start_id},
-        {"</arg_value>",           vocab->arg_value_end_id},
-        {"｜DSML｜",                vocab->dsml_id},
-        {"<|im_start|>",           vocab->im_start_id},
-        {"<|im_end|>",             vocab->im_end_id},
-        {"<|endoftext|>",          vocab->endoftext_id},
-    };
+/* Chat marker strings the rendered-chat tokenizer turns into special tokens.
+ * With a NULL vocab every marker is listed with token id 0: the escaping code
+ * must not depend on the loaded model, only on whether a string looks like a
+ * marker. */
+typedef struct {
+    const char *text;
+    int token;
+} chat_marker;
 
-    for (size_t i = 0; i < sizeof(specials) / sizeof(specials[0]); i++) {
-        if (specials[i].token < 0) continue;
+#define CHAT_MARKER_COUNT 25
+
+static void chat_markers(const ds4_vocab *vocab, chat_marker *out) {
+#define MARKER_ID(field) (vocab ? vocab->field : 0)
+    const chat_marker table[CHAT_MARKER_COUNT] = {
+        {"<｜begin▁of▁sentence｜>", MARKER_ID(bos_id)},
+        {"<｜end▁of▁sentence｜>",   MARKER_ID(eos_id)},
+        {"[gMASK]",                MARKER_ID(bos_id)},
+        {"<sop>",                  MARKER_ID(sop_id)},
+        {"<|system|>",             MARKER_ID(system_id)},
+        {"<｜System｜>",            vocab && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK41 ? -1 : MARKER_ID(system_id)},
+        {"<｜User｜>",              MARKER_ID(user_id)},
+        {"<｜Assistant｜>",         MARKER_ID(assistant_id)},
+        {"<|user|>",               MARKER_ID(user_id)},
+        {"<|assistant|>",          MARKER_ID(assistant_id)},
+        {"<|observation|>",        MARKER_ID(observation_id)},
+        {"<think>",                MARKER_ID(think_start_id)},
+        {"</think>",               MARKER_ID(think_end_id)},
+        {"<tool_call>",            MARKER_ID(tool_call_start_id)},
+        {"</tool_call>",           MARKER_ID(tool_call_end_id)},
+        {"<tool_response>",        MARKER_ID(tool_response_start_id)},
+        {"</tool_response>",       MARKER_ID(tool_response_end_id)},
+        {"<arg_key>",              MARKER_ID(arg_key_start_id)},
+        {"</arg_key>",             MARKER_ID(arg_key_end_id)},
+        {"<arg_value>",            MARKER_ID(arg_value_start_id)},
+        {"</arg_value>",           MARKER_ID(arg_value_end_id)},
+        {"｜DSML｜",                MARKER_ID(dsml_id)},
+        {"<|im_start|>",           MARKER_ID(im_start_id)},
+        {"<|im_end|>",             MARKER_ID(im_end_id)},
+        {"<|endoftext|>",          MARKER_ID(endoftext_id)},
+    };
+#undef MARKER_ID
+    memcpy(out, table, sizeof(table));
+}
+
+static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, size_t *len) {
+    chat_marker specials[CHAT_MARKER_COUNT];
+    chat_markers(vocab, specials);
+    for (size_t i = 0; i < CHAT_MARKER_COUNT; i++) {
+        if (specials[i].token < 0 || !specials[i].text) continue;
         size_t n = strlen(specials[i].text);
         if (!strncmp(p, specials[i].text, n)) {
             *token = specials[i].token;
@@ -43611,6 +43626,45 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         }
     }
     return false;
+}
+
+/* Length of the chat marker string at p, or 0. Independent of the vocab. */
+static size_t chat_marker_len_at(const char *p) {
+    const unsigned char c = (unsigned char)*p;
+    if (c != '<' && c != '[' && c != 0xef) return 0; /* first byte of any marker */
+    chat_marker markers[CHAT_MARKER_COUNT];
+    chat_markers(NULL, markers);
+    for (size_t i = 0; i < CHAT_MARKER_COUNT; i++) {
+        if (!markers[i].text) continue;
+        size_t n = strlen(markers[i].text);
+        if (!strncmp(p, markers[i].text, n)) return n;
+    }
+    return 0;
+}
+
+/* Keep marker strings inside message content out of the special-token path.
+ * Each marker gets a DS4_CHAT_ESCAPE byte in front and a literal escape byte is
+ * doubled; tokenize_rendered_chat_vocab() removes the escapes and tokenizes
+ * the marker as ordinary text. */
+char *ds4_chat_escape_markers(const char *text, size_t len, size_t *out_len) {
+    char *out = xmalloc(len * 2 + 1);
+    size_t n = 0;
+    for (size_t i = 0; i < len;) {
+        size_t m = chat_marker_len_at(text + i);
+        if (m > len - i) m = 0;
+        if (m) {
+            out[n++] = DS4_CHAT_ESCAPE;
+            memcpy(out + n, text + i, m);
+            n += m;
+            i += m;
+        } else {
+            if (text[i] == DS4_CHAT_ESCAPE) out[n++] = DS4_CHAT_ESCAPE;
+            out[n++] = text[i++];
+        }
+    }
+    out[n] = '\0';
+    if (out_len) *out_len = n;
+    return out;
 }
 
 static void tokenize_span(const ds4_vocab *vocab, const char *p, size_t n, token_vec *out) {
@@ -43626,25 +43680,78 @@ static void tokenize_rendered_chat_vocab(const ds4_vocab *vocab, const char *tex
                                          token_vec *out) {
     if (!text) text = "";
 
-    const char *span = text;
+    /* Text between special tokens is BPE'd as one unit, minus the escape bytes
+     * added by ds4_chat_escape_markers(): an escaped marker or escape byte is
+     * copied through as ordinary text.  Any other escape byte stays as is. */
     const char *p = text;
+    char *span = xmalloc(strlen(text) + 1);
+    size_t span_len = 0;
     while (*p) {
         int token = -1;
         size_t len = 0;
-        if (special_token_at(vocab, p, &token, &len)) {
-            tokenize_span(vocab, span, (size_t)(p - span), out);
+        if (*p == DS4_CHAT_ESCAPE) {
+            len = p[1] == DS4_CHAT_ESCAPE ? 1 : chat_marker_len_at(p + 1);
+            if (len) {
+                memcpy(span + span_len, p + 1, len);
+                span_len += len;
+                p += 1 + len;
+                continue;
+            }
+        } else if (special_token_at(vocab, p, &token, &len)) {
+            tokenize_span(vocab, span, span_len, out);
+            span_len = 0;
             token_vec_push(out, token);
             p += len;
-            span = p;
             continue;
         }
-        p++;
+        span[span_len++] = *p++;
     }
-    tokenize_span(vocab, span, (size_t)(p - span), out);
+    tokenize_span(vocab, span, span_len, out);
+    free(span);
 }
 
 void ds4_tokenize_rendered_chat(ds4_engine *e, const char *text, ds4_tokens *out) {
     tokenize_rendered_chat_vocab(&e->vocab, text, out);
+}
+
+/* Tokenizer-only engine for tests and tools: maps the GGUF and loads its
+ * vocabulary, nothing else.  No weights are read and no backend is started.
+ * family NULL validates the file as a real model; otherwise it forces the
+ * chat syntax, which lets a synthetic GGUF with only tokenizer metadata stand
+ * in for any family. */
+static int vocab_only_saved_family = -1;
+
+int ds4_engine_open_vocab_only(ds4_engine **out, const char *model_path, const char *family) {
+    *out = NULL;
+    ds4_engine *e = xcalloc(1, sizeof(*e));
+    model_open(&e->model, model_path, false, false);
+    vocab_only_saved_family = (int)DS4_MODEL_FAMILY;
+    if (!family) {
+        config_validate_model(&e->model);
+    } else if (!strcmp(family, "deepseek4")) {
+        g_ds4_shape.family = DS4_MODEL_FAMILY_DEEPSEEK4;
+    } else if (!strcmp(family, "deepseek41")) {
+        g_ds4_shape.family = DS4_MODEL_FAMILY_DEEPSEEK41;
+    } else if (!strcmp(family, "glm")) {
+        g_ds4_shape.family = DS4_MODEL_FAMILY_GLM_DSA;
+    } else if (!strcmp(family, "qwen4")) {
+        g_ds4_shape.family = DS4_MODEL_FAMILY_QWEN4_EXP;
+    } else {
+        model_close(&e->model);
+        free(e);
+        return 1;
+    }
+    vocab_load(&e->vocab, &e->model);
+    *out = e;
+    return 0;
+}
+
+void ds4_engine_close_vocab_only(ds4_engine *e) {
+    if (!e) return;
+    vocab_free(&e->vocab);
+    model_close(&e->model);
+    free(e);
+    if (vocab_only_saved_family >= 0) g_ds4_shape.family = (ds4_model_family)vocab_only_saved_family;
 }
 
 void ds4_chat_begin(ds4_engine *e, ds4_tokens *tokens) {
@@ -43739,7 +43846,9 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
         if (!strcmp(role, "system") || !strcmp(role, "developer")) {
             if (vocab->system_id >= 0) token_vec_push(tokens, vocab->system_id);
-            tokenize_rendered_chat_vocab(vocab, content, tokens);
+            /* System text can carry user data; callers that want control
+             * markers in it append them with ds4_tokenize_rendered_chat(). */
+            bpe_tokenize_text(vocab, content, tokens);
         } else if (!strcmp(role, "assistant")) {
             token_vec_push(tokens, vocab->assistant_id);
             if (strncmp(content, "<think>", 7) != 0 &&
@@ -43900,6 +44009,58 @@ char *ds4_token_text(ds4_engine *e, int token, size_t *len) {
     out[n] = '\0';
     if (len) *len = n;
     return out;
+}
+
+typedef struct {
+    char *ptr;
+    size_t len, cap;
+} text_buf;
+
+static void text_buf_append(text_buf *b, const char *s, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        b->cap = (b->len + n + 1) * 2;
+        b->ptr = xrealloc(b->ptr, b->cap);
+    }
+    memcpy(b->ptr + b->len, s, n);
+    b->len += n;
+    b->ptr[b->len] = '\0';
+}
+
+/* Inverse of ds4_tokenize_rendered_chat(): special tokens become their marker
+ * text, tokens that are ordinary text get marker strings escaped exactly like
+ * ds4_chat_escape_markers() does for message content.  Runs of ordinary tokens
+ * are escaped as a whole because a marker string may span several tokens. */
+char *ds4_tokens_render_chat_text(ds4_engine *e, const ds4_tokens *tokens, size_t *out_len) {
+    chat_marker markers[CHAT_MARKER_COUNT];
+    chat_markers(&e->vocab, markers);
+    text_buf out = {0}, run = {0};
+    text_buf_append(&out, "", 0);
+    text_buf_append(&run, "", 0);
+    for (int i = 0; i < (tokens ? tokens->len : 0); i++) {
+        bool special = false; /* eos is in the table too, as <｜end▁of▁sentence｜> */
+        for (size_t j = 0; !special && j < CHAT_MARKER_COUNT; j++)
+            special = markers[j].token >= 0 && markers[j].token == tokens->v[i];
+        size_t len = 0;
+        char *piece = ds4_token_text(e, tokens->v[i], &len);
+        if (special) {
+            size_t n = 0;
+            char *esc = ds4_chat_escape_markers(run.ptr, run.len, &n);
+            text_buf_append(&out, esc, n);
+            free(esc);
+            run.len = 0;
+            text_buf_append(&out, piece, len);
+        } else {
+            text_buf_append(&run, piece, len);
+        }
+        free(piece);
+    }
+    size_t n = 0;
+    char *esc = ds4_chat_escape_markers(run.ptr, run.len, &n);
+    text_buf_append(&out, esc, n);
+    free(esc);
+    free(run.ptr);
+    if (out_len) *out_len = out.len;
+    return out.ptr;
 }
 
 static bool vocab_token_is_generation_stop(const ds4_vocab *vocab, int token) {
