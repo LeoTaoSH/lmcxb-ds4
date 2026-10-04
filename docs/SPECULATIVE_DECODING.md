@@ -75,7 +75,20 @@ draft** (one extra nextn-layer step conditioned on the predictor's own
 stream, verified in a 3-row pass) while recent first-draft acceptance is
 perfect, disengaging after repeated second-draft rejections.
 `DS4_QWEN4_MTP_DEPTH=2` or `=3` fixes the depth;
-`0` (default) is the adaptive policy.
+`0` (default) is the adaptive policy. The verify rows keep the one-token
+arithmetic, so greedy output of a single session equals plain decoding bit
+for bit.
+
+When the output repeats earlier text (a file written back with a few
+changes, a quoted passage), the Metal backend drafts from that text instead:
+if the last three tokens and the next one occurred before in the prompt or
+output, and the two places agree eight or more tokens back, the tokens that
+followed are verified as up to seven drafts (fifteen when they agree 32
+tokens back), whenever that promises more tokens per verify pass than the
+MTP blocks. Such a block snapshots the recurrent state after every row, so a
+partial accept restores one snapshot. The output is unchanged;
+`DS4_QWEN4_LOOKUP=0` turns it off. Exact sampling at non-zero temperature
+keeps the MTP blocks.
 
 ## Sampling and reproducibility
 

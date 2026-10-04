@@ -864,6 +864,43 @@ static void test_idx_select(uint32_t T, uint32_t n, uint32_t k, uint32_t visible
 }
 
 /* Prefill and split attention against scalar attention on the same inputs. */
+static void check_exact_f32(const char *what, const float *got, const float *ref, uint64_t n);
+
+/* the fused select+expand gives the token list of the select then the expand */
+static void test_idx_select_expand(uint32_t T, uint32_t n_blocks, uint32_t pos0, uint32_t k, bool ties) {
+    const uint32_t ratio = 4, stride = k * ratio + ratio;
+    float *sc = malloc((uint64_t)T * n_blocks * 4);
+    for (uint64_t i = 0; i < (uint64_t)T * n_blocks; i++) {
+        float v = (frand() + 1.0f) * 2.0f;
+        if (ties) v = (float)(int)(v * 4.0f) * 0.25f;
+        if (i % 7 == 0) v = 0.0f;
+        sc[i] = (i % n_blocks) < (pos0 + 1 + i / n_blocks) / ratio ? v : -3.0e38f;
+    }
+    ds4_gpu_tensor *gs = upload(sc, (uint64_t)T * n_blocks);
+    int32_t *tok[2];
+    uint32_t *cnt[2];
+    for (int v = 0; v < 2; v++) {
+        ds4_gpu_tensor *gt = ds4_gpu_tensor_alloc((uint64_t)T * stride * 4), *gn = ds4_gpu_tensor_alloc((uint64_t)T * 4);
+        ds4_gpu_tensor *gb = ds4_gpu_tensor_alloc((uint64_t)T * k * 4);
+        int32_t *z = calloc((uint64_t)T * stride, 4);
+        require_ok(gt && gn && gb && z && ds4_gpu_tensor_write(gt, 0, z, (uint64_t)T * stride * 4), "select+expand setup");
+        free(z);
+        require_ok(v ? ds4_gpu_qwen4_idx_select_expand_tensor(gt, gn, gs, NULL, n_blocks, T, k, ratio, pos0, stride) == 1
+                     : ds4_gpu_qwen4_idx_select_tensor(gb, gs, NULL, n_blocks, T, k) &&
+                       ds4_gpu_qwen4_idx_expand_tensor(gt, gn, gb, T, k, ratio, pos0, stride), "select+expand");
+        tok[v] = malloc((uint64_t)T * stride * 4);
+        cnt[v] = malloc((uint64_t)T * 4);
+        require_ok(ds4_gpu_tensor_read(gt, 0, tok[v], (uint64_t)T * stride * 4) &&
+                   ds4_gpu_tensor_read(gn, 0, cnt[v], (uint64_t)T * 4), "select+expand read");
+        ds4_gpu_tensor_free(gt); ds4_gpu_tensor_free(gn); ds4_gpu_tensor_free(gb);
+    }
+    require_ok(memcmp(cnt[0], cnt[1], (uint64_t)T * 4) == 0 && memcmp(tok[0], tok[1], (uint64_t)T * stride * 4) == 0,
+               "fused select+expand matches select then expand");
+    fprintf(stderr, "  idx select+expand T=%u n=%u k=%u ties=%d: byte-exact\n", T, n_blocks, k, ties);
+    free(tok[0]); free(tok[1]); free(cnt[0]); free(cnt[1]); free(sc);
+    ds4_gpu_tensor_free(gs);
+}
+
 static void test_attn_mm_keys(uint32_t T, uint32_t pos0, bool sparse, uint32_t k_blocks, uint32_t H, bool split) {
     const uint32_t Hkv = 2, D = 256, ratio = 4, sel_stride = k_blocks * ratio + ratio;
     const uint32_t cap = pos0 + T;
@@ -1787,6 +1824,21 @@ static void test_moe_types(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, 
     ds4_gpu_tensor *gR = upload(R0, (uint64_t)T * 4 * E);
     ds4_gpu_tensor *ginj = upload(injv, (uint64_t)T * 4 * CH * 4);
     require_ok(ds4_gpu_qwen4_moe_reduce_tensor(gout, gpart, gw, gsg, NULL, gR, ginj, T, slots, n_out, E, 4), "moe reduce");
+    {
+        /* down and reduce in one dispatch: the same R and out bit for bit */
+        ds4_gpu_tensor *gR2 = upload(R0, (uint64_t)T * 4 * E), *gout2 = upload(NULL, (uint64_t)T * E);
+        require_ok(ds4_gpu_qwen4_moe_down_reduce_tensor(gout2, gR2, ginj, gmid, gsel, gw, gsg, a->base, a->size, down_off,
+                                                        dtype, NE, T, slots, F, E, sd_off, shared_type, 4), "moe down+reduce");
+        const uint64_t nr = (uint64_t)T * 4 * E;
+        float *r1 = malloc(nr * sizeof(float)), *r2 = malloc(nr * sizeof(float));
+        require_ok(r1 && r2 && ds4_gpu_tensor_read(gR, 0, r1, nr * sizeof(float)) &&
+                   ds4_gpu_tensor_read(gR2, 0, r2, nr * sizeof(float)), "down+reduce read R");
+        check_exact_f32("fused down+reduce R", r2, r1, nr);
+        require_ok(ds4_gpu_tensor_read(gout, 0, r1, (uint64_t)T * E * sizeof(float)) &&
+                   ds4_gpu_tensor_read(gout2, 0, r2, (uint64_t)T * E * sizeof(float)), "down+reduce read out");
+        check_exact_f32("fused down+reduce out", r2, r1, (uint64_t)T * E);
+        free(r1); free(r2); ds4_gpu_tensor_free(gR2); ds4_gpu_tensor_free(gout2);
+    }
     const char *dname = dtype == 10u ? "q2_K" : dtype == 39u ? "mxfp4" : q8 ? "q8_0" : "f32";
     snprintf(name, sizeof(name), "moe %s E=%u F=%u slots=%u T=%u: reduce+combine", dname, E, F, slots, T);
     check_tensor(name, gR, R_ref, (uint64_t)T * 4 * E, 2e-5);
@@ -1851,6 +1903,391 @@ static void check_exact_f32(const char *what, const float *got, const float *ref
             exit(1);
         }
     }
+}
+
+/* router top-k folded into the gate/up kernel: the same selection, weights,
+ * shared gate logit and mid rows as router_topk then moe_mid, bit for bit */
+static void test_moe_route(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, uint32_t F, uint32_t T, uint32_t wtype) {
+    double *sh;
+    const bool q8 = wtype != 0u;
+    const uint64_t gate_off = q8 ? arena_q8_0(a, (uint64_t)NE * F, E, &sh, 0.05f) : arena_f32(a, (uint64_t)NE * F * E, &sh, -0.05f, 0.05f); free(sh);
+    const uint64_t up_off = q8 ? arena_q8_0(a, (uint64_t)NE * F, E, &sh, 0.05f) : arena_f32(a, (uint64_t)NE * F * E, &sh, -0.05f, 0.05f); free(sh);
+    const uint64_t sg_off = q8 ? arena_q8_0(a, F, E, &sh, 0.05f) : arena_f32(a, (uint64_t)F * E, &sh, -0.05f, 0.05f); free(sh);
+    const uint64_t su_off = q8 ? arena_q8_0(a, F, E, &sh, 0.05f) : arena_f32(a, (uint64_t)F * E, &sh, -0.05f, 0.05f); free(sh);
+    const uint64_t gi_off = arena_f32(a, E, &sh, -0.05f, 0.05f); free(sh);
+    float *x = rand_vec((uint64_t)T * E, 1.0f), *logits = rand_vec((uint64_t)T * NE, 3.0f);
+    if (T > 1) memcpy(logits + NE, logits, NE * sizeof(float));   /* equal probabilities across tokens */
+    logits[1] = logits[0];                                        /* and a tie inside one */
+    ds4_gpu_tensor *gx = upload(x, (uint64_t)T * E), *gl = upload(logits, (uint64_t)T * NE);
+    ds4_gpu_tensor *gsel[2], *gw[2], *gsg[2], *gmid[2];
+    for (uint32_t i = 0; i < 2; i++) {
+        gsel[i] = ds4_gpu_tensor_alloc((uint64_t)T * slots * 4);
+        gw[i] = upload(NULL, (uint64_t)T * slots);
+        gsg[i] = upload(NULL, T);
+        gmid[i] = upload(NULL, (uint64_t)T * (slots + 1) * F);
+    }
+    require_ok(ds4_gpu_qwen4_router_topk_tensor(gsel[0], gw[0], gl, gx, a->base, a->size, gi_off, 0u, E, gsg[0], T, NE, slots) &&
+               ds4_gpu_qwen4_moe_mid_tensor(gmid[0], gx, gsel[0], a->base, a->size, gate_off, up_off, wtype, NE, T, slots,
+                                            E, F, sg_off, su_off, wtype), "route reference");
+    require_ok(ds4_gpu_qwen4_moe_mid_route_tensor(gmid[1], gsel[1], gw[1], gsg[1], gx, gl, a->base, a->size, gate_off, up_off,
+                                                  wtype, NE, T, slots, E, F, sg_off, su_off, wtype, gi_off, 0u), "routed mid");
+    const uint64_t n[4] = {(uint64_t)T * slots, (uint64_t)T * slots, T, (uint64_t)T * (slots + 1) * F};
+    ds4_gpu_tensor **t[4] = {gsel, gw, gsg, gmid};
+    const char *what[4] = {"routed mid selection", "routed mid weights", "routed mid shared gate", "routed mid rows"};
+    for (uint32_t k = 0; k < 4; k++) {
+        float *v0 = malloc(n[k] * 4), *v1 = malloc(n[k] * 4);
+        require_ok(v0 && v1 && ds4_gpu_tensor_read(t[k][0], 0, v0, n[k] * 4) && ds4_gpu_tensor_read(t[k][1], 0, v1, n[k] * 4),
+                   "routed mid read");
+        if (k == 0) require_ok(memcmp(v0, v1, n[k] * 4) == 0, what[k]);
+        else check_exact_f32(what[k], v1, v0, n[k]);
+        free(v0); free(v1);
+    }
+    printf("  moe route %s NE=%u slots=%u T=%u: routed mid exact\n", q8 ? "q8_0" : "f32", NE, slots, T);
+    for (uint32_t i = 0; i < 2; i++) {
+        ds4_gpu_tensor_free(gsel[i]); ds4_gpu_tensor_free(gw[i]); ds4_gpu_tensor_free(gsg[i]); ds4_gpu_tensor_free(gmid[i]);
+    }
+    ds4_gpu_tensor_free(gx); ds4_gpu_tensor_free(gl); free(x); free(logits);
+}
+
+/* Q8_0 verify rows: the fused down+reduce must equal the grouped down then
+ * reduce bit for bit */
+static void test_moe_down_reduce_rows(arena_t *a, uint32_t NE, uint32_t slots, uint32_t T) {
+    const uint32_t E = 2560, F = 640, n_out = slots + 1, cap = 64, hc = 4, CH = DS4_QWEN4_HC_CHUNKS;
+    double *sh;
+    const uint64_t down_off = arena_q8_0(a, (uint64_t)NE * E, F, &sh, 0.05f); free(sh);
+    const uint64_t sd_off = arena_q8_0(a, E, F, &sh, 0.05f); free(sh);
+    int32_t *sel = malloc((uint64_t)T * slots * 4);
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t s = 0; s < slots; s++) sel[t * slots + s] = (int32_t)((t * 7u + s * 3u) % NE);
+    float *mid = rand_vec((uint64_t)T * n_out * F, 1.0f), *w = rand_vec((uint64_t)T * slots, 0.5f);
+    float *sg = rand_vec(T, 2.0f), *R0 = rand_vec((uint64_t)T * hc * E, 1.0f), *inj = rand_vec((uint64_t)T * hc * CH * hc, 1.0f);
+    ds4_gpu_tensor *gsel = ds4_gpu_tensor_alloc((uint64_t)T * slots * 4);
+    ds4_gpu_tensor *glists = ds4_gpu_tensor_alloc((uint64_t)NE * cap * 4), *gcounts = ds4_gpu_tensor_alloc((uint64_t)NE * 4);
+    require_ok(gsel && glists && gcounts && ds4_gpu_tensor_write(gsel, 0, sel, (uint64_t)T * slots * 4), "fused grouped sel");
+    ds4_gpu_tensor *gmid = upload(mid, (uint64_t)T * n_out * F), *gw = upload(w, (uint64_t)T * slots), *gsg = upload(sg, T);
+    ds4_gpu_tensor *ginj = upload(inj, (uint64_t)T * hc * CH * hc), *gpart = upload(NULL, (uint64_t)T * n_out * E);
+    ds4_gpu_tensor *gR[2], *gout[2];
+    for (uint32_t i = 0; i < 2; i++) { gR[i] = upload(R0, (uint64_t)T * hc * E); gout[i] = upload(NULL, (uint64_t)T * E); }
+    require_ok(ds4_gpu_qwen4_moe_build_lists_tensor(glists, gcounts, gsel, T, slots, NE, cap) &&
+               ds4_gpu_qwen4_moe_down_grouped_tensor(gpart, gmid, gsel, glists, gcounts, cap, a->base, a->size, down_off, 8u,
+                                                     NE, T, slots, F, E, sd_off, 8u) &&
+               ds4_gpu_qwen4_moe_reduce_tensor(gout[0], gpart, gw, gsg, NULL, gR[0], ginj, T, slots, n_out, E, hc),
+               "grouped down then reduce");
+    require_ok(ds4_gpu_qwen4_moe_down_reduce_tensor(gout[1], gR[1], ginj, gmid, gsel, gw, gsg, a->base, a->size, down_off,
+                                                    8u, NE, T, slots, F, E, sd_off, 8u, hc), "per-token down+reduce");
+    const uint64_t nr = (uint64_t)T * hc * E, no = (uint64_t)T * E;
+    float *r0 = download(gR[0], nr), *o0 = download(gout[0], no);
+    float *r1 = download(gR[1], nr), *o1 = download(gout[1], no);
+    check_exact_f32("fused down+reduce R vs grouped", r1, r0, nr);
+    check_exact_f32("fused down+reduce out vs grouped", o1, o0, no);
+    free(r1); free(o1);
+    printf("  moe q8_0 NE=%u slots=%u T=%u: fused down+reduce = grouped down then reduce\n", NE, slots, T);
+    free(r0); free(o0);
+    for (uint32_t i = 0; i < 2; i++) { ds4_gpu_tensor_free(gR[i]); ds4_gpu_tensor_free(gout[i]); }
+    ds4_gpu_tensor_free(gpart); ds4_gpu_tensor_free(ginj); ds4_gpu_tensor_free(gsg); ds4_gpu_tensor_free(gw);
+    ds4_gpu_tensor_free(gmid); ds4_gpu_tensor_free(gcounts); ds4_gpu_tensor_free(glists); ds4_gpu_tensor_free(gsel);
+    free(sel); free(mid); free(w); free(sg); free(R0); free(inj);
+}
+
+/* the three-dispatch F16 mixer of decode rows: write-back, slice sums, split-K
+ * down + inject rows, up + mix, against the double reference; each row equal
+ * to that row run alone */
+static void test_hc_v2(arena_t *a, uint32_t T, bool write_back, uint32_t n_inject) {
+    const uint32_t E = 2560, rank = 320, hc = 4, dim = E * hc, CH = DS4_QWEN4_HC_CHUNKS;
+    const float eps = 1e-6f;
+    double *g_gamma, *g_down, *g_up, *g_inj;
+    const uint64_t gamma_off = arena_f32(a, dim, &g_gamma, 0.5f, 1.5f);
+    const uint64_t down_off = arena_f16(a, (uint64_t)rank * dim, &g_down, 0.05f);
+    const uint64_t up_off = arena_f16(a, (uint64_t)dim * rank, &g_up, 0.2f);
+    const uint64_t inj_off = arena_f16(a, (uint64_t)hc * dim, &g_inj, 0.05f);
+    float *R = rand_vec((uint64_t)T * dim, 1.0f), *blk = rand_vec((uint64_t)T * E, 1.0f);
+    float *inj_in = rand_vec((uint64_t)T * hc * CH * hc, 0.1f);
+    double *Rw = malloc((uint64_t)T * dim * sizeof(double)), *xn = malloc((uint64_t)T * dim * sizeof(double));
+    double *mixed = malloc((uint64_t)T * E * sizeof(double)), *ij = malloc((uint64_t)T * hc * sizeof(double));
+    double *lo = malloc(rank * sizeof(double));
+    for (uint32_t t = 0; t < T; t++) {
+        for (uint32_t s = 0; s < hc; s++) {
+            double tot = 0.0;
+            for (uint32_t src = 0; src < hc * CH; src++) tot += inj_in[((uint64_t)t * hc * CH + src) * hc + s];
+            const double w = 2.0 * sigmoid_d(tot / hc);
+            double ss = 0.0;
+            for (uint32_t i = 0; i < E; i++) {
+                const uint64_t e = (uint64_t)t * dim + s * E + i;
+                Rw[e] = R[e] + (write_back ? w * blk[(uint64_t)t * E + i] : 0.0);
+                ss += Rw[e] * Rw[e];
+            }
+            const double inv = 1.0 / sqrt(ss / E + eps);
+            for (uint32_t i = 0; i < E; i++) xn[(uint64_t)t * dim + s * E + i] = Rw[(uint64_t)t * dim + s * E + i] * inv * g_gamma[s * E + i];
+        }
+        for (uint32_t r = 0; r < rank; r++) {
+            double acc = 0.0;
+            for (uint32_t i = 0; i < dim; i++) acc += g_down[(uint64_t)r * dim + i] * xn[(uint64_t)t * dim + i];
+            lo[r] = acc;
+        }
+        for (uint32_t j = 0; j < hc; j++) {
+            double acc = 0.0;
+            for (uint32_t i = 0; i < dim; i++) acc += g_inj[(uint64_t)j * dim + i] * xn[(uint64_t)t * dim + i];
+            ij[t * hc + j] = acc;
+        }
+        for (uint32_t d = 0; d < E; d++) {
+            double m = 0.0;
+            for (uint32_t s = 0; s < hc; s++) {
+                double acc = 0.0;
+                for (uint32_t r = 0; r < rank; r++) acc += g_up[(uint64_t)(s * E + d) * rank + r] * silu_d(lo[r] / hc);
+                m += sigmoid_d(acc) * xn[(uint64_t)t * dim + s * E + d];
+            }
+            mixed[(uint64_t)t * E + d] = m / hc;
+        }
+    }
+    /* all rows in one call, then each row alone (verify rows: the per-row kernels) */
+    ds4_gpu_qwen4_set_verify_rows_exact(true);
+    float *got[2][4];
+    for (uint32_t pass = 0; pass < 2; pass++) {
+        const uint32_t calls = pass ? T : 1u, rows = pass ? 1u : T;
+        float *mix_all = malloc((uint64_t)T * E * 4), *R_all = malloc((uint64_t)T * dim * 4);
+        float *inj_all = malloc((uint64_t)T * hc * CH * hc * 4), *lo_all = malloc((uint64_t)T * rank * 4);
+        for (uint32_t c = 0; c < calls; c++) {
+            ds4_gpu_tensor *gR = upload(R + (uint64_t)c * dim, (uint64_t)rows * dim);
+            ds4_gpu_tensor *gblk = upload(blk + (uint64_t)c * E, (uint64_t)rows * E);
+            ds4_gpu_tensor *ginj = upload(inj_in + (uint64_t)c * hc * CH * hc, (uint64_t)rows * hc * CH * hc);
+            ds4_gpu_tensor *gmix = upload(NULL, (uint64_t)rows * E);
+            ds4_gpu_tensor *gssp = upload(NULL, (uint64_t)rows * (E / 256) * hc);
+            ds4_gpu_tensor *gpart = upload(NULL, (uint64_t)rows * rank);
+            ds4_gpu_tensor *gxn = upload(NULL, (uint64_t)rows * dim);
+            require_ok(ds4_gpu_qwen4_hc_mix_v2_tensor(gmix, n_inject || write_back ? ginj : NULL, gR, write_back ? gblk : NULL,
+                                                      gssp, gxn, gpart, a->base, a->size, gamma_off, down_off, inj_off,
+                                                      up_off, rows, E, hc, rank, n_inject, eps), "hc v2");
+            ds4_gpu_tensor_free(gxn);
+            require_ok(ds4_gpu_tensor_read(gmix, 0, mix_all + (uint64_t)c * E, (uint64_t)rows * E * 4) &&
+                       ds4_gpu_tensor_read(gR, 0, R_all + (uint64_t)c * dim, (uint64_t)rows * dim * 4) &&
+                       ds4_gpu_tensor_read(ginj, 0, inj_all + (uint64_t)c * hc * CH * hc, (uint64_t)rows * hc * CH * hc * 4) &&
+                       ds4_gpu_tensor_read(gpart, 0, lo_all + (uint64_t)c * rank, (uint64_t)rows * rank * 4),
+                       "hc v2 read");
+            ds4_gpu_tensor_free(gR); ds4_gpu_tensor_free(gblk); ds4_gpu_tensor_free(ginj);
+            ds4_gpu_tensor_free(gmix); ds4_gpu_tensor_free(gssp); ds4_gpu_tensor_free(gpart);
+        }
+        got[pass][0] = mix_all; got[pass][1] = R_all; got[pass][2] = inj_all; got[pass][3] = lo_all;
+    }
+    ds4_gpu_qwen4_set_verify_rows_exact(false);
+    char name[96];
+    snprintf(name, sizeof(name), "hc v2 T=%u wb=%d inject=%u: mixed", T, write_back, n_inject);
+    check_close(name, got[0][0], mixed, (uint64_t)T * E, 2e-5);
+    snprintf(name, sizeof(name), "hc v2 T=%u wb=%d inject=%u: residual", T, write_back, n_inject);
+    check_close(name, got[0][1], Rw, (uint64_t)T * dim, 1e-6);
+    if (n_inject) {
+        float *sum = calloc((uint64_t)T * hc, sizeof(float));
+        for (uint32_t t = 0; t < T; t++)
+            for (uint32_t src = 0; src < hc * CH; src++)
+                for (uint32_t j = 0; j < hc; j++) sum[t * hc + j] += got[0][2][((uint64_t)t * hc * CH + src) * hc + j];
+        snprintf(name, sizeof(name), "hc v2 T=%u wb=%d inject=%u: inject logits", T, write_back, n_inject);
+        check_close(name, sum, ij, (uint64_t)T * hc, 2e-5);
+        free(sum);
+    }
+    check_exact_f32("hc v2 rows alone: mixed", got[1][0], got[0][0], (uint64_t)T * E);
+    check_exact_f32("hc v2 rows alone: residual", got[1][1], got[0][1], (uint64_t)T * dim);
+    if (n_inject) check_exact_f32("hc v2 rows alone: inject", got[1][2], got[0][2], (uint64_t)T * hc * CH * hc);
+#ifdef __APPLE__
+    /* the combine / norm / GEMV / gate-mix kernels on the same rows: the same bits */
+    ds4_gpu_qwen4_set_verify_rows_exact(true);
+    ds4_gpu_tensor *lR = upload(R, (uint64_t)T * dim), *lblk = upload(blk, (uint64_t)T * E);
+    ds4_gpu_tensor *linj = upload(inj_in, (uint64_t)T * hc * CH * hc), *lxn = upload(NULL, (uint64_t)T * dim);
+    ds4_gpu_tensor *llo = upload(NULL, (uint64_t)T * rank), *lmix = upload(NULL, (uint64_t)T * E);
+    if (write_back) require_ok(ds4_gpu_qwen4_hc_combine_tensor(lR, lblk, linj, T, E, hc), "hc combine");
+    require_ok(ds4_gpu_qwen4_hc_norm_tensor(lxn, linj, lR, a->base, a->size, gamma_off, inj_off, 1u, T, E, hc, n_inject, eps) &&
+               ds4_gpu_matmul_f16_tensor(llo, a->base, a->size, down_off, dim, rank, lxn, T) &&
+               ds4_gpu_qwen4_hc_gate_mix_tensor(lmix, lxn, llo, a->base, a->size, up_off, 1u, T, E, hc, rank), "hc legacy");
+    ds4_gpu_qwen4_set_verify_rows_exact(false);
+    float *lm = malloc((uint64_t)T * E * 4), *lr = malloc((uint64_t)T * dim * 4), *li = malloc((uint64_t)T * hc * CH * hc * 4);
+    float *ll = malloc((uint64_t)T * rank * 4);
+    require_ok(ds4_gpu_tensor_read(lmix, 0, lm, (uint64_t)T * E * 4) && ds4_gpu_tensor_read(lR, 0, lr, (uint64_t)T * dim * 4) &&
+               ds4_gpu_tensor_read(linj, 0, li, (uint64_t)T * hc * CH * hc * 4) && ds4_gpu_tensor_read(llo, 0, ll, (uint64_t)T * rank * 4),
+               "hc legacy read");
+    check_exact_f32("hc v2 vs norm/GEMV/gate-mix: residual", got[0][1], lr, (uint64_t)T * dim);
+    if (n_inject) check_exact_f32("hc v2 vs norm/GEMV/gate-mix: inject partials", got[0][2], li, (uint64_t)T * hc * CH * hc);
+    check_exact_f32("hc v2 vs norm/GEMV/gate-mix: lowrank", got[0][3], ll, (uint64_t)T * rank);
+    check_exact_f32("hc v2 vs norm/GEMV/gate-mix: mixed", got[0][0], lm, (uint64_t)T * E);
+    free(lm); free(lr); free(li); free(ll);
+    ds4_gpu_tensor_free(lR); ds4_gpu_tensor_free(lblk); ds4_gpu_tensor_free(linj);
+    ds4_gpu_tensor_free(lxn); ds4_gpu_tensor_free(llo); ds4_gpu_tensor_free(lmix);
+#endif
+    for (uint32_t p2 = 0; p2 < 2; p2++) for (uint32_t k = 0; k < 4; k++) free(got[p2][k]);
+    free(R); free(blk); free(inj_in); free(Rw); free(xn); free(mixed); free(ij); free(lo);
+    free(g_gamma); free(g_down); free(g_up); free(g_inj);
+}
+
+/* one token's delta net: the qkv/z projection with the conv in its epilogue and
+ * kernel_qwen4_gdn_fused against the paired projection, gdn_front, gdn_scan and
+ * gdn_out, bit for bit, over two tokens */
+static void test_gdn_fused(arena_t *a) {
+    const uint32_t Hk = 16, Hv = 48, D = 128, E = 2560, K = 4, C = 2 * Hk * D + Hv * D, vd = Hv * D;
+    double *sh;
+    const uint64_t qkv_off = arena_q8_0(a, C, E, &sh, 0.05f); free(sh);
+    const uint64_t z_off = arena_q8_0(a, vd, E, &sh, 0.05f); free(sh);
+    const uint64_t conv_off = arena_f32(a, (uint64_t)C * K, &sh, -0.5f, 0.5f); free(sh);
+    const uint64_t alpha_off = arena_q8_0(a, Hv, E, &sh, 0.05f); free(sh);
+    const uint64_t beta_off = arena_q8_0(a, Hv, E, &sh, 0.05f); free(sh);
+    const uint64_t a_off = arena_f32(a, Hv, &sh, -8.0f, -0.1f); free(sh);
+    const uint64_t dt_off = arena_f32(a, Hv, &sh, 0.2f, 1.5f); free(sh);
+    const uint64_t norm_off = arena_f32(a, D, &sh, 0.8f, 1.2f); free(sh);
+    float *state0 = rand_vec((uint64_t)Hv * D * D, 0.1f), *hist0 = rand_vec((uint64_t)(K - 1) * C, 1.0f);
+    ds4_gpu_tensor *st[2], *hs[2], *qkv[2], *z[2], *out[2];
+    for (uint32_t i = 0; i < 2; i++) {
+        st[i] = upload(state0, (uint64_t)Hv * D * D); hs[i] = upload(hist0, (uint64_t)(K - 1) * C);
+        qkv[i] = upload(NULL, C); z[i] = upload(NULL, vd); out[i] = upload(NULL, vd);
+    }
+    ds4_gpu_tensor *ga = upload(NULL, Hv), *gb = upload(NULL, Hv), *ga1 = upload(NULL, Hv), *gb1 = upload(NULL, Hv);
+    for (uint32_t tok = 0; tok < 2; tok++) {
+        float *x = rand_vec(E, 1.0f);
+        ds4_gpu_tensor *gx = upload(x, E);
+        require_ok(ds4_gpu_qwen4_q8_pair_tensor(qkv[0], z[0], a->base, a->size, qkv_off, z_off, E, C, vd, gx, 1) &&
+                   ds4_gpu_qwen4_gdn_front_tensor(qkv[0], hs[0], gx, ga, gb, a->base, a->size, conv_off, alpha_off,
+                                                  beta_off, a_off, dt_off, 8u, 1, Hk, Hv, D, K, E, NULL, 0u, NULL, 0u) &&
+                   ds4_gpu_qwen4_gdn_scan_tensor(out[0], st[0], qkv[0], ga, gb, 1, Hk, Hv, D, NULL, 0u, NULL, 0u) &&
+                   ds4_gpu_qwen4_gdn_out_tensor(out[0], z[0], a->base, a->size, norm_off, 1, Hv, D, 1e-6f),
+                   "gdn three kernels");
+        require_ok(ds4_gpu_qwen4_q8_pair_conv_tensor(qkv[1], z[1], hs[1], ga1, gb1, a->base, a->size, qkv_off, z_off,
+                                                     conv_off, alpha_off, beta_off, 8u, Hv, K, E, C, vd, gx) &&
+                   ds4_gpu_qwen4_gdn_fused_tensor(out[1], st[1], qkv[1], z[1], ga1, gb1, a->base, a->size, a_off,
+                                                  dt_off, norm_off, 1, Hk, Hv, D, 1e-6f, NULL, 0u, NULL, 0u, NULL),
+                   "gdn fused");
+        const uint64_t n[3] = {vd, (uint64_t)Hv * D * D, (uint64_t)(K - 1) * C};
+        ds4_gpu_tensor **t[3] = {out, st, hs};
+        const char *what[3] = {"gdn fused output", "gdn fused state", "gdn fused conv history"};
+        for (uint32_t k = 0; k < 3; k++) {
+            float *v0 = download(t[k][0], n[k]), *v1 = download(t[k][1], n[k]);
+            check_exact_f32(what[k], v1, v0, n[k]);
+            free(v0); free(v1);
+        }
+        ds4_gpu_tensor_free(gx); free(x);
+    }
+    printf("  gdn fused 16/48/128: two tokens equal front + scan + out\n");
+    for (uint32_t i = 0; i < 2; i++) {
+        ds4_gpu_tensor_free(st[i]); ds4_gpu_tensor_free(hs[i]); ds4_gpu_tensor_free(qkv[i]);
+        ds4_gpu_tensor_free(z[i]); ds4_gpu_tensor_free(out[i]);
+    }
+    ds4_gpu_tensor_free(ga); ds4_gpu_tensor_free(gb); ds4_gpu_tensor_free(ga1); ds4_gpu_tensor_free(gb1);
+    free(state0); free(hist0);
+}
+
+/* verify rows of the delta net: the rows projection with the conv in its epilogue
+ * and kernel_qwen4_gdn_fused against the rows projection, gdn_front, gdn_scan and
+ * gdn_out, with their snapshots (MTP: after rows 0 and 1; lookup: one per row) */
+static void test_gdn_fused_rows(arena_t *a, uint32_t T, bool lookup) {
+    const uint32_t Hk = 16, Hv = 48, D = 128, E = 2560, K = 4, C = 2 * Hk * D + Hv * D, vd = Hv * D;
+    const uint64_t hist_n = (uint64_t)(K - 1) * C, state_n = (uint64_t)Hv * D * D;
+    const uint32_t srows = lookup ? T : 1u;
+    double *sh;
+    const uint64_t qkv_off = arena_q8_0(a, C, E, &sh, 0.05f); free(sh);
+    const uint64_t conv_off = arena_f32(a, (uint64_t)C * K, &sh, -0.5f, 0.5f); free(sh);
+    const uint64_t alpha_off = arena_q8_0(a, Hv, E, &sh, 0.05f); free(sh);
+    const uint64_t beta_off = arena_q8_0(a, Hv, E, &sh, 0.05f); free(sh);
+    const uint64_t a_off = arena_f32(a, Hv, &sh, -8.0f, -0.1f); free(sh);
+    const uint64_t dt_off = arena_f32(a, Hv, &sh, 0.2f, 1.5f); free(sh);
+    const uint64_t norm_off = arena_f32(a, D, &sh, 0.8f, 1.2f); free(sh);
+    const uint64_t z_off = arena_q8_0(a, vd, E, &sh, 0.05f); free(sh);
+    float *state0 = rand_vec(state_n, 0.1f), *hist0 = rand_vec(hist_n, 1.0f);
+    float *x = rand_vec((uint64_t)T * E, 1.0f), *zv = rand_vec((uint64_t)T * vd, 1.0f);
+    ds4_gpu_tensor *gx = upload(x, (uint64_t)T * E), *gz = upload(zv, (uint64_t)T * vd);
+    ds4_gpu_tensor *zr = upload(NULL, (uint64_t)T * vd), *zf = upload(NULL, (uint64_t)T * vd);
+    ds4_gpu_tensor *st[2], *hs[2], *qkv[2], *out[2], *ss[2], *sh1[2], *ss2[2], *sh2[2];
+    for (uint32_t i = 0; i < 2; i++) {
+        st[i] = upload(state0, state_n); hs[i] = upload(hist0, hist_n);
+        qkv[i] = upload(NULL, (uint64_t)T * C); out[i] = upload(NULL, (uint64_t)T * vd);
+        ss[i] = upload(NULL, srows * state_n); sh1[i] = upload(NULL, srows * hist_n);
+        ss2[i] = upload(NULL, state_n); sh2[i] = upload(NULL, hist_n);
+    }
+    ds4_gpu_tensor *ga = upload(NULL, (uint64_t)T * Hv), *gb = upload(NULL, (uint64_t)T * Hv);
+    ds4_gpu_tensor *ga1 = upload(NULL, (uint64_t)T * Hv), *gb1 = upload(NULL, (uint64_t)T * Hv);
+    ds4_gpu_qwen4_set_verify_rows_exact(true);
+    ds4_gpu_qwen4_set_snapshot_rows(srows);
+    ds4_gpu_tensor *s2s0 = lookup ? NULL : ss2[0], *s2h0 = lookup ? NULL : sh2[0];
+    ds4_gpu_tensor *s2s1 = lookup ? NULL : ss2[1], *s2h1 = lookup ? NULL : sh2[1];
+    require_ok(ds4_gpu_qwen4_matmul_q8_0_tensor(qkv[0], a->base, a->size, qkv_off, E, C, gx, T) &&
+               ds4_gpu_qwen4_gdn_front_tensor(qkv[0], hs[0], gx, ga, gb, a->base, a->size, conv_off, alpha_off, beta_off,
+                                              a_off, dt_off, 8u, T, Hk, Hv, D, K, E, sh1[0], 0u, s2h0, 1u) &&
+               ds4_gpu_qwen4_matmul_q8_0_tensor(zr, a->base, a->size, z_off, E, vd, gx, T) &&
+               ds4_gpu_qwen4_gdn_scan_tensor(out[0], st[0], qkv[0], ga, gb, T, Hk, Hv, D, ss[0], 0u, s2s0, 1u) &&
+               ds4_gpu_qwen4_gdn_out_tensor(out[0], gz, a->base, a->size, norm_off, T, Hv, D, 1e-6f),
+               "gdn rows three kernels");
+    require_ok(ds4_gpu_qwen4_q8_rows_conv_tensor(qkv[1], hs[1], ga1, gb1, a->base, a->size, qkv_off, conv_off,
+                                                 alpha_off, beta_off, 8u, Hv, K, E, C, gx, T, sh1[1], 0u, s2h1, 1u,
+                                                 zf, z_off, vd) &&
+               ds4_gpu_qwen4_gdn_fused_tensor(out[1], st[1], qkv[1], gz, ga1, gb1, a->base, a->size, a_off, dt_off,
+                                              norm_off, T, Hk, Hv, D, 1e-6f, ss[1], 0u, s2s1, 1u, NULL),
+               "gdn rows fused");
+    /* lookup replay: rows 0..k over the input state into a second buffer equal slot k (k = T - 1: the final
+     * state), the input state untouched */
+    for (uint32_t k = 0; lookup && k < T; k += k + 1u < T - 1u ? (T - 1u + 2u) / 3u : 1u) {
+        ds4_gpu_tensor *rs = upload(state0, state_n), *ro = upload(NULL, state_n), *rout = upload(NULL, (uint64_t)T * vd);
+        require_ok(ds4_gpu_qwen4_gdn_fused_tensor(rout, rs, qkv[1], gz, ga1, gb1, a->base, a->size, a_off, dt_off,
+                                                  norm_off, k + 1u, Hk, Hv, D, 1e-6f, NULL, 0u, NULL, 0u, ro),
+                   "gdn rows replay");
+        float *want = download(k + 1u < T ? ss[1] : st[1], (k + 1u < T ? srows : 1u) * state_n);
+        float *got = download(ro, state_n), *kept = download(rs, state_n);
+        check_exact_f32("gdn rows replayed state", got, want + (k + 1u < T ? (uint64_t)k * state_n : 0u), state_n);
+        check_exact_f32("gdn rows replay input state", kept, state0, state_n);
+        free(want); free(got); free(kept);
+        ds4_gpu_tensor_free(rs); ds4_gpu_tensor_free(ro); ds4_gpu_tensor_free(rout);
+    }
+    ds4_gpu_qwen4_set_verify_rows_exact(false);
+    ds4_gpu_qwen4_set_snapshot_rows(1);
+    const uint64_t n[6] = {(uint64_t)T * vd, state_n, hist_n, srows * state_n, srows * hist_n, state_n};
+    ds4_gpu_tensor **t[6] = {out, st, hs, ss, sh1, ss2};
+    const char *what[6] = {"gdn rows output", "gdn rows state", "gdn rows history", "gdn rows state snapshots",
+                           "gdn rows history snapshots", "gdn rows second state snapshot"};
+    for (uint32_t k = 0; k < (lookup ? 5u : 6u); k++) {
+        float *v0 = download(t[k][0], n[k]), *v1 = download(t[k][1], n[k]);
+        check_exact_f32(what[k], v1, v0, n[k]);
+        free(v0); free(v1);
+    }
+    if (!lookup) {
+        float *v0 = download(sh2[0], hist_n), *v1 = download(sh2[1], hist_n);
+        check_exact_f32("gdn rows second history snapshot", v1, v0, hist_n);
+        free(v0); free(v1);
+    }
+    {
+        float *v0 = download(zr, (uint64_t)T * vd), *v1 = download(zf, (uint64_t)T * vd);
+        check_exact_f32("gdn rows z projection", v1, v0, (uint64_t)T * vd);
+        free(v0); free(v1);
+    }
+    printf("  gdn fused rows T=%u %s: equal front + scan + out, z rows equal\n", T, lookup ? "lookup" : "mtp");
+    for (uint32_t i = 0; i < 2; i++) {
+        ds4_gpu_tensor_free(st[i]); ds4_gpu_tensor_free(hs[i]); ds4_gpu_tensor_free(qkv[i]); ds4_gpu_tensor_free(out[i]);
+        ds4_gpu_tensor_free(ss[i]); ds4_gpu_tensor_free(sh1[i]); ds4_gpu_tensor_free(ss2[i]); ds4_gpu_tensor_free(sh2[i]);
+    }
+    ds4_gpu_tensor_free(ga); ds4_gpu_tensor_free(gb); ds4_gpu_tensor_free(ga1); ds4_gpu_tensor_free(gb1);
+    ds4_gpu_tensor_free(gx); ds4_gpu_tensor_free(gz); ds4_gpu_tensor_free(zr); ds4_gpu_tensor_free(zf);
+    free(state0); free(hist0); free(x); free(zv);
+}
+
+/* Q8_0 verify rows: the grouped gate/up kernel against the per-token one, bit for bit */
+static void test_moe_mid_grouped_q8(arena_t *a, uint32_t NE, uint32_t slots, uint32_t T) {
+    const uint32_t E = 2560, F = 640, n_out = slots + 1, cap = 64;
+    double *sh;
+    const uint64_t gate_off = arena_q8_0(a, (uint64_t)NE * F, E, &sh, 0.05f); free(sh);
+    const uint64_t up_off = arena_q8_0(a, (uint64_t)NE * F, E, &sh, 0.05f); free(sh);
+    const uint64_t sg_off = arena_q8_0(a, F, E, &sh, 0.05f); free(sh);
+    const uint64_t su_off = arena_q8_0(a, F, E, &sh, 0.05f); free(sh);
+    int32_t *sel = malloc((uint64_t)T * slots * 4);
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t s = 0; s < slots; s++) sel[t * slots + s] = (int32_t)((t * 7u + s * 3u) % NE);
+    float *x = rand_vec((uint64_t)T * E, 1.0f);
+    ds4_gpu_tensor *gx = upload(x, (uint64_t)T * E), *gsel = ds4_gpu_tensor_alloc((uint64_t)T * slots * 4);
+    ds4_gpu_tensor *glists = ds4_gpu_tensor_alloc((uint64_t)NE * cap * 4), *gcounts = ds4_gpu_tensor_alloc((uint64_t)NE * 4);
+    ds4_gpu_tensor *gm[2] = { upload(NULL, (uint64_t)T * n_out * F), upload(NULL, (uint64_t)T * n_out * F) };
+    require_ok(gsel && glists && gcounts && ds4_gpu_tensor_write(gsel, 0, sel, (uint64_t)T * slots * 4), "grouped q8 sel");
+    require_ok(ds4_gpu_qwen4_moe_mid_tensor(gm[0], gx, gsel, a->base, a->size, gate_off, up_off, 8u, NE, T, slots, E, F,
+                                            sg_off, su_off, 8u) &&
+               ds4_gpu_qwen4_moe_build_lists_tensor(glists, gcounts, gsel, T, slots, NE, cap) &&
+               ds4_gpu_qwen4_moe_mid_grouped_tensor(gm[1], gx, gsel, glists, gcounts, cap, a->base, a->size, gate_off,
+                                                    up_off, 8u, NE, T, slots, E, F, sg_off, su_off, 8u),
+               "grouped q8 mid");
+    float *m0 = download(gm[0], (uint64_t)T * n_out * F), *m1 = download(gm[1], (uint64_t)T * n_out * F);
+    check_exact_f32("grouped Q8 gate/up vs per-token", m1, m0, (uint64_t)T * n_out * F);
+    printf("  moe q8_0 NE=%u slots=%u T=%u: grouped gate/up = per-token\n", NE, slots, T);
+    free(m0); free(m1); free(sel); free(x);
+    ds4_gpu_tensor_free(gm[0]); ds4_gpu_tensor_free(gm[1]); ds4_gpu_tensor_free(gx); ds4_gpu_tensor_free(gsel);
+    ds4_gpu_tensor_free(glists); ds4_gpu_tensor_free(gcounts);
 }
 
 static void test_decode_fusions(arena_t *a) {
@@ -2072,9 +2509,9 @@ static void test_moe_grouped(arena_t *a) {
                                              0, UINT32_MAX), "grouped: per-token down");
     require_ok(ds4_gpu_qwen4_moe_build_lists_tensor(glists, gcounts, gsel, T, slots, NE, cap), "grouped: lists");
     require_ok(ds4_gpu_qwen4_moe_mid_grouped_tensor(gmid[1], gx, gsel, glists, gcounts, cap, a->base, a->size, gate_off,
-                                                    up_off, 12u, NE, T, slots, E, F), "grouped: mid");
+                                                    up_off, 12u, NE, T, slots, E, F, 0, 0, UINT32_MAX), "grouped: mid");
     require_ok(ds4_gpu_qwen4_moe_down_grouped_tensor(gpart[1], gmid[0], gsel, glists, gcounts, cap, a->base, a->size,
-                                                     down_off, 39u, NE, T, slots, F, E), "grouped: down");
+                                                     down_off, 39u, NE, T, slots, F, E, 0, UINT32_MAX), "grouped: down");
     const uint64_t nm = (uint64_t)T * slots * F, np = (uint64_t)T * slots * E;
     float *am = download(gmid[0], nm), *bm = download(gmid[1], nm);
     float *ap = download(gpart[0], np), *bp = download(gpart[1], np);
@@ -3031,6 +3468,16 @@ static int bench_moe_down(void *ud) {
     bench_ctx *c = ud;
     return ds4_gpu_qwen4_moe_down_tensor(c->t[17], c->t[1], c->t[16], c->a->base, c->a->size, c->off[10], 8u, 16, 1, 10, 640, 2560, c->off[10], 8u);
 }
+static int bench_moe_reduce(void *ud) {
+    bench_ctx *c = ud;
+    return ds4_gpu_qwen4_moe_reduce_tensor(c->t[19], c->t[17], c->t[18], c->t[18], NULL, c->t[2], c->t[3], 1, 10, 11, 2560, 4);
+}
+static int bench_moe_down_reduce(void *ud) {
+    bench_ctx *c = ud;
+    return ds4_gpu_qwen4_moe_down_reduce_tensor(c->t[19], c->t[2], c->t[3], c->t[1], c->t[16], c->t[18], c->t[18],
+                                                c->a->base, c->a->size, c->off[10], 8u, 16, 1, 10, 640, 2560,
+                                                c->off[10], 8u, 4);
+}
 static int bench_router_gemv(void *ud) { bench_ctx *c = ud; return ds4_gpu_matmul_f32_tensor(c->t[17], c->a->base, c->a->size, c->off[11], 2560, 512, c->t[0], 1); }
 static int bench_router_topk(void *ud) {
     bench_ctx *c = ud;
@@ -3317,6 +3764,8 @@ static void bench_dispatch(arena_t *a) {
     bench_run("router_topk no gate k=1", bench_router_topk_k1, &c, 100);
     bench_run("moe_mid q8 10+1 slots (37 MB)", bench_moe_mid, &c, 100);
     bench_run("moe_down q8 10+1 slots (19 MB)", bench_moe_down, &c, 100);
+    bench_run("moe_reduce 10+1 slots + hc combine", bench_moe_reduce, &c, 100);
+    bench_run("moe_down_reduce q8 10+1 slots (19 MB)", bench_moe_down_reduce, &c, 100);
     c.n[0] = 1;
     bench_run("moe_mid q4_K 10+1 slots T=1", bench_moe_mid_q4k, &c, 100);
     c.n[0] = 2;
@@ -3530,7 +3979,7 @@ static void test_dense_mm_large(arena_t *a, uint32_t wtype) {
 
 int main(void) {
     arena_t arena;
-    arena.size = (uint64_t)1536 << 20;
+    arena.size = (uint64_t)2560 << 20;
     arena.base = mmap(NULL, arena.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     arena.used = 0;
     if (arena.base == MAP_FAILED) { perror("mmap"); return 1; }
@@ -3604,6 +4053,11 @@ int main(void) {
     test_moe_grouped(&arena);
 #endif
     test_hc_mix_prefetch(&arena);
+    test_hc_v2(&arena, 1, true, 4);
+    test_hc_v2(&arena, 3, true, 4);
+    test_hc_v2(&arena, 6, true, 4);
+    test_hc_v2(&arena, 2, false, 4);
+    test_hc_v2(&arena, 2, false, 0);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);
     test_hc(&arena, 2560, 320, 2, 0u);
@@ -3615,6 +4069,13 @@ int main(void) {
     test_hc(&arena, 64, 8, 1, 8u);
     test_hc(&arena, 64, 8, 3, 8u);
     printf("gated delta net\n");
+    test_gdn_fused(&arena);
+    test_gdn_fused_rows(&arena, 2, false);
+    test_gdn_fused_rows(&arena, 3, false);
+    test_gdn_fused_rows(&arena, 5, true);
+    test_gdn_fused_rows(&arena, 16, true);
+    test_moe_mid_grouped_q8(&arena, 32, 10, 2);
+    test_moe_mid_grouped_q8(&arena, 16, 10, 7);
     test_gdn(&arena, 16, 48, 128, 5);
     test_gdn(&arena, 16, 48, 128, 40);
     test_gdn(&arena, 16, 48, 128, 200);
@@ -3623,6 +4084,10 @@ int main(void) {
     test_idx_select(4, 70001, 512, 69000);
     test_idx_select(3, 600, 512, 599);
     test_idx_select(2, 3000, 512, 520);
+    test_idx_select_expand(1, 520, 2081, 512, false);
+    test_idx_select_expand(2, 600, 2390, 512, true);
+    test_idx_select_expand(3, 20000, 79990, 512, true);
+    test_idx_select_expand(1, 40, 150, 6, true);
     test_attn_mm(40, 0, false);
     test_attn_mm(37, 3000, true);
     test_attn_mm(3, 100, true);
@@ -3649,6 +4114,12 @@ int main(void) {
 #endif
     printf("routed experts\n");
     test_moe(&arena, 16, 10, 2560, 640, 2, 8u);
+    test_moe_route(&arena, 32, 10, 2560, 640, 1, 8u);
+    test_moe_route(&arena, 512, 10, 256, 64, 3, 8u);
+    test_moe_route(&arena, 64, 8, 256, 64, 2, 0u);
+    test_moe_down_reduce_rows(&arena, 32, 10, 2);
+    test_moe_down_reduce_rows(&arena, 32, 10, 5);
+    test_moe_down_reduce_rows(&arena, 16, 10, 16);
     test_moe(&arena, 16, 10, 2560, 640, 1, 12u);
     test_moe(&arena, 16, 10, 2560, 640, 2, 12u);
     test_moe_types(&arena, 16, 10, 2560, 640, 2, 12u, 39u);
