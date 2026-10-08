@@ -408,6 +408,10 @@ typedef struct ds4_gpu_stream_expert_table {
     uint64_t    down_expert_bytes;
 } ds4_gpu_stream_expert_table;
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+/* Resident fast path: tell the CUDA streaming cache where this layer's router
+ * bias lives so it can recognise a fully cached live-expert set (pruned
+ * experts carry a -1e4 bias) and resolve selected ids on the device. */
+void ds4_gpu_stream_expert_cache_set_layer_bias(uint32_t layer, uint64_t bias_offset);
 /* Optional CUDA look-ahead between completed layers, inside the existing
  * expert cache. The foreground owns slots; the reader cannot publish them
  * or evict the current layer's inputs. */

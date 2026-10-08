@@ -190,6 +190,12 @@ static std::vector<int32_t> g_stream_prefill_ids, g_stream_prefill_slots;
 extern "C" void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel);
 static void cuda_stream_prefetch_before_load(const ds4_gpu_stream_expert_table *table);
 static bool cuda_stream_prefetch_protects(const cuda_stream_expert_slot &slot);
+/* Resident fast path (see cuda_stream_resident_fast_path below). */
+static int cuda_stream_resident_fast_path(const ds4_gpu_stream_expert_table *table,
+                                          const ds4_gpu_tensor *selected, uint32_t count);
+static void cuda_stream_slot_map_changed(void);
+static void cuda_stream_resident_release(void);
+static uint64_t g_stream_resident_slow_calls;
 static int cuda_stream_compact_prefill(const char **gate, const char **up,
                                       const char **down, const int32_t **ids,
                                       uint32_t *experts, uint32_t in_dim = 0,
@@ -224,6 +230,7 @@ static void cuda_stream_selected_cache_release(void) {
     g_stream_selected_cache.logical_tier = -1;
     g_stream_expert_slots.clear();
     g_stream_expert_by_gate.clear();
+    cuda_stream_resident_release();
     g_stream_expert_clock = 1;
     g_stream_prefill_ids.clear();
     g_stream_prefill_slots.clear();
@@ -26108,9 +26115,13 @@ static int routed_moe_launch(
         const ds4_gpu_stream_expert_table table = {
             model_map, model_size, layer_index, n_total_expert,
             gate_offset, up_offset, down_offset, gate_expert_bytes, down_expert_bytes};
-        if ((uint64_t)n_tokens * n_expert > UINT32_MAX ||
-            !ds4_gpu_glm_stream_expert_cache_begin_selected_load_tensor(
-                &table, selected, n_tokens * n_expert)) return 0;
+        if ((uint64_t)n_tokens * n_expert > UINT32_MAX) return 0;
+        if (!(n_tokens == 1u &&
+              cuda_stream_resident_fast_path(&table, selected, n_expert))) {
+            if (n_tokens == 1u) g_stream_resident_slow_calls++;
+            if (!ds4_gpu_glm_stream_expert_cache_begin_selected_load_tensor(
+                    &table, selected, n_tokens * n_expert)) return 0;
+        }
         allow_streaming = 1;
     }
 
@@ -28971,6 +28982,7 @@ struct cuda_stream_upload_batch {
         ds4_gpu_stream_expert_cache_prefetch_finish(true);
         g_stream_expert_by_gate.clear();
         for (auto &slot : g_stream_expert_slots) slot.used = 0;
+        cuda_stream_slot_map_changed();
         return 0;
     }
     ~cuda_stream_upload_batch() { (void)finish(); }
@@ -29138,6 +29150,7 @@ static int cuda_stream_selected_cache_begin_load(
         cache.slot_selected_tensor.owner = 0;
         cache.slot_selected_tensor.device_id = 0;
         cache.valid = 1;
+        cuda_stream_slot_map_changed();
         return 1;
     } catch (...) {
         cuda_stream_selected_cache_release();
@@ -29183,6 +29196,179 @@ static bool cuda_stream_slot_in_table(const cuda_stream_expert_slot &slot,
 
 static bool cuda_stream_prefetch_protects(const cuda_stream_expert_slot &slot) {
     return g_stream_prefetch.active && cuda_stream_slot_in_table(slot, g_stream_prefetch.table);
+}
+
+/* ---------------------------------------------------------------------------
+ * Resident fast path for SSD streaming.
+ *
+ * When every expert the router can still select in a layer (bias > -1000;
+ * pruned experts carry a -1e4 router bias) already owns a cache slot, the
+ * per-layer host round trip of the streaming path is pure overhead: the
+ * device-to-host read of the selected ids, the decode-stream drain, the hash
+ * lookups and the host-to-device remap copy.  Instead keep a per-layer
+ * expert->slot table on the device and resolve the selected ids with a tiny
+ * kernel on the decode stream.  Nothing in the slot map changes, so no sync
+ * is needed.  Any change of slot ownership bumps g_stream_slot_map_version
+ * and the layer rows are rebuilt lazily.  Disable with
+ * DS4_CUDA_DISABLE_RESIDENT_FAST_PATH=1.
+ * ------------------------------------------------------------------------- */
+static uint64_t g_stream_slot_map_version = 1;
+struct cuda_stream_layer_resident {
+    uint64_t bias_offset = 0;
+    uint64_t version = 0;
+    bool resident = false;
+    int32_t *row_dev = nullptr;
+    uint32_t row_count = 0;
+    std::vector<uint32_t> live_slots;
+};
+static std::unordered_map<uint32_t, cuda_stream_layer_resident> g_stream_layer_resident;
+static uint64_t g_stream_resident_fast_hits = 0;
+
+static void cuda_stream_resident_report(void) {
+    if (g_stream_resident_fast_hits || g_stream_resident_slow_calls)
+        fprintf(stderr, "ds4: CUDA streaming resident fast path: %llu fast layer loads, %llu slow (host) layer loads\n",
+                (unsigned long long)g_stream_resident_fast_hits,
+                (unsigned long long)g_stream_resident_slow_calls);
+}
+static void cuda_stream_slot_map_changed(void) { g_stream_slot_map_version++; }
+
+static void cuda_stream_resident_release(void) {
+    for (auto &kv : g_stream_layer_resident) {
+        if (kv.second.row_dev) (void)cudaFree(kv.second.row_dev);
+        kv.second.row_dev = nullptr;
+        kv.second.row_count = 0;
+        kv.second.resident = false;
+        kv.second.version = 0;
+        kv.second.live_slots.clear();
+    }
+    g_stream_slot_map_version++;
+}
+
+extern "C" void ds4_gpu_stream_expert_cache_set_layer_bias(uint32_t layer, uint64_t bias_offset) {
+    auto &lr = g_stream_layer_resident[layer];
+    if (lr.bias_offset != bias_offset) {
+        lr.bias_offset = bias_offset;
+        lr.version = 0;
+        lr.resident = false;
+    }
+}
+
+__global__ static void stream_resident_resolve_kernel(int32_t *slot_selected,
+                                                      const int32_t *selected,
+                                                      const int32_t *row,
+                                                      uint32_t n_total_expert,
+                                                      uint32_t count) {
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const int32_t e = selected[i];
+    int32_t slot = (e >= 0 && (uint32_t)e < n_total_expert) ? row[e] : -1;
+    /* Cannot happen when the layer is fully resident; keep the index valid. */
+    slot_selected[i] = slot < 0 ? 0 : slot;
+}
+
+static int cuda_stream_resident_fast_path(const ds4_gpu_stream_expert_table *table,
+                                          const ds4_gpu_tensor *selected, uint32_t count) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("DS4_CUDA_DISABLE_RESIDENT_FAST_PATH") != NULL;
+    if (disabled || !g_ssd_streaming_mode || !table || !selected || !count) return 0;
+    if (g_stream_prefetch.active) return 0;
+    auto &cache = g_stream_selected_cache;
+    if (!cache.gate_ptr || !cache.up_ptr || !cache.down_ptr ||
+        cache.model_map != table->model_map ||
+        cache.gate_expert_bytes != table->gate_expert_bytes ||
+        cache.down_expert_bytes != table->down_expert_bytes ||
+        g_stream_expert_slots.empty() || g_n_gpus != 1) return 0;
+    if (selected->bytes < (uint64_t)count * sizeof(int32_t)) return 0;
+    auto it = g_stream_layer_resident.find(table->layer);
+    if (it == g_stream_layer_resident.end() || !it->second.bias_offset) return 0;
+    auto &lr = it->second;
+    const uint32_t n = table->n_total_expert;
+    if (lr.version != g_stream_slot_map_version || lr.row_count != n) {
+        lr.resident = false;
+        lr.live_slots.clear();
+        if (n == 0 || lr.bias_offset > table->model_size ||
+            (uint64_t)n * sizeof(float) > table->model_size - lr.bias_offset) return 0;
+        const float *bias = (const float *)((const char *)table->model_map + lr.bias_offset);
+        std::vector<int32_t> row, missing;
+        try { row.assign(n, -1); lr.live_slots.reserve(n); } catch (...) { return 0; }
+        uint32_t live = 0;
+        /* Up to two passes: the first may stage the few live experts the
+         * router has not selected yet (they would otherwise never be cached
+         * and the layer would never become resident). */
+        for (int attempt = 0; attempt < 2; attempt++) {
+            lr.version = g_stream_slot_map_version;
+            live = 0; missing.clear(); lr.live_slots.clear();
+            std::fill(row.begin(), row.end(), -1);
+            for (uint32_t e = 0; e < n; e++) {
+                if (!(bias[e] > -1000.0f)) continue;
+                live++;
+                const uint64_t gate = table->gate_offset + (uint64_t)e * table->gate_expert_bytes;
+                const auto found = g_stream_expert_by_gate.find(gate);
+                if (found == g_stream_expert_by_gate.end()) { missing.push_back((int32_t)e); continue; }
+                const auto &slot = g_stream_expert_slots[found->second];
+                if (slot.up != table->up_offset + (uint64_t)e * table->gate_expert_bytes ||
+                    slot.down != table->down_offset + (uint64_t)e * table->down_expert_bytes) {
+                    missing.push_back((int32_t)e); continue;
+                }
+                row[e] = (int32_t)found->second;
+                lr.live_slots.push_back(found->second);
+            }
+            if (missing.empty()) break;
+            /* Only finish an almost-resident layer; leave real warm-up to the
+             * demand path.  Needs spare slots: size the cache above the live
+             * expert total (see --ssd-streaming-cache-experts). */
+            if (attempt == 1 || missing.size() > 64 || live == 0 ||
+                g_stream_expert_slots.size() < lr.live_slots.size() + missing.size()) return 0;
+            fprintf(stderr, "ds4: CUDA streaming resident fast path: staging %zu missing live experts for layer %u\n",
+                    missing.size(), table->layer);
+            if (!cuda_stream_selected_cache_begin_load(table, missing.data(), (uint32_t)missing.size()))
+                return 0;
+        }
+        if (live == 0 || !missing.empty()) return 0;
+        if (!lr.row_dev || lr.row_count != n) {
+            if (lr.row_dev) (void)cudaFree(lr.row_dev);
+            lr.row_dev = nullptr;
+            if (!cuda_ok(cudaMalloc(&lr.row_dev, (size_t)n * sizeof(int32_t)), "resident slot row"))
+                return 0;
+            lr.row_count = n;
+        }
+        if (!cuda_ok(cudaMemcpy(lr.row_dev, row.data(), (size_t)n * sizeof(int32_t),
+                                cudaMemcpyHostToDevice), "resident slot row copy")) return 0;
+        lr.resident = true;
+        static int logged = 0;
+        if (!logged) {
+            logged = 1;
+            atexit(cuda_stream_resident_report);
+            fprintf(stderr, "ds4: CUDA streaming resident fast path active (layer %u: %u live experts, all cached)\n",
+                    table->layer, live);
+        }
+    }
+    if (!lr.resident) return 0;
+    /* Keep the resident set hot so misses in other layers never evict it. */
+    if (g_stream_expert_clock < UINT64_MAX - 1) {
+        const uint64_t stamp = ++g_stream_expert_clock;
+        for (uint32_t slot : lr.live_slots) g_stream_expert_slots[slot].used = stamp;
+    }
+    if (!cuda_stream_selected_ensure_i32(count)) return 0;
+    stream_resident_resolve_kernel<<<(count + 255u) / 256u, 256, 0, cuda_decode_stream()>>>(
+            cache.slot_selected_ptr, (const int32_t *)selected->ptr, lr.row_dev, n, count);
+    if (!cuda_ok(cudaGetLastError(), "resident slot resolve launch")) return 0;
+    cache.layer = table->layer;
+    cache.n_total_expert = n;
+    cache.slot_count = count;
+    cache.compact_count = (uint32_t)g_stream_expert_slots.size();
+    cache.gate_offset = table->gate_offset;
+    cache.up_offset = table->up_offset;
+    cache.down_offset = table->down_offset;
+    cache.slot_selected_tensor.ptr = cache.slot_selected_ptr;
+    cache.slot_selected_tensor.bytes = (uint64_t)count * sizeof(int32_t);
+    cache.slot_selected_tensor.owner = 0;
+    cache.slot_selected_tensor.device_id = 0;
+    cache.valid = 1;
+    g_stream_prefill_ids.clear();
+    g_stream_prefill_slots.clear();
+    g_stream_resident_fast_hits++;
+    return 1;
 }
 
 static void cuda_stream_prefetch_before_load(const ds4_gpu_stream_expert_table *table) {
@@ -29249,6 +29435,7 @@ extern "C" void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel) {
         if (publish) {
             try {
                 g_stream_expert_by_gate[reserved.value.gate] = reserved.index;
+                cuda_stream_slot_map_changed();
                 slot = reserved.value;
                 /* Look-ahead is not evidence of reuse. Only an actual router
                  * hit promotes these slots, so unused reads cannot displace
@@ -29363,6 +29550,7 @@ extern "C" int ds4_gpu_stream_expert_cache_prefetch(
             auto &slot = g_stream_expert_slots[index];
             if (slot.used) g_stream_expert_by_gate.erase(slot.gate);
             slot = value;
+            cuda_stream_slot_map_changed();
         }
         /* Read in file order and merge adjacent misses when their cache slots
          * are contiguous. The private two-buffer ring overlaps reads/copies. */

@@ -1508,6 +1508,134 @@ static double now_sec(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
 }
 
+/* ---------------------------------------------------------------------------
+ * Routed-expert hit profile (any backend; used for V4.1 CUDA SSD streaming).
+ * Enabled by DS4_EXPERT_HITS_OUT=<csv path>.  Every time the host reads the
+ * router's selected expert ids for a layer (decode sync/async and batched
+ * prefill), the (layer, expert) counters are bumped.  The CSV is rewritten
+ * atomically at exit and every DS4_EXPERT_HITS_EVERY rows (default 2048) so
+ * a killed ds4-server still leaves a usable profile.
+ * ------------------------------------------------------------------------- */
+static uint64_t        g_expert_hits[DS4_MAX_LAYER][DS4_MAX_EXPERT];
+static uint64_t        g_expert_hits_rows[DS4_MAX_LAYER];
+static double          g_expert_weight[DS4_MAX_LAYER][DS4_MAX_EXPERT];
+static pthread_mutex_t g_expert_weight_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int             g_expert_hits_state = 0; /* 0 unset, 1 on, -1 off */
+static const char     *g_expert_hits_path = NULL;
+static uint64_t        g_expert_hits_every = 2048;
+static uint64_t        g_expert_hits_pending = 0;
+static pthread_mutex_t g_expert_hits_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void ds4_expert_hits_dump(void) {
+    if (g_expert_hits_state != 1 || !g_expert_hits_path) return;
+    pthread_mutex_lock(&g_expert_hits_mutex);
+    char tmp[4096];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", g_expert_hits_path);
+    FILE *fp = fopen(tmp, "w");
+    if (fp) {
+        fprintf(fp, "layer,expert,hits,layer_rows,weight\n");
+        for (uint32_t il = 0; il < DS4_N_LAYER && il < DS4_MAX_LAYER; il++) {
+            const uint64_t rows =
+                __atomic_load_n(&g_expert_hits_rows[il], __ATOMIC_RELAXED);
+            for (uint32_t e = 0; e < DS4_N_EXPERT && e < DS4_MAX_EXPERT; e++) {
+                const uint64_t h =
+                    __atomic_load_n(&g_expert_hits[il][e], __ATOMIC_RELAXED);
+                pthread_mutex_lock(&g_expert_weight_mutex);
+                const double w = g_expert_weight[il][e];
+                pthread_mutex_unlock(&g_expert_weight_mutex);
+                fprintf(fp, "%u,%u,%" PRIu64 ",%" PRIu64 ",%.6f\n", il, e, h, rows, w);
+            }
+        }
+        if (fclose(fp) == 0) rename(tmp, g_expert_hits_path);
+    } else {
+        fprintf(stderr, "ds4: expert hits: cannot write %s: %s\n",
+                tmp, strerror(errno));
+    }
+    pthread_mutex_unlock(&g_expert_hits_mutex);
+}
+
+static bool ds4_expert_hits_enabled(void) {
+    if (g_expert_hits_state != 0) return g_expert_hits_state == 1;
+    pthread_mutex_lock(&g_expert_hits_mutex);
+    if (g_expert_hits_state == 0) {
+        const char *path = getenv("DS4_EXPERT_HITS_OUT");
+        if (path && path[0]) {
+            g_expert_hits_path = path;
+            const char *every = getenv("DS4_EXPERT_HITS_EVERY");
+            if (every && every[0]) {
+                g_expert_hits_every = strtoull(every, NULL, 10);
+            }
+            atexit(ds4_expert_hits_dump);
+            fprintf(stderr, "ds4: expert hits profile -> %s (dump every %"
+                    PRIu64 " rows)\n", path, g_expert_hits_every);
+            g_expert_hits_state = 1;
+        } else {
+            g_expert_hits_state = -1;
+        }
+    }
+    pthread_mutex_unlock(&g_expert_hits_mutex);
+    return g_expert_hits_state == 1;
+}
+
+static void ds4_expert_hits_record(uint32_t       il,
+                                   const int32_t *ids,
+                                   const float   *weights,
+                                   uint32_t       n_rows,
+                                   uint32_t       n_used) {
+    if (!ds4_expert_hits_enabled()) return;
+    if (!ids || il >= DS4_MAX_LAYER) return;
+    if (weights) pthread_mutex_lock(&g_expert_weight_mutex);
+    for (uint32_t r = 0; r < n_rows; r++) {
+        for (uint32_t i = 0; i < n_used; i++) {
+            const int32_t e = ids[(uint64_t)r * n_used + i];
+            if (e < 0 || e >= (int32_t)DS4_MAX_EXPERT) continue;
+            __atomic_fetch_add(&g_expert_hits[il][e], 1, __ATOMIC_RELAXED);
+            if (weights) g_expert_weight[il][e] += (double)weights[(uint64_t)r * n_used + i];
+        }
+    }
+    if (weights) pthread_mutex_unlock(&g_expert_weight_mutex);
+    __atomic_fetch_add(&g_expert_hits_rows[il], n_rows, __ATOMIC_RELAXED);
+    if (g_expert_hits_every) {
+        const uint64_t pend =
+            __atomic_add_fetch(&g_expert_hits_pending, n_rows, __ATOMIC_RELAXED);
+        if (pend >= g_expert_hits_every) {
+            __atomic_store_n(&g_expert_hits_pending, 0, __ATOMIC_RELAXED);
+            ds4_expert_hits_dump();
+        }
+    }
+}
+
+/* GPU-tensor capture for the routed-expert hit profile (CUDA/Metal decode and
+ * prefill). Only runs when DS4_EXPERT_HITS_OUT is set, so production inference
+ * is untouched. Reads the tiny selected-id tensor with the same end/begin
+ * command-buffer guard the cold-path selected loads use. */
+static void ds4_expert_hits_capture(uint32_t        il,
+                                    ds4_gpu_tensor *selected,
+                                    ds4_gpu_tensor *weights,
+                                    uint32_t        n_rows,
+                                    uint32_t        n_used) {
+    if (!selected || n_rows == 0 || n_used == 0) return;
+    if (!ds4_expert_hits_enabled()) return;
+    const uint64_t n = (uint64_t)n_rows * (uint64_t)n_used;
+    if (n == 0 || n > SIZE_MAX / sizeof(int32_t)) return;
+    int32_t *ids = malloc((size_t)n * sizeof(int32_t));
+    float *w = weights ? malloc((size_t)n * sizeof(float)) : NULL;
+    if (!ids) { free(w); return; }
+    bool ok = false;
+    if (ds4_gpu_end_commands() != 0) {
+        ok = ds4_gpu_tensor_read(selected, 0, ids,
+                                 n * sizeof(int32_t)) != 0;
+        if (ok && w && weights->bytes >= n * sizeof(float) &&
+            ds4_gpu_tensor_read(weights, 0, w, n * sizeof(float)) == 0) {
+            free(w); w = NULL;
+        }
+        if (ds4_gpu_begin_commands() == 0) ok = false;
+    }
+    if (ok) ds4_expert_hits_record(il, ids, w, n_rows, n_used);
+    free(ids);
+    free(w);
+}
+
 /* =========================================================================
  * Metal Routed Expert Locality Profiler.
  * =========================================================================
@@ -26218,6 +26346,8 @@ static bool metal_graph_encode_decode_layer_phase(
                                                     layer->ffn_gate_tid2eid != NULL,
                                                     metal_graph_router_logits(g)) != 0;
         }
+        if (ok) ds4_expert_hits_capture(il, metal_graph_router_selected(g),
+                                        metal_graph_router_weights(g), 1, DS4_N_EXPERT_USED);
         if (ok) ok = metal_graph_decode_set_hash_selected_override(model,
                                                                    layer,
                                                                    il,
@@ -33336,6 +33466,8 @@ static bool metal_graph_encode_layer_ffn_batch(
                     DS4_EXPERT_WEIGHT_SCALE,
                     n_tokens) != 0;
     }
+    if (ok) ds4_expert_hits_capture(il, metal_graph_batch_router_selected(g),
+                                    metal_graph_batch_router_weights(g), n_tokens, DS4_N_EXPERT_USED);
     ds4_gpu_tensor_free(router_tokens);
     if (ok) {
         metal_graph_debug_dump_tensor("ffn_moe_logits", metal_graph_batch_router_logits(g),
@@ -41497,11 +41629,15 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     ds4_gpu_tensor *routed = shared_owner ? g->block : g->routed;
     const ds4_tensor *bias = ds41_image_at(g, g->pos) ? l->ffn_exp_probs_vl : l->ffn_exp_probs_b;
     if (!bias) return false;
+#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
+    if (g->streaming) ds4_gpu_stream_expert_cache_set_layer_bias(il, bias->abs_offset);
+#endif
     if (!ds41_matmul(g->route_logits, m, l->ffn_gate_inp, g->norm, false) ||
         !ds4_gpu_router_select_tensor(g->selected, g->route_weights, g->route_probs,
             m->map, m->size, bias->abs_offset, 0, 0, token,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
             g->route_logits)) return false;
+    ds4_expert_hits_capture(il, g->selected, g->route_weights, 1, DS4_N_EXPERT_USED);
     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
     bool shared_queued = false;
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -41934,8 +42070,8 @@ static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
 }
 #endif
 
-static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
-                              const ds4_layer_weights *l, uint32_t count) {
+static bool ds41_route_batch_select(ds41_gpu_graph *g, const ds4_model *m,
+                                     const ds4_layer_weights *l, uint32_t count) {
     ds41_prefill_row *b = &g->batch;
     if (!g->image_count) return ds4_gpu_router_select_batch_tensor(
         b->selected, b->route_weights, b->route_probs, m->map, m->size,
@@ -41969,6 +42105,15 @@ static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
     return true;
 }
 
+/* Router selection for a prefill/batched-decode block, plus the optional
+ * routed-expert hit profile (DS4_EXPERT_HITS_OUT). */
+static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
+                             const ds4_layer_weights *l, uint32_t il, uint32_t count) {
+    if (!ds41_route_batch_select(g, m, l, count)) return false;
+    ds4_expert_hits_capture(il, g->batch.selected, g->batch.route_weights, count, DS4_N_EXPERT_USED);
+    return true;
+}
+
 static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
                            const ds4_layer_weights *l, uint32_t il, uint32_t count,
                            bool shared_owner) {
@@ -41977,7 +42122,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
     const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
     bool mid_f16 = false;
     return ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
-        ds41_route_batch(g, m, l, count) &&
+        ds41_route_batch(g, m, l, il, count) &&
         ((shared_owner && g->tp_rank != (il & 1u)) ||
         (ds41_matmul_batch(b->shared_gate, m, l->ffn_gate_shexp, b->norm, count, true) &&
         ds41_matmul_batch(b->shared_up, m, l->ffn_up_shexp, b->norm, count, true) &&
@@ -42030,8 +42175,12 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * layer mapped, using the same admitted reserve as layer-major prefill. */
     const bool layer_resident = g->streaming && g->quality;
     if (layer_resident && !ds4_gpu_end_commands()) ok = false;
-    const bool queue_layers = g->tp_world == 2 && !g->imatrix &&
-        !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE");
+    const bool queue_layers = (g->tp_world == 2 && !g->imatrix &&
+        !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE")) ||
+        /* Opt-in for single-GPU streaming with the resident fast path: no
+         * per-layer host dependency remains, so skip the per-layer drain. */
+        (g->tp_world == 1 && g->streaming && !g->imatrix &&
+         getenv("DS4_CUDA_V41_QUEUE_LAYERS") != NULL);
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *l = &w->layer[il];
         if (layer_resident)
