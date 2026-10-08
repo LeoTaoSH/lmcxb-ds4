@@ -43013,6 +43013,7 @@ struct ds4_engine {
     int dspark_exec_tier;
     uint32_t support_stages;
     int mtp_draft_tokens;
+    int ngram_spec_draft_tokens;
     float mtp_margin;
     float dspark_confidence_threshold;
     bool dspark_confidence_threshold_set;
@@ -60947,6 +60948,9 @@ typedef struct ds4_dspark_spec_stats {
     uint64_t draft_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
     uint64_t accepted_len_hist[DS4_DSPARK_MAX_BLOCK_SIZE + 1u];
     uint64_t scheduler_skips;
+    uint64_t scheduler_rejections;
+    uint64_t scheduler_exp_pauses;
+    uint64_t scheduler_credit_misses;
     uint64_t tail_skips;
     uint64_t verifier_unavailable;
     uint64_t verifier_errors;
@@ -61059,6 +61063,8 @@ struct ds4_session {
     uint32_t dspark_sched_accepted;
     uint32_t dspark_sched_no_draft;
     uint32_t dspark_sched_skip;
+    uint32_t dspark_sched_miss_streak;
+    uint32_t dspark_sched_credit;
     uint32_t dspark_sched_lifetime_accepted;
     double dspark_sched_life_extra_ms;
     double dspark_sched_life_saved_ms;
@@ -61274,6 +61280,57 @@ static float ds4_dspark_scheduler_cold_low_confidence_threshold(void) {
     return (float)ds4_dspark_env_u32("DS4_DSPARK_SCHEDULER_COLD_LOW_CONFIDENCE_MILLI", 500) / 1000.0f;
 }
 
+/* A rejected proposal pays a full batched verify, so consecutive misses
+ * deserve a pause that doubles until a fresh accept proves the region
+ * speculative again.  Base 0 disables the backoff and keeps the legacy
+ * flat pauses only; the cap bounds how far a streak can silence drafting. */
+static uint32_t ds4_dspark_scheduler_exp_backoff_base(void) {
+    return ds4_dspark_env_u32("DS4_DSPARK_SCHEDULER_EXP_BACKOFF_BASE", 2);
+}
+
+static uint32_t ds4_dspark_scheduler_exp_backoff_cap(void) {
+    return ds4_dspark_env_u32("DS4_DSPARK_SCHEDULER_EXP_BACKOFF_CAP", 64);
+}
+
+/* The first miss is free: a periodic echo re-locks on the very next
+ * proposal (redrafting after a miss still accepts), so pausing on a
+ * single miss only forfeits echo cycles.  Only consecutive misses are
+ * evidence of a rejection-heavy region, and min_streak=1 restores the
+ * pause-after-every-miss ladder. */
+static uint32_t ds4_dspark_scheduler_exp_backoff_min_streak(void) {
+    return ds4_dspark_env_u32("DS4_DSPARK_SCHEDULER_EXP_BACKOFF_MIN_STREAK", 2);
+}
+
+/* Accepted cycles accrue credit and rejected cycles spend it before the
+ * exponential ladder engages: after a long high-acceptance run, isolated
+ * misses are absorbed instead of shifting the drafting phase (a periodic
+ * echo re-locks only if drafting continues right past a miss).  The cap
+ * bounds how long a stale credit can mask a genuinely dead region.  0
+ * disables credit and keeps the bare miss-streak ladder. */
+static uint32_t ds4_dspark_scheduler_exp_backoff_credit_cap(void) {
+    return ds4_dspark_env_u32("DS4_DSPARK_SCHEDULER_EXP_BACKOFF_CREDIT", 16);
+}
+
+static uint32_t ds4_dspark_scheduler_exp_backoff_pause(uint32_t streak) {
+    const uint32_t min_streak = ds4_dspark_scheduler_exp_backoff_min_streak();
+    if (streak < min_streak || min_streak == 0) return 0;
+    const uint32_t base = ds4_dspark_scheduler_exp_backoff_base();
+    if (base == 0) return 0;
+    const uint32_t cap = ds4_dspark_scheduler_exp_backoff_cap();
+    /* Double one shift at a time so an oversized knob saturates at the
+     * cap instead of wrapping the pause back to zero. */
+    uint32_t pause = base;
+    for (uint32_t shift = min_streak; shift < streak && pause < cap; shift++) {
+        if (pause > cap / 2u) {
+            pause = cap;
+            break;
+        }
+        pause *= 2u;
+    }
+    if (pause > cap) pause = cap;
+    return pause;
+}
+
 /* Timing-sensitive scheduling changes which arithmetic path advances a token.
  * Keep it opt-in so greedy DSpark output is reproducible across runs. */
 static bool ds4_dspark_scheduler_timing_enabled(void) {
@@ -61294,6 +61351,8 @@ static void ds4_session_dspark_scheduler_begin_request(ds4_session *s) {
     if (!s) return;
     ds4_session_dspark_scheduler_reset(s);
     s->dspark_sched_skip = 0;
+    s->dspark_sched_miss_streak = 0;
+    s->dspark_sched_credit = 0;
     s->dspark_sched_lifetime_accepted = 0;
     s->dspark_sched_life_extra_ms = 0.0;
     s->dspark_sched_life_saved_ms = 0.0;
@@ -61347,6 +61406,63 @@ static void ds4_session_dspark_scheduler_note(
         }
     }
     if (no_draft) s->dspark_sched_no_draft++;
+    /* Miss-streak backoff: only a cycle that proposed drafts and lost the
+     * verification grows the streak.  No-draft cycles keep their fixed
+     * pause (the context scan is nearly free) and skipped cycles return
+     * early above, so the streak tracks real rejected verifies.  Any
+     * accept clears it, letting a high-acceptance region draft again on
+     * the very next cycle. */
+    if (accepted_drafts != 0) {
+        s->dspark_sched_miss_streak = 0;
+        const uint32_t credit_cap =
+            ds4_dspark_scheduler_exp_backoff_credit_cap();
+        if (credit_cap != 0) {
+            uint32_t credit = s->dspark_sched_credit + 1u;
+            if (accepted_drafts >= 4u) credit += 1u;
+            if (credit > credit_cap) credit = credit_cap;
+            s->dspark_sched_credit = credit;
+        }
+    } else if (!no_draft) {
+        const uint32_t credit_cap =
+            ds4_dspark_scheduler_exp_backoff_credit_cap();
+        if (credit_cap != 0 && s->dspark_sched_credit > 0) {
+            /* Spend credit instead of growing the streak: the miss is
+             * absorbed and drafting continues on the next cycle, which
+             * is what a high-acceptance region needs to keep its phase. */
+            s->dspark_sched_credit--;
+            if (ds4_dspark_stats_enabled()) {
+                s->dspark_stats.scheduler_rejections++;
+                s->dspark_stats.scheduler_credit_misses++;
+            }
+            if (getenv("DS4_DSPARK_SPEC_LOG") != NULL) {
+                fprintf(stderr,
+                        "ds4: DSpark scheduler credit miss=%u streak=%u\n",
+                        s->dspark_sched_credit,
+                        s->dspark_sched_miss_streak);
+            }
+        } else {
+        s->dspark_sched_miss_streak++;
+        if (ds4_dspark_stats_enabled()) {
+            s->dspark_stats.scheduler_rejections++;
+        }
+        const uint32_t exp_pause = ds4_dspark_scheduler_exp_backoff_pause(
+                s->dspark_sched_miss_streak);
+        if (exp_pause > s->dspark_sched_skip) {
+            s->dspark_sched_skip = exp_pause;
+            if (ds4_dspark_stats_enabled()) {
+                s->dspark_stats.scheduler_exp_pauses++;
+            }
+            if (getenv("DS4_DSPARK_SPEC_LOG") != NULL) {
+                fprintf(stderr,
+                        "ds4: DSpark scheduler exp-backoff streak=%u "
+                        "pause=%u credit=%u\n",
+                        s->dspark_sched_miss_streak,
+                        s->dspark_sched_skip,
+                        s->dspark_sched_credit);
+            }
+        }
+        }
+    }
     if (extra_ms > 0.0 && isfinite(extra_ms)) {
         s->dspark_sched_extra_ms += extra_ms;
     }
@@ -61381,6 +61497,13 @@ static void ds4_session_dspark_scheduler_note(
         if (s->dspark_sched_skip < skip) {
             s->dspark_sched_skip = skip;
         }
+        /* The streak is not evidence about this cycle; a no-draft pause
+         * still may not shorten the pause the streak already earned. */
+        const uint32_t exp_floor = ds4_dspark_scheduler_exp_backoff_pause(
+                s->dspark_sched_miss_streak);
+        if (s->dspark_sched_skip < exp_floor) {
+            s->dspark_sched_skip = exp_floor;
+        }
         if (getenv("DS4_DSPARK_SPEC_LOG") != NULL) {
             fprintf(stderr,
                     "ds4: DSpark scheduler no-draft pause skip=%u "
@@ -61411,6 +61534,13 @@ static void ds4_session_dspark_scheduler_note(
         s->dspark_sched_cycles >= break_even_window &&
         measured_unprofitable) {
         s->dspark_sched_skip = ds4_dspark_scheduler_slow_skip_cycles();
+        /* The miss-streak backoff is a floor: a flat pause never shortens
+         * a pause the streak already earned. */
+        const uint32_t exp_floor = ds4_dspark_scheduler_exp_backoff_pause(
+                s->dspark_sched_miss_streak);
+        if (s->dspark_sched_skip < exp_floor) {
+            s->dspark_sched_skip = exp_floor;
+        }
         if (getenv("DS4_DSPARK_SPEC_LOG") != NULL) {
             fprintf(stderr,
                     "ds4: DSpark scheduler break-even pause cycles=%u "
@@ -61465,6 +61595,13 @@ static void ds4_session_dspark_scheduler_note(
             if (s->dspark_sched_skip < slow_skip) {
                 s->dspark_sched_skip = slow_skip;
             }
+        }
+        /* Same floor as the break-even pause above: the windowed flat
+         * pause may extend the streak's pause, never cut it short. */
+        const uint32_t exp_floor = ds4_dspark_scheduler_exp_backoff_pause(
+                s->dspark_sched_miss_streak);
+        if (s->dspark_sched_skip < exp_floor) {
+            s->dspark_sched_skip = exp_floor;
         }
         if (getenv("DS4_DSPARK_SPEC_LOG") != NULL) {
             fprintf(stderr,
@@ -63005,6 +63142,12 @@ bool ds4_engine_mtp_exact_sampling(ds4_engine *e) {
 }
 
 int ds4_engine_mtp_draft_tokens(ds4_engine *e) {
+    /* The n-gram drafter needs no support weights, so its width is the
+     * speculative draft width whenever it is enabled (CPU included: the
+     * reference backend verifies drafts one eval at a time). */
+    if (e && e->ngram_spec_draft_tokens > 1) {
+        return e->ngram_spec_draft_tokens;
+    }
     if (e && ds4_model_is_qwen4()) {
         return e->glm_mtp && DS4_N_NEXTN_PREDICT != 0 && e->backend != DS4_BACKEND_CPU ? 2 : 0;
     }
@@ -71583,6 +71726,10 @@ static int ds4_engine_open_internal(ds4_engine **out,
     if (e->power_percent > 100) e->power_percent = 100;
     e->mtp_draft_tokens = opt->mtp_draft_tokens > 0 ? opt->mtp_draft_tokens : 1;
     if (e->mtp_draft_tokens > 16) e->mtp_draft_tokens = 16;
+    e->ngram_spec_draft_tokens = opt->ngram_spec_draft_tokens;
+    if (e->ngram_spec_draft_tokens > DS4_DSPARK_MAX_BLOCK_SIZE) {
+        e->ngram_spec_draft_tokens = DS4_DSPARK_MAX_BLOCK_SIZE;
+    }
     e->mtp_margin = opt->mtp_margin >= 0.0f ? opt->mtp_margin : 3.0f;
     if (opt->dspark_confidence_threshold_set) {
         e->dspark_confidence_threshold = opt->dspark_confidence_threshold;
@@ -71603,6 +71750,17 @@ static int ds4_engine_open_internal(ds4_engine **out,
     }
     if (opt->dspark && (!opt->mtp_path || !opt->mtp_path[0])) {
         fprintf(stderr, "ds4: --dspark requires --mtp-model FILE\n");
+        free(e);
+        *out = NULL;
+        return 1;
+    }
+    if (opt->ngram_spec_draft_tokens > 1 &&
+        ((opt->mtp_path && opt->mtp_path[0]) || opt->dspark || opt->glm_mtp ||
+         opt->tp.role != DS4_TP_NONE ||
+         opt->distributed.role != DS4_DISTRIBUTED_NONE)) {
+        fprintf(stderr,
+                "ds4: --ngram-spec cannot be combined with a support model, "
+                "embedded MTP, tensor parallelism, or distributed inference\n");
         free(e);
         *out = NULL;
         return 1;
@@ -71667,6 +71825,16 @@ static int ds4_engine_open_internal(ds4_engine **out,
         return 1;
     }
     config_validate_model(&e->model);
+    if (opt->ngram_spec_draft_tokens > 1 &&
+        ((e->backend != DS4_BACKEND_METAL && e->backend != DS4_BACKEND_CPU) ||
+         DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK4)) {
+        fprintf(stderr,
+                "ds4: --ngram-spec supports the DeepSeek V4 Flash CPU and "
+                "Metal paths only\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
     if (ds4_model_is_qwen4() && !opt->inspect_only) {
         const bool backend_ok =
 #ifdef DS4_HAS_QWEN4_GPU
@@ -73919,12 +74087,18 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
      * standalone step to estimate its cost. Do not print a fictitious saving. */
     if (st->seed_batches) snprintf(net_saved, sizeof(net_saved), "n/a");
     else snprintf(net_saved, sizeof(net_saved), "%.3f", st->saved_ms - extra_ms);
+    /* The counters are shared by every speculative draft source; name the
+     * line after the one actually driving this session. */
+    const char *stats_label =
+        s->engine && s->engine->ngram_spec_draft_tokens > 1
+            ? "ngram-spec" : "DSpark";
     fprintf(stderr,
-            "ds4: DSpark stats cycles=%llu first_tokens=%llu proposed=%llu "
+            "ds4: %s stats cycles=%llu first_tokens=%llu proposed=%llu "
             "accepted_draft=%llu accept_rate=%.2f%% avg_accept=%.3f seed_batches=%llu "
             "full=%llu partial=%llu direct_full=%llu direct_partial=%llu "
             "replay_fallbacks=%llu miss_first=%llu no_draft=%llu "
             "no_room=%llu invalid=%llu scheduler_skips=%llu "
+            "rejections=%llu exp_pauses=%llu credit_misses=%llu "
             "tail_skips=%llu verifier_unavailable=%llu errors=%llu time_ms propose=%.3f "
             "prop_stage0=%.3f prop_setup=%.3f prop_cache=%.3f "
             "prop_chain=%.3f prop_hidden=%.3f prop_conf0=%.3f "
@@ -73934,6 +74108,7 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
             "verify_fused_head=%llu replay=%.3f spec_total=%.3f "
             "target=%.3f saved=%.3f net_saved=%s "
             "draft_len_hist=%s accepted_len_hist=%s\n",
+            stats_label,
             (unsigned long long)st->cycles,
             (unsigned long long)st->first_tokens,
             (unsigned long long)st->proposed_tokens,
@@ -73951,6 +74126,9 @@ static void ds4_session_print_dspark_stats(const ds4_session *s) {
             (unsigned long long)st->no_room,
             (unsigned long long)st->invalid_draft,
             (unsigned long long)st->scheduler_skips,
+            (unsigned long long)st->scheduler_rejections,
+            (unsigned long long)st->scheduler_exp_pauses,
+            (unsigned long long)st->scheduler_credit_misses,
             (unsigned long long)st->tail_skips,
             (unsigned long long)st->verifier_unavailable,
             (unsigned long long)st->verifier_errors,
@@ -74310,6 +74488,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     }
     const bool need_spec_verifier =
         e->mtp_ready ||
+        e->ngram_spec_draft_tokens > 1 ||
         (e->support_kind == DS4_SUPPORT_DSPARK && e->dspark) ||
         e->tp.active; /* TP worker mirrors the leader's verify blocks */
     const int *placement = e->multi_tier ? e->placement : NULL;
@@ -85687,6 +85866,213 @@ static int ds4_sessions_eval_batch_with_prefill_cuda(
     return rc;
 }
 
+/* =========================================================================
+ * Context n-gram (prompt-lookup) speculative drafting.
+ * ========================================================================
+ *
+ * The n-gram drafter is the one draft source that needs no extra weights:
+ * it proposes a continuation by locating the most recent earlier occurrence
+ * of the last few context tokens (prompt plus generated tokens) and
+ * replaying the tokens that followed that occurrence.  The lookup table is
+ * the live session context itself, rescanned every cycle, so it can never
+ * go stale after verifier rollbacks, rewinds, or prefix rewrites: each
+ * proposal is drawn from the same tokens the verifier is about to validate.
+ * Verification reuses the DSpark batched verifier and back-off scheduler,
+ * so acceptance stays lossless -- a draft token survives only where the
+ * target model's own logits agree with it.
+ */
+
+static uint32_t ds4_ngram_env_u32(const char *name, uint32_t fallback) {
+    const char *env = getenv(name);
+    if (!env || !env[0]) return fallback;
+    char *end = NULL;
+    unsigned long v = strtoul(env, &end, 10);
+    if (end == env || *end != '\0') return fallback;
+    return (uint32_t)v;
+}
+
+/* Match length n of the prompt lookup.  Shorter matches hit more often but
+ * predict worse; three tokens is the sweet spot for code and other
+ * repetitive text.  DS4_NGRAM_SPEC_SIZE overrides it for experiments. */
+static uint32_t ds4_ngram_match_len(void) {
+    uint32_t n = ds4_ngram_env_u32("DS4_NGRAM_SPEC_SIZE", 3);
+    if (n == 0) n = 3;
+    if (n > 16) n = 16;
+    return n;
+}
+
+/* Propose up to max_draft continuation tokens for the context by replaying
+ * the tokens that followed the most recent earlier occurrence of the last
+ * match_len tokens.  Returns 0 when the suffix never occurred before.
+ * The scan runs backward so the newest occurrence wins; a full miss costs
+ * one pass over the context, trivial next to a model step. */
+static int ds4_ngram_propose(const ds4_tokens *ctx, int max_draft,
+                             int *drafts) {
+    const int n = (int)ds4_ngram_match_len();
+    const int len = ctx->len;
+    if (max_draft <= 0 || len < n + 1) return 0;
+    const int *tok = ctx->v;
+    const int *suffix = tok + len - n;
+    for (int i = len - n - 1; i >= 0; i--) {
+        if (memcmp(tok + i, suffix, (size_t)n * sizeof(tok[0])) != 0) {
+            continue;
+        }
+        int count = 0;
+        while (count < max_draft && i + n + count < len) {
+            drafts[count] = tok[i + n + count];
+            count++;
+        }
+        return count;
+    }
+    return 0;
+}
+
+/* CPU-reference n-gram cycle.  The CPU backend has no batched verifier, so
+ * drafts are checked one decode at a time: every accepted draft costs the
+ * same eval as an ordinary token and a rejection has already produced the
+ * correct greedy continuation in s->logits.  The path is cost-neutral and
+ * lossless; its value is exercising the drafter and its acceptance counters
+ * without a GPU. */
+static int ds4_session_eval_ngram_spec_cycle_cpu(
+        ds4_session *s, int first_token, int max_tokens, int eos_token,
+        bool ignore_eos, ds4_think_mode think_mode,
+        int *accepted, int accepted_cap, char *err, size_t errlen) {
+    if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
+    int n_accept = 0;
+    accepted[n_accept++] = first_token;
+    if (first_token == eos_token || max_tokens == 1 ||
+        n_accept >= accepted_cap) {
+        return n_accept;
+    }
+    ds4_engine *e = s->engine;
+    int drafts[DS4_DSPARK_MAX_BLOCK_SIZE];
+    int draft_n = ds4_ngram_propose(&s->checkpoint,
+                                    e->ngram_spec_draft_tokens, drafts);
+    const int room = s->ctx_size - s->checkpoint.len;
+    if (draft_n > room - 1) draft_n = room - 1;
+#ifndef DS4_NO_GPU
+    const bool stats_enabled = ds4_dspark_stats_enabled();
+    if (stats_enabled) {
+        s->dspark_stats.cycles++;
+        s->dspark_stats.first_tokens++;
+        s->dspark_stats.proposed_tokens +=
+            (uint32_t)(draft_n > 0 ? draft_n : 0);
+        ds4_dspark_stats_note_len(s->dspark_stats.draft_len_hist,
+                                  (uint32_t)(draft_n > 0 ? draft_n : 0));
+    }
+#endif
+    for (int i = 0; i < draft_n && n_accept < accepted_cap; i++) {
+        /* Mirror the verifier's boundary rules: think-mode stop tokens are
+         * never proposed through, and EOS may close the accepted block. */
+        if (ignore_eos &&
+            ds4_token_is_stop_for_think_mode(e, drafts[i], think_mode)) {
+            break;
+        }
+        if (sample_argmax(s->logits, DS4_N_VOCAB) != drafts[i]) {
+#ifndef DS4_NO_GPU
+            if (stats_enabled && i == 0) s->dspark_stats.first_misses++;
+#endif
+            break;
+        }
+        if (ds4_session_eval(s, drafts[i], err, errlen) != 0) return -1;
+        accepted[n_accept++] = drafts[i];
+        if (drafts[i] == eos_token) break;
+    }
+#ifndef DS4_NO_GPU
+    if (stats_enabled) {
+        const uint32_t emitted = (uint32_t)(n_accept - 1);
+        s->dspark_stats.accepted_draft_tokens += emitted;
+        if (emitted == (uint32_t)draft_n) {
+            s->dspark_stats.full_accepts++;
+        } else if (emitted != 0) {
+            s->dspark_stats.partial_accepts++;
+        } else if (draft_n == 0) {
+            s->dspark_stats.no_draft++;
+        }
+        ds4_dspark_stats_note_len(s->dspark_stats.accepted_len_hist, emitted);
+    }
+#endif
+    return n_accept;
+}
+
+#ifndef DS4_NO_GPU
+/* One n-gram speculative cycle on the batched-verify backends: decode the
+ * already-chosen seed token, look the new context suffix up, and hand the
+ * proposal to the DSpark verifier, which commits the accepted prefix,
+ * rewinds on rejection, and keeps the adaptive scheduler fed. */
+static int ds4_session_eval_ngram_spec_cycle(
+        ds4_session *s, int first_token, int max_tokens, int eos_token,
+        bool ignore_eos, ds4_think_mode think_mode,
+        int *accepted, int accepted_cap, char *err, size_t errlen) {
+    ds4_engine *e = s->engine;
+    /* --quality keeps the target-only comparison path, like DSpark strict. */
+    bool tail_skip = false;
+    bool sched_skip = false;
+    if (!e->quality) {
+        if (ds4_dspark_scheduler_enabled(s)) {
+            const uint32_t tail_min = ds4_dspark_scheduler_tail_min_tokens();
+            if (tail_min != 0 && (uint32_t)max_tokens < tail_min) {
+                tail_skip = true;
+                if (ds4_dspark_stats_enabled()) s->dspark_stats.tail_skips++;
+            }
+        }
+        sched_skip = !tail_skip &&
+                     ds4_session_dspark_scheduler_should_skip(s);
+    }
+    if (ds4_session_eval_probe_tp(s, first_token, false, err, errlen) != 0) {
+        return -1;
+    }
+    int n_accept = 0;
+    accepted[n_accept++] = first_token;
+    if (tail_skip || sched_skip || first_token == eos_token ||
+        max_tokens == 1 || n_accept >= accepted_cap) {
+        if (sched_skip) {
+            /* Consume the skipped-cycle marker the same way the verifier's
+             * no-draft note would: paused cycles are not accounted. */
+            ds4_session_dspark_scheduler_note(s, 0, true, 0.0);
+        }
+        return n_accept;
+    }
+    const bool stats_enabled = ds4_dspark_stats_enabled();
+    const bool timing =
+        stats_enabled ||
+        (ds4_dspark_scheduler_enabled(s) &&
+         ds4_dspark_scheduler_timing_enabled());
+    const double propose_t0 = timing ? now_sec() : 0.0;
+    int drafts[DS4_DSPARK_MAX_BLOCK_SIZE];
+    int draft_n = ds4_ngram_propose(&s->checkpoint,
+                                    e->ngram_spec_draft_tokens, drafts);
+    const double propose_ms =
+        timing ? (now_sec() - propose_t0) * 1000.0 : 0.0;
+    s->dspark_last_propose_ms = propose_ms;
+    if (stats_enabled) s->dspark_stats.propose_ms += propose_ms;
+    const int room = s->ctx_size - s->checkpoint.len;
+    const int unclipped_draft_n = draft_n;
+    if (draft_n > room - 1) draft_n = room - 1;
+    if (draft_n > 0) {
+        for (int i = 0; i < draft_n; i++) {
+            s->dspark_draft_tokens[i] = drafts[i];
+        }
+        s->dspark_draft_len = (uint32_t)draft_n;
+        s->dspark_draft_valid = true;
+    }
+    if (!s->dspark_draft_valid) {
+        ds4_session_dspark_scheduler_note(s, 0, true, propose_ms);
+        if (stats_enabled) {
+            s->dspark_stats.cycles++;
+            s->dspark_stats.first_tokens++;
+            if (unclipped_draft_n > 0) s->dspark_stats.no_room++;
+            else s->dspark_stats.no_draft++;
+            ds4_dspark_stats_note_len(s->dspark_stats.accepted_len_hist, 0);
+        }
+        return n_accept;
+    }
+    return ds4_session_eval_dspark_speculative_argmax(
+            s, n_accept, max_tokens, eos_token, ignore_eos, think_mode,
+            accepted, accepted_cap, err, errlen);
+}
+#endif
+
 static int ds4_session_eval_speculative_argmax_impl(
         ds4_session *s, int first_token, int max_tokens, int eos_token,
         bool ignore_eos, ds4_think_mode think_mode,
@@ -85705,12 +86091,19 @@ static int ds4_session_eval_speculative_argmax_impl(
         return 1;
     }
     if (ds4_session_is_cpu(s)) {
-        (void)max_tokens;
-        (void)eos_token;
         if (!accepted || accepted_cap <= 0) return 0;
-        if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
-        accepted[0] = first_token;
-        return 1;
+        if (s->engine->ngram_spec_draft_tokens <= 1) {
+            (void)max_tokens;
+            (void)eos_token;
+            (void)ignore_eos;
+            (void)think_mode;
+            if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
+            accepted[0] = first_token;
+            return 1;
+        }
+        return ds4_session_eval_ngram_spec_cycle_cpu(
+                s, first_token, max_tokens, eos_token, ignore_eos,
+                think_mode, accepted, accepted_cap, err, errlen);
     }
     if (ds4_session_is_qwen4(s)) {
         (void)max_tokens;
@@ -85783,6 +86176,11 @@ static int ds4_session_eval_speculative_argmax_impl(
     return -1;
 #else
     ds4_engine *e = s->engine;
+    if (e->ngram_spec_draft_tokens > 1) {
+        return ds4_session_eval_ngram_spec_cycle(
+                s, first_token, max_tokens, eos_token, ignore_eos,
+                think_mode, accepted, accepted_cap, err, errlen);
+    }
     if (ds4_session_is_glm(s) && ds4_engine_glm_mtp_spec_enabled(e)) {
         int cycle_cap = accepted_cap;
         if (cycle_cap > max_tokens) cycle_cap = max_tokens;
