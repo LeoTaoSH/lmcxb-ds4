@@ -132,6 +132,50 @@ Q2 is the resident target for one Spark:
 Q4 does not fit resident. GLM Spark-to-Spark tensor parallelism is not
 implemented; the two-Mac RDMA instructions do not apply to GLM on CUDA.
 
+September 19, 2026, GLM 5.3 Flash Q2 fully resident on one Spark: median
+steady generation speed from six runs of `ds4-bench`, 128 generated tokens,
+one process walking the three context sizes, driver 580.159.03, sm_121.
+Speed is flat across context because the KDA layers keep a constant-size
+state and the DSA layers read an indexed slice; the compact DSA cache is
+0.37 GiB at 32K.
+
+| Context | Resident decode |
+| --- | ---: |
+| 2048 | 14.68 t/s |
+| 4096 | 14.64 t/s |
+| 6144 | 14.60 t/s |
+
+```sh
+./ds4-bench --cuda -m gguf/GLM-5.3-Flash-Q2.gguf \
+  --prompt-file speed-bench/promessi_sposi.txt \
+  --ctx-start 2048 --ctx-max 6144 --step-incr 2048 --gen-tokens 128
+```
+
+The first run after a load reads a few percent low; discard at least two
+warm-up runs before taking numbers. Each load builds its aligned CUDA
+artifacts in memory (about 15 seconds) before the first token.
+
+The same file forced to stream, same day and same harness, medians of four
+runs after three discarded warm-ups. The runs asked for a 24 GB expert cache
+and the engine reported 3,064 resident expert slots of the 43 x 288 routed
+set at 6.75 MiB each; a request is the ask, the slot count is what arrived.
+
+| Context | SSD streaming decode, 24 GB cache |
+| --- | ---: |
+| 2048 | 4.50 t/s |
+| 4096 | 4.32 t/s |
+| 6144 | 3.79 t/s |
+
+```sh
+./ds4-bench --cuda --ssd-streaming --ssd-streaming-cache-experts 24GB \
+  -m gguf/GLM-5.3-Flash-Q2.gguf \
+  --prompt-file speed-bench/promessi_sposi.txt \
+  --ctx-start 2048 --ctx-max 6144 --step-incr 2048 --gen-tokens 128
+```
+
+Streaming this file is a measurement configuration, not a recommendation:
+resident decode is 3.9 times the streamed speed at 6144.
+
 ## Vision and speculative decoding
 
 DeepSeek Vision Experimental needs its matching text model and encoder:

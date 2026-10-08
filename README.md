@@ -267,3 +267,96 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 The DwarfStar logo was designed by hand by Salvatore Sanfilippo, made more
 graphical with AI, and manually reworked by Ben Gnomino, whose human touch made
 it rock.
+
+```
+✦━━━━━━━━━━━━━━━━━━━⟡ T R I P L E S P A R K L E ⟡━━━━━━━━━━━━━━━━━━━
+  the card below is ours; the README above is antirez's, unchanged
+
+  ┌─ triple-glm53-spark ──────────────────────────────────────── TOOLING
+  │  WHAT     GLM 5.3 Flash on the DGX Spark with hits-first OFF: the measured
+  │           Q2 decode rows in antirez's docs, resident and streamed, plus the
+  │           Q4 predicate widening for CUDA (#907), env-gated off. Not a lever
+  │  SWITCH   DS4_GLM_Q4_GENERIC=1 puts the Q4 file on the generic CUDA MoE path
+  │  OUTPUT   Q4 gated and passing: two mints byte-identical, and the 24GB and
+  │           48GB runs byte-identical across 1,244 against 3,064 resident
+  │           experts, a 2.46x change in which experts miss
+  │  BASE     main @8db1d1d1
+  └─
+```
+
+**RESULTS** no arm - nothing here is compared against a tip, so the baseline IS the number · DGX Spark GB10 sm_121 · driver 580.159.03 · 128 gen tokens · one process per run walking the three contexts
+
+| file | mode | ctx | cache asked | experts resident | decode t/s | runs |
+|---|---|---:|---|---|---|---|
+| Q2  89.9 GiB | resident | 2048 | none | all, the file fits | 14.675 | 6 |
+| Q2  89.9 GiB | resident | 4096 | none | all, the file fits | 14.635 | 6 |
+| Q2  89.9 GiB | resident | 6144 | none | all, the file fits | 14.600 | 6 |
+| Q2  89.9 GiB | streamed | 2048 | 24GB | 3,064   24.74 % | 4.50 | 4 |
+| Q2  89.9 GiB | streamed | 4096 | 24GB | 3,064   24.74 % | 4.32 | 4 |
+| Q2  89.9 GiB | streamed | 6144 | 24GB | 3,064   24.74 % | 3.79 | 4 |
+| Q4 177.8 GiB | streamed | 2048 | 24GB | 1,244   10.04 % | 2.38 | 3 |
+| Q4 177.8 GiB | streamed | 4096 | 24GB | 1,244   10.04 % | 2.60 | 3 |
+| Q4 177.8 GiB | streamed | 6144 | 24GB | 1,244   10.04 % | 2.55 | 3 |
+| Q4 177.8 GiB | streamed | - | 48GB | 3,064   24.74 % | output onl | y   2 |
+
+```
+columns   cache asked = --ssd-streaming-cache-experts · resident = the engine's own line
+          a resident row streams nothing, so it says none rather than blank
+          coverage is of the 43 x 288 = 12,384 routed set: 288 is the file's own count,
+          not the 256 the GLM-specific launcher hardcodes
+
+3,064 x2  it means two different runs. a Q4 expert is 13.50 MiB, a Q2 expert 6.75, exactly
+          double, and the headrooms are 7.59 and 3.80 GiB, so Q2 at 24GB and Q4 at 48GB
+          land on one integer · read the file and the cache on every row, not the count
+
+48GB row  carries no t/s on purpose: it pairs with the 24GB row above it, and what it
+          measures is that the output does not change when 2.46x more experts are resident
+
+prefill   Q2 streamed 24GB 79.7 / 90.4 / 90.7 · Q4 24GB 62.0 / 69.1 / 67.3 t/s
+
+fixtures  Q2 resident, 100 cases: avg_nll 0.461783551 first_match 90 avg_lcp 7.490,
+          antirez's own Spark reference to the last published digit
+          Q4 streamed 24GB, 100 cases, 11,559 tokens: avg_nll 0.300986170 first_match 90
+          avg_lcp 9.970 · make cuda-regression GREEN
+
+reports   the same dispatch gap, four reporters, four CUDA architectures, two Q4 files
+          #682  AlphaMo99      2026-08-04  404.35 GiB full GLM    Quadro RTX 5000  sm_75
+          #907  accdropdbd-ai  2026-08-30  177.77 GiB Flash Q4_K  H100 PCIe        sm_90
+          #682  ChicoPinto70   2026-09-12  the same Flash file    3x RTX 3090      sm_86
+          #682  chenwei0930    2026-09-19  the same error, no hardware stated
+          ours                             the same Flash file    DGX Spark GB10   sm_121
+          #907's author: "Happy to test patches or provide more diagnostics on the H100"
+
+files     glm53/measured/2026-09-19-GLM-R1-RESULT-*.md (resident Q2)
+          2026-09-19-GLM-R2-RESULT-*.md (the streamed Q2 rows, tip arm)
+          2026-09-20-GLM-B-RESULT-*.md (the Q4 door) · GLM-GATES · NEUTRALITY
+```
+
+NOTES
+**WHAT THIS IS**
+- GLM 5.3 Flash on the DGX Spark without the hits-first lever: the measured Q2 rows, resident and
+  streamed, plus the Q4 predicate widening for CUDA (#907), env-gated off.
+- Not a lever. Nothing here is compared against a tip; the baseline is the number.
+
+**Q2, MEASURED (GLM-R1, GLM-R2)**
+- Resident: six live runs after one discarded warm-up, MAD 0.080 / 0.020 / 0.030. One warm-up is
+  not enough: the warm-up and live run 1 sat within 0.42 % of each other.
+
+**Q4 ON CUDA, MEASURED (GLM-B, GLM-GATES)**
+- The predicate widening landed (ds4.c +26/-5), env-gated OFF. Unset, it reproduces #907 verbatim
+  and exits 1 one second into prefill. Set, it decodes coherently: the first CUDA decode of this
+  file on record. Build rc=0 in 1 min 29 s, zero errors, zero warnings.
+- The 100-case Q4 fixture WAS run, streamed: 0.300986170 / 90 / 9.970 against the QA section's
+  reference 0.299917952 / 90 / 9.66. What is NOT done is the resident run: QA §8 says not to
+  attempt the 178 GiB artifact on one 128 GB Spark, so ours streamed where his was resident on Metal.
+
+**THE DISPATCH GAP IS NOT SPARK-SPECIFIC**
+- Four reporters, four CUDA architectures (sm_75 / 86 / 90 / 121), two different Q4 files: the
+  reports block above lists them. #907's author offers his H100, the one we cannot reach.
+- Verbatim true at main today: glm_graph_layer_uses_generic_routed_moe() returns on
+  DS4_TENSOR_IQ2_XXS alone, and DS4_GLM_Q4_GENERIC is 0 rows in main's ds4.c (control:
+  DS4_GLM_MEMORY_GUARD, 8 rows, so the search sees what is there).
+
+**FLAGGED, NOT FIXED**
+- fp8: weight_scale_inv has zero readers in ds4.c (packager only), "not implemented" in his table.
+  vision: a CUDA path exists in the tree and is unmeasured on GLM here.
