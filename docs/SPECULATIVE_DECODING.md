@@ -85,10 +85,10 @@ perfect, disengaging after repeated second-draft rejections.
 
 ## MiMo V2.6 Flash: built-in MTP
 
-The three nextn layers (`blk.48..50`) ship in both MiMo GGUFs:
+The three nextn layers (`blk.48..50`) ship in the current MOPD GGUF:
 
 ```sh
-./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf --mtp
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --mtp
 ```
 
 Each cycle drafts up to `DS4_MIMO2_MTP_DEPTH` tokens (1 to 3, default 2).
@@ -109,13 +109,12 @@ from one-token decode, so a near tie can continue differently; the test then
 replays the speculative tokens through plain decode and requires each to be
 within 2.0 logits of the plain argmax, the same bound the GLM and DSpark
 oracles use. It checks that bound, not strict token identity. (On the
-first-imatrix Q2 file the first divergence came at token 22 with a worst gap of
-0.15; the MXFP4 file matched byte for byte on all three prompts.)
+historical RL Q2 file the first divergence came at token 22 with a worst gap
+of 0.15; the RL MXFP4 file matched byte for byte on all three prompts.)
 
-First-imatrix Q2 on an M5 Max 128 GB decoded the Olympiad prompt at
-39.63 t/s without speculation and 27.68 t/s with MTP (100 of 311 drafts
-accepted). MTP is correct under the near-argmax oracle but slower on this
-workload. Benchmark it before enabling it for throughput.
+Historical RL Q2 decoded the Olympiad prompt at 39.63 t/s without
+speculation and 27.68 t/s with MTP. These rates do not establish a MOPD
+speedup. Recheck acceptance and complete round cost against the new backbone.
 
 ## MiMo V2.6 Flash: DFlash
 
@@ -124,8 +123,8 @@ Xiaomi ships a DFlash block drafter next to the checkpoint
 `gguf-tools/mimo26_dflash_convert.py`, then pass the sidecar:
 
 ```sh
-./ds4 -m gguf/MiMo-V2.6-Flash-IQ2_XXS-Q2_K-Q8Attn.gguf \
-  --dflash gguf/MiMo-V2.6-Flash-DFlash-Q8.gguf
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf
 ```
 
 The drafter reads the target's residual stream after layers 0, 11, 23, 35
@@ -152,10 +151,10 @@ temperature uses the same exact p/q rule as MiMo MTP. `--dflash` and
 `--mtp` are alternatives. Metal only. After a disk KV-cache restore the
 drafter context starts empty and refills as tokens are committed, which
 lowers acceptance but never changes output.
-On that first-imatrix Q2 Olympiad prompt, plain decode was 39.63 t/s, the
+On the historical RL Q2 Olympiad prompt, plain decode was 39.63 t/s, the
 default seven-draft setting 32.22 t/s, and `--dflash-draft 3` 41.69 t/s.
-The shorter setting had only one matched run; benchmark your workload before
-assuming a speedup.
+The shorter setting had only one matched run. Recheck these settings on MOPD;
+unchanged drafter weights do not guarantee the same acceptance or throughput.
 
 The session prints verify cycles, drafts, acceptance and committed tokens
 per verify when it ends. `./ds4_test --mimo2-dflash-verify` with

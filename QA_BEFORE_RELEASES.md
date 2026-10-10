@@ -2233,6 +2233,49 @@ a physical pre-M5 device before advertising its performance or memory fit.
 
 ## 20. MiMo V2.6 Flash
 
+Current target: `XiaomiMiMo/MiMo-V2.6-Flash-MOPD` revision
+`b12f5573350bb1704513fcf119fca48e498b0423`. Use a distinct MOPD MXFP4
+artifact and validate its metadata, layout and source blocks. Recheck plain
+decode, tool calls, MTP and DFlash against this backbone. The September 24
+fixture predates MOPD and is not a checkpoint-matched parity reference.
+
+The pinned MOPD source has 137 downloaded files with matching revision,
+published blob identity and file size. The 156.85 GiB MXFP4 target passed
+508 tensor-layout and metadata checks plus 27 sampled source-expert checks.
+The 1.45 GiB DFlash sidecar passed all 64 tensor checks, including exact F32
+source widening and the Q8_0 error bound. A cold SSD CLI arithmetic smoke
+returned 126; that short run is not a steady-state throughput benchmark.
+The MOPD MXFP4 SSD MTP oracle matched ordinary greedy decoding on all three
+prompts (160, 74 and 75 tokens), with up to three tokens committed per call.
+The MOPD DFlash SSD oracle also matched three ordinary greedy streams
+(192, 74 and 71 tokens), with up to eight committed tokens and 6.74 tokens
+per call across those prompts. This checks verified output, not a speedup.
+No checkpoint-matched hosted continuation score has been collected for MOPD.
+
+Latest-only M5 Max 128 GB, raw 4096-token Promessi Sposi prefill and
+128-token greedy decode, one unprofiled run per cache setting:
+
+| Expert cache | Prefill t/s | Decode t/s | Steady decode t/s |
+| --- | ---: | ---: | ---: |
+| Automatic, 84.95 GiB | 22.78 | 0.29 | 0.29 |
+| Explicit 64 GiB | 38.59 | 11.47 | 12.76 |
+
+The [automatic CSV](speed-bench/mimo26-mopd-mxfp4-ssd-m5max-20261009.csv) and [64 GiB CSV](speed-bench/mimo26-mopd-mxfp4-ssd-cache64-m5max-20261009.csv)
+retain the complete timing rows. The explicit cap clears the 10 t/s floor
+on this run; it is not a repeated benchmark or a quality sign-off.
+A separate profiled 16-token screen reduced selected-expert synchronization
+from 43.33 s to 1.52 s while SSD reads increased from 2.37 to 5.55 GiB.
+All 152576 frontier logits were identical between the two cache budgets.
+The default sizing policy remains unchanged; use the explicit cap on this host.
+
+The live MOPD chat API emitted `sum_two` with arguments 2 and 3, then
+consumed the tool result and answered 5 without repeating the call.
+The continuation reused 115 prompt tokens and appended 11. This smoke does
+not establish the model's claimed tool-repetition improvement across workloads.
+
+
+### Historical RL verification
+
 The cleaned upstream-based branch passed Metal and macOS CPU builds, server
 and agent tests, quality-parser tests, and the MiMo/DFlash kernel suites. Real
 Q2 MTP and DFlash checks matched three ordinary greedy streams each. Both

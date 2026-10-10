@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert the pinned MiMo V2.6 Flash DFlash draft sidecar to a dflash GGUF.
 
-Input is the `dflash/` directory of XiaomiMiMo/MiMo-V2.6-Flash-RL downloaded
+Input is the `dflash/` directory of XiaomiMiMo/MiMo-V2.6-Flash-MOPD downloaded
 at the pinned revision: `dflash_draft_model.safetensors` (63 BF16 tensors),
 `mask_embedding.pt` (learned BF16 embedding for mask token 151675, which
 differs from the target model's untrained row), `config.json`, and the index.
@@ -26,10 +26,10 @@ import struct
 import sys
 import zipfile
 
-from mimo26_quantize import (ALIGNMENT, F32, NAMES, Q8_0, REVISION, Quantizer, Tensor, align,
+from mimo26_quantize import (ALIGNMENT, F32, NAMES, Q8_0, REVISION, REPOSITORY,
+                             LEGACY_REVISION, LEGACY_REPOSITORY, Quantizer, Tensor, align,
                              array, kv, string, tensor_bytes, u32, u64, f32)
 
-REPOSITORY = 'XiaomiMiMo/MiMo-V2.6-Flash-RL'
 SIDECAR = 'dflash'
 WEIGHTS = 'dflash_draft_model.safetensors'
 MASK_FILE = 'mask_embedding.pt'
@@ -236,9 +236,10 @@ def plan_dflash(source):
 
 
 def dflash_records(revision):
+    legacy = revision == LEGACY_REVISION
     return [string('general.architecture', 'dflash'),
-            string('general.name', 'MiMo V2.6 Flash DFlash'),
-            string('general.source.huggingface.repository', REPOSITORY),
+            string('general.name', 'MiMo V2.6 Flash DFlash' if legacy else 'MiMo V2.6 Flash MOPD DFlash'),
+            string('general.source.huggingface.repository', LEGACY_REPOSITORY if legacy else REPOSITORY),
             string('general.source.revision', revision),
             u32('general.alignment', ALIGNMENT),
             u32('general.file_type', 7),
@@ -326,7 +327,7 @@ def write_gguf(args, source, plan, records):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--hf', required=True, help='MiMo-V2.6-Flash-RL download root (contains dflash/)')
+    parser.add_argument('--hf', required=True, help='MiMo-V2.6-Flash-MOPD download root (contains dflash/)')
     parser.add_argument('--out', required=True)
     parser.add_argument('--source-revision', default=REVISION)
     parser.add_argument('--threads', type=int, default=4)

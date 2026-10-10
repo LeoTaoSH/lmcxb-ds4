@@ -32,8 +32,8 @@ Examples:
 ./download_model.sh glm53-q4
 ./ds4 --ssd-streaming --ctx 4096
 
-# MiMo V2.6 Flash MXFP4 on a 128 GB Mac, after local conversion.
-./ds4 -m gguf/MiMo-V2.6-Flash-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
+# MiMo V2.6 Flash MOPD MXFP4 on a 128 GB Mac, after local conversion.
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096
 
 # PRO Q2 on a 128 GB Mac: usable for inspection, but slow.
 ./download_model.sh pro-q2-imatrix
@@ -85,7 +85,7 @@ On a 128 GB M5 Max, with automatic cache sizing and no speculative decoding:
 | --- | ---: | ---: | ---: | --- |
 | GLM 5.3 Flash Q4_K, 177.77 GiB | 121 t/s | 104 t/s | 11.9 / 14.9 t/s | Three-run median |
 | DeepSeek Flash Vision Exp MXFP4, 145.26 GiB | 300 t/s | 263 t/s | 11.9 / 19.3 t/s | Single run |
-| MiMo V2.6 Flash MXFP4, 156.85 GiB | 38.74 t/s | n/a | 13.31 t/s | Single run, 4K frontier |
+| MiMo V2.6 Flash RL MXFP4, 156.85 GiB | 38.74 t/s | n/a | 13.31 t/s | Historical RL run, 4K frontier |
 
 September 6, 2026. GLM used a 2K prompt and a 1K append; DeepSeek used 8K
 and a 4K append. Both generated 128 tokens at each frontier. DeepSeek's latest
@@ -95,9 +95,15 @@ the first-token wait. Cache reuse depends on the prompt, so these are
 workload references, not a speed
 guarantee for every model larger than RAM.
 
-MiMo was measured September 24, 2026 with 4,096 raw prompt tokens and 128
+The historical RL run was measured September 24, 2026 with 4,096 raw prompt tokens and 128
 continuation tokens. The automatic cache planned 84.95 GiB of experts and
 7.03 GiB of fixed weights. See the [CSV](../speed-bench/mimo26-mxfp4-ssd-m5max-20260924.csv).
+
+Current MOPD on the measured 128 GB M5 Max needs the explicit 64 GiB cap.
+The automatic 84.95 GiB cache stalled in selected-expert synchronization.
+The smaller cache preserved complete frontier logits and improved the
+latest-only 4K run; [current QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash)
+records both CSVs. This does not change the engine's automatic sizing policy.
 
 Full GLM 5.3 IQ2_XXS (196.58 GiB) also benefits from caching short tool-result
 prompts. With an 8K context and a 61.35 GiB effective expert cache, a 16-token

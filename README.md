@@ -10,7 +10,7 @@ a small native inference engine optimized first for
 **DeepSeek V4.1 Flash** (Metal, and text inference on CUDA),
 and additionally **GLM 5.2 and 5.3**, **GLM 5.3 Flash**,
 **DeepSeek V4 PRO**, **Qwen3.8 Flash Next** (Metal and CUDA), and
-**MiMo V2.6 Flash** (Metal, text-only; resident Q2 experimental).
+**MiMo V2.6 Flash MOPD** (Metal, text-only).
 The code is self-contained and
 deliberately narrow, not a general GGUF runner: you need to use the
 GGUF files the project produces, that are part of the project

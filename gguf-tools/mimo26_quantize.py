@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the pinned MiMo V2.6 Flash checkpoint to a text-only mimo2 GGUF."""
+"""Convert MiMo V2.6 Flash MOPD to a text-only mimo2 GGUF."""
 
 import argparse
 import concurrent.futures
@@ -27,7 +27,10 @@ NAMES = {F32: 'F32', Q8_0: 'Q8_0', Q2_K: 'Q2_K', Q4_K: 'Q4_K',
          IQ2_XXS: 'IQ2_XXS', MXFP4: 'MXFP4'}
 GA = {0, 5, 11, 17, 23, 29, 35, 41, 47}
 PATTERN = [int(i not in GA) for i in range(51)]
-REVISION = '5711b268169967567844e1e560e8a3966da959b1'
+REPOSITORY = 'XiaomiMiMo/MiMo-V2.6-Flash-MOPD'
+REVISION = 'b12f5573350bb1704513fcf119fca48e498b0423'
+LEGACY_REPOSITORY = 'XiaomiMiMo/MiMo-V2.6-Flash-RL'
+LEGACY_REVISION = '5711b268169967567844e1e560e8a3966da959b1'
 
 
 def align(n):
@@ -263,8 +266,9 @@ def tokenizer_records(directory, config):
 
 
 def model_records(directory, revision, config, quant, attn_quant):
-    return [string('general.architecture', 'mimo2'),
-            string('general.name', 'MiMo V2.6 Flash'),
+    legacy = revision == LEGACY_REVISION
+    records = [string('general.architecture', 'mimo2'),
+            string('general.name', 'MiMo V2.6 Flash' if legacy else 'MiMo V2.6 Flash MOPD'),
             string('general.source.revision', revision),
             u32('general.alignment', ALIGNMENT),
             u32('mimo2.block_count', 51),
@@ -290,6 +294,9 @@ def model_records(directory, revision, config, quant, attn_quant):
             f32('mimo2.rope.freq_base_swa', 1e4),
             string('mimo2.quantization', quant + ('-AttnQ4' if attn_quant == 'q4' else '-Q8Attn')),
             *tokenizer_records(directory, config)]
+    if not legacy:
+        records.insert(3, string('general.source.huggingface.repository', REPOSITORY))
+    return records
 
 
 class Quantizer:

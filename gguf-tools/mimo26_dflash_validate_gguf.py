@@ -174,7 +174,7 @@ def validate(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('gguf')
-    parser.add_argument('--hf', required=True, help='MiMo-V2.6-Flash-RL download root (contains dflash/)')
+    parser.add_argument('--hf', required=True, help='MiMo-V2.6-Flash-MOPD download root (contains dflash/)')
     parser.add_argument('--source-revision', default=REVISION)
     parser.add_argument('--skip-hashes', action='store_true', help='skip HF revision content hashes')
     parser.add_argument('--verbose', action='store_true', help='print per-tensor Q8_0 error')
