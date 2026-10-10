@@ -59699,10 +59699,44 @@ static bool mimo2_graph_forward(ds4_mimo2_gpu_graph *g, const ds4_model *m,
               ds4_gpu_embed_tokens_quant_tensor(g->cur, g->tokens, m->map, m->size,
                                                 w->token_embd->abs_offset, w->token_embd->type,
                                                 DS4_N_VOCAB, T, E) != 0;
+    const bool prepare_base = layer_maps && T >= 256u &&
+        !glm_graph_env_present("DS4_ROCM_DISABLE_STREAMING_PREFILL_LAYER_PREPARE",
+                              "DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE");
+    const bool pagein = prepare_base &&
+        glm_graph_env_present("DS4_ROCM_ENABLE_STREAMING_PREFILL_LAYER_PAGEIN",
+                              "DS4_METAL_ENABLE_STREAMING_PREFILL_LAYER_PAGEIN") &&
+        !glm_graph_env_present("DS4_ROCM_DISABLE_STREAMING_PREFILL_LAYER_PAGEIN",
+                               "DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PAGEIN");
+    const bool readahead = prepare_base && !pagein &&
+        glm_graph_env_present("DS4_ROCM_ENABLE_STREAMING_PREFILL_LAYER_READAHEAD",
+                              "DS4_METAL_ENABLE_STREAMING_PREFILL_LAYER_READAHEAD") &&
+        !glm_graph_env_present("DS4_ROCM_DISABLE_STREAMING_PREFILL_LAYER_READAHEAD",
+                               "DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_READAHEAD");
+    const bool pread = prepare_base && !pagein && !readahead &&
+        !glm_graph_env_present("DS4_ROCM_DISABLE_STREAMING_PREFILL_LAYER_PREAD",
+                               "DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREAD");
+    const bool madvise = prepare_base && !pagein && !readahead && !pread &&
+        !glm_graph_env_present("DS4_ROCM_DISABLE_STREAMING_PREFILL_LAYER_MADVISE",
+                               "DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_MADVISE");
+    const bool layer_prepare = pagein || readahead || pread || madvise;
+    const bool overlap = layer_prepare && metal_graph_stream_prefill_layer_pagein_overlap_enabled();
+    const uint32_t ahead = overlap ? metal_graph_stream_prefill_layer_prepare_ahead() : 1u;
+    metal_graph_stream_prepare_slot prepare[DS4_STREAM_PREFILL_MAX_PREPARE_AHEAD];
+    if (layer_prepare) memset(prepare, 0, sizeof(prepare));
+    if (ok && layer_prepare)
+        ok = metal_graph_stream_prepare_start_if_needed(NULL, m, w, 0u, T,
+                madvise, pread, readahead, false, prepare, ahead);
     for (uint32_t il = 0; ok && il < g->n_trunk_layers; il++) {
         if (layer_maps) {
             if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) { ok = false; break; }
+            if (layer_prepare && !metal_graph_stream_prepare_join_layer(NULL, m, w, il, T,
+                    madvise, pread, readahead, false, prepare, ahead)) { ok = false; break; }
             ok = metal_graph_stream_map_layer(m, w, il) && glm_graph_begin_commands_if_needed();
+            if (!ok) break;
+            for (uint32_t next = il + 1u; overlap && next < g->n_trunk_layers && next <= il + ahead; next++) {
+                if (!metal_graph_stream_prepare_start_if_needed(NULL, m, w, next, T,
+                        madvise, pread, readahead, false, prepare, ahead)) { ok = false; break; }
+            }
             if (!ok) break;
         }
         const ds4_layer_weights *l = &w->layer[il];
@@ -59737,6 +59771,7 @@ static bool mimo2_graph_forward(ds4_mimo2_gpu_graph *g, const ds4_model *m,
             ok = mimo2_dflash_capture(g, il, T);
         }
     }
+    if (layer_prepare && !metal_graph_stream_prepare_join_all(prepare, ahead)) ok = false;
     /* DFlash context: a plain forward commits its rows now; verification
      * leaves them in the feature buffer for the accepted prefix. */
     if (ok && g->dflash) {

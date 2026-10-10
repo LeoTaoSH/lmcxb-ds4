@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_ssd.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -32,6 +33,10 @@ typedef struct {
     int n_control;
     bool interleave;
     int prefill_chunk;
+    bool ssd_streaming;
+    bool ssd_streaming_cold;
+    uint32_t cache_experts;
+    uint64_t cache_bytes;
     int prefix_tokens;
     int initial_tokens;
     bool tolerate_drift;     /* report drift statistics instead of failing on a logit mismatch */
@@ -57,7 +62,10 @@ static void usage(FILE *fp, const char *argv0) {
             "  --control-value TEXT   explicit control env value (default: unset)\n"
             "  --extra-env NAME=VALUE additional candidate-only setting; repeatable\n"
             "  --control-env NAME=VALUE control-only setting; repeatable\n"
-            "  --prefill-chunk N      tokens per chunk (default: 4096)\n"
+            "  --prefill-chunk N      tokens per chunk; 0 lets the graph choose (default: 4096)\n"
+            "  --ssd-streaming        stream model experts from SSD\n"
+            "  --ssd-streaming-cold   skip expert preloading\n"
+            "  --ssd-streaming-cache-experts N|NGB  explicit expert-cache budget\n"
             "  --prefix-tokens N      final prefill length (default: 8192)\n"
             "  --initial-tokens N     untimed live prefix before appending to that length\n"
             "  --tolerate-drift       report max/mean |delta|, top-1 agreement instead of failing on a mismatch\n"
@@ -121,7 +129,17 @@ static bench_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--candidate-value")) {
             cfg.candidate_value = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--prefill-chunk")) {
-            cfg.prefill_chunk = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
+            cfg.prefill_chunk = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 0);
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            cfg.ssd_streaming = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cold")) {
+            cfg.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
+            if (!ds4_parse_streaming_cache_experts_arg(need_arg(&i, argc, argv, arg),
+                                                      &cfg.cache_experts, &cfg.cache_bytes)) {
+                fprintf(stderr, "%s: invalid expert-cache budget\n", BENCH_NAME);
+                exit(2);
+            }
         } else if (!strcmp(arg, "--candidate-env")) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--extra-env") || !strcmp(arg, "--control-env")) {
@@ -379,6 +397,10 @@ int main(int argc, char **argv) {
         .backend = DS4_BACKEND_METAL,
         .context_size = cfg.ctx,
         .prefill_chunk = (uint32_t)cfg.prefill_chunk,
+        .ssd_streaming = cfg.ssd_streaming,
+        .ssd_streaming_cold = cfg.ssd_streaming_cold,
+        .ssd_streaming_cache_experts = cfg.cache_experts,
+        .ssd_streaming_cache_bytes = cfg.cache_bytes,
         .power_percent = 100,
         .warm_weights = true,
     };
@@ -457,9 +479,11 @@ int main(int argc, char **argv) {
          * --initial-tokens is timed under the variant of its parity, and the
          * next repeat swaps the parity.  Final logits must match across
          * repeats, which pins every chunk of both variants. */
-        const int chunk = cfg.prefill_chunk;
-        if (timed_tokens % chunk != 0 || cfg.initial_tokens % chunk != 0) {
-            fprintf(stderr, "%s: --interleave needs --initial-tokens and --prefix-tokens as multiples of --prefill-chunk\n", BENCH_NAME);
+        const int chunk = cfg.prefill_chunk ? cfg.prefill_chunk :
+            (int)ds4_context_memory_estimate_with_prefill_mode(
+                DS4_BACKEND_METAL, cfg.ctx, 0, cfg.ssd_streaming).prefill_cap;
+        if (chunk <= 0 || timed_tokens % chunk != 0 || cfg.initial_tokens % chunk != 0) {
+            fprintf(stderr, "%s: --interleave needs initial/prefix lengths as multiples of the effective chunk (%d)\n", BENCH_NAME, chunk);
             goto done;
         }
         /* The first session that reaches a context length pays first-use

@@ -41,8 +41,9 @@ make metal-decode-schedule-bench
 The harness prefills two sessions and alternates both variant order and
 variant-to-session assignment. It aborts unless every full-vocabulary logit
 row is bit-identical and, with `--include-selection`, both variants select the
-same non-EOS token. Use `--candidate-env NAME` to measure a rollback control,
-or `--help` to compare explicit split schedules.
+same non-EOS token. Use `--candidate-env NAME` to measure a rollback control
+or `--candidate-value TEXT` for a numeric runtime setting. Use `--help` to
+compare explicit split schedules.
 
 To compare the default pre-M5 ratio-4 compressor pack/transpose fusion with the
 legacy decode path, including token selection, use:
@@ -83,9 +84,10 @@ use `--help` to override them.
 
 Numeric runtime tuning controls can use `--candidate-value TEXT` (default `1`), and
 `--prefill-chunk N` selects the same chunk size for both variants (default
-4096). The control unsets the named variable. Use only controls read at
-dispatch time: this harness keeps one engine alive and cannot compare settings
-cached during initialization.
+4096); zero uses the graph-selected size, which MiMo requires. The control
+unsets the named variable.
+Use only controls read at dispatch time: this harness keeps one engine alive
+and cannot compare settings cached during initialization.
 
 `DS4_QWEN4_TIMING=2` reports each prefill chunk's position, token count, and
 stage times, including the attention mixer separately from GDN/attention.
@@ -99,6 +101,41 @@ Qwen routed MoE quantization specialization is enabled by default on M3 Ultra.
 `DS4_QWEN4_MOE_MM_SPECIALIZE=0` restores the generic kernels; `=1` opts in on
 other devices. To compare the final default against rollback, pass
 `--candidate-env DS4_QWEN4_MOE_MM_SPECIALIZE --candidate-value 0` to the harness.
+
+### Streamed MiMo tuning
+
+Both Metal A/B harnesses accept `--ssd-streaming`, `--ssd-streaming-cold`,
+and `--ssd-streaming-cache-experts N|NGB`. They retain the resident defaults
+when these flags are omitted. For MiMo, keep the checkpoint and automatic
+cache fixed while measuring existing dispatch-time controls:
+
+```sh
+MODEL=gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf
+./speed-bench/metal_prefill_variant_bench -m "$MODEL" \
+  --ssd-streaming --prefill-chunk 0 \
+  --prompt-file speed-bench/promessi_sposi.txt \
+  --prefix-tokens 4096 --warmup-tokens 2048 --ctx 4353 --repeats 2 \
+  --candidate-env DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE
+./speed-bench/metal_decode_schedule_bench -m "$MODEL" \
+  --ssd-streaming --prompt-file speed-bench/promessi_sposi.txt \
+  --prefix-tokens 2048 --ctx 4096 --warmup 16 --tokens 256 \
+  --candidate-env DS4_METAL_STREAMING_EXPERT_PREAD_THREADS \
+  --candidate-value 4 --include-selection
+```
+
+These compare warm runs with a shared engine-level expert cache. The decode
+harness alternates variant order and session assignment to distribute miss
+costs; its absolute rate is not a standalone-request rate. Confirm winners
+with separate-process `ds4-bench` runs. The examples are comparisons, not
+recommendations to enable each candidate. Keep the exact-logit gate enabled.
+MiMo uses runtime environment controls here; the decode harness's split-layer
+schedule applies to DeepSeek. Prefill `--interleave` accepts automatic chunks
+from the graph memory plan, keeping MiMo's internal chunk limit intact.
+
+`DS4_METAL_ENCODER_TIMELINE=FILE` records encoder kernels and GPU timestamps.
+`DS4_METAL_STREAMING_PREFILL_LAYER_PREAD_PROFILE=1` reports per-layer read
+and wait costs. Set these before process startup, and use them only for
+attribution: their instrumentation changes execution timing.
 
 ### Concurrency: many requests at once
 

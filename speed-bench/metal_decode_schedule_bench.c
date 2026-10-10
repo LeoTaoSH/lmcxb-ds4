@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_ssd.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -29,6 +30,11 @@ typedef struct {
     const char *model_path;
     const char *prompt_path;
     const char *candidate_env;
+    const char *candidate_value;
+    bool ssd_streaming;
+    bool ssd_streaming_cold;
+    uint32_t cache_experts;
+    uint64_t cache_bytes;
     int prefix_tokens;
     int ctx;
     int warmup;
@@ -52,7 +58,11 @@ static void usage(FILE *fp, const char *argv0) {
             "  --control-second N     control second split (default: 32)\n"
             "  --candidate-first N    candidate first split (default: 1; control with --candidate-env)\n"
             "  --candidate-second N   candidate second split (default: 32; control with --candidate-env)\n"
-            "  --candidate-env NAME   unset NAME for control, set NAME=1 for candidate\n"
+            "  --candidate-env NAME   unset NAME for control, set it for candidate\n"
+            "  --candidate-value TEXT candidate env value (default: 1)\n"
+            "  --ssd-streaming        stream model experts from SSD\n"
+            "  --ssd-streaming-cold   skip expert preloading\n"
+            "  --ssd-streaming-cache-experts N|NGB  explicit expert-cache budget\n"
             "  --include-selection    include one non-EOS argmax in each timed step\n",
             argv0);
 }
@@ -87,6 +97,7 @@ static bench_config parse_options(int argc, char **argv) {
         .model_path = "ds4flash.gguf",
         .prompt_path = "ds4.c",
         .candidate_env = NULL,
+        .candidate_value = "1",
         .prefix_tokens = DEFAULT_PREFIX_TOKENS,
         .ctx = DEFAULT_CTX,
         .warmup = DEFAULT_WARMUP,
@@ -109,6 +120,18 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.prompt_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--candidate-env")) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--candidate-value")) {
+            cfg.candidate_value = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            cfg.ssd_streaming = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cold")) {
+            cfg.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
+            if (!ds4_parse_streaming_cache_experts_arg(need_arg(&i, argc, argv, arg),
+                                                      &cfg.cache_experts, &cfg.cache_bytes)) {
+                fprintf(stderr, "metal-decode-schedule-bench: invalid expert-cache budget\n");
+                exit(2);
+            }
         } else if (!strcmp(arg, "--include-selection")) {
             cfg.include_selection = true;
         } else if (!strcmp(arg, "--prefix-tokens")) {
@@ -249,7 +272,7 @@ static int select_variant(const bench_config *cfg, int variant) {
     if (cfg->candidate_env &&
         (variant == 0
              ? unsetenv(cfg->candidate_env)
-             : setenv(cfg->candidate_env, "1", 1)) != 0) {
+             : setenv(cfg->candidate_env, cfg->candidate_value, 1)) != 0) {
         fprintf(stderr,
                 "metal-decode-schedule-bench: failed to select candidate "
                 "environment %s for %s: %s\n",
@@ -371,6 +394,11 @@ int main(int argc, char **argv) {
         .model_path = cfg.model_path,
         .backend = DS4_BACKEND_METAL,
         .context_size = cfg.ctx,
+        .ssd_streaming = cfg.ssd_streaming,
+        .ssd_streaming_cold = cfg.ssd_streaming_cold,
+        .ssd_streaming_cache_experts = cfg.cache_experts,
+        .ssd_streaming_cache_bytes = cfg.cache_bytes,
+        .placement_session_count_hint = VARIANT_COUNT,
         .power_percent = 100,
         .warm_weights = true,
     };
@@ -438,7 +466,7 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "metal-decode-schedule-bench: model=%s prompt=%s prefix=%d "
             "ctx=%d warmup=%d measured=%d control=%d/%d candidate=%d/%d "
-            "candidate_env=%s include_selection=%s\n",
+            "candidate_env=%s candidate_value=%s include_selection=%s\n",
             cfg.model_path,
             cfg.prompt_path,
             cfg.prefix_tokens,
@@ -450,6 +478,7 @@ int main(int argc, char **argv) {
             cfg.candidate.first,
             cfg.candidate.second,
             cfg.candidate_env ? cfg.candidate_env : "(none)",
+            cfg.candidate_value,
             cfg.include_selection ? "yes" : "no");
 
     const int eos = ds4_token_eos(engine);

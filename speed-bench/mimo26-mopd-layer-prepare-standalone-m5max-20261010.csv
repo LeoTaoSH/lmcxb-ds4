@@ -1,0 +1,5 @@
+run,variant,ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+1,baseline,4096,4096,32.23,128,8.75,1747.831,127,9.87,0
+2,prepared,4096,4096,53.52,128,10.16,1621.441,127,11.57,0
+3,prepared,4096,4096,50.16,128,9.83,1614.394,127,11.14,0
+4,baseline,4096,4096,33.58,128,9.49,2023.864,127,11.09,0

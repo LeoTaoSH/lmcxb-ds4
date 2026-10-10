@@ -1,0 +1,9 @@
+run,pattern,variant,prefill_tokens,seconds,prefill_tps,exact
+1,ABBA,prepared,4096,94.865119,43.1771,yes
+2,ABBA,disabled,4096,118.542456,34.5530,yes
+3,ABBA,disabled,4096,113.443177,36.1062,yes
+4,ABBA,prepared,4096,75.578230,54.1955,yes
+5,BAAB,disabled,4096,112.489137,36.4124,yes
+6,BAAB,prepared,4096,62.965589,65.0514,yes
+7,BAAB,prepared,4096,77.174689,53.0744,yes
+8,BAAB,disabled,4096,111.920530,36.5974,yes

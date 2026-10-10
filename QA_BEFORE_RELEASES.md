@@ -2325,6 +2325,63 @@ kernel suites, CPU session/transport tests, server/agent tests and the quality
 parser passed. Real MOPD MTP and DFlash oracles matched all three plain greedy
 streams each. No CUDA or other-host performance claim is made.
 
+### Reusing streamed layer preparation, October 10, 2026
+
+Compared with commit `fc36600` on the same M5 Max 128 GB and pinned MOPD
+MXFP4 checkpoint. MiMo already selected M5 NAX dense and grouped MoE kernels;
+the encoder timeline showed those kernels running. Bulk prefill now uses the
+existing parallel pread layer-preparation pipeline, with eight workers and
+one layer of lookahead for chunks of at least 256 tokens. Every exit drains
+the worker slots. Cache sizing, preload policy and kernel arithmetic are unchanged.
+
+The existing prefill/decode A/B tools now accept SSD/cache options. Prefill
+accepts `--prefill-chunk 0` for graph-selected chunks; decode accepts numeric
+`--candidate-value` settings. See the
+[commands](speed-bench/README.md#streamed-mimo-tuning). No timing profiler
+was enabled for either confirmation below.
+
+| Comparison | Baseline prefill t/s | Prepared prefill t/s | Baseline decode t/s | Prepared decode t/s |
+| --- | ---: | ---: | ---: | ---: |
+| Same-engine ABBA + BAAB, four runs per variant | 35.90 | 52.75 | n/a | n/a |
+| Separate-process ABBA, two runs per binary | 32.89 | 51.79 | 9.10 | 9.99 |
+
+Rates pool tokens over elapsed time. The same-engine comparison used a
+4096-token raw Promessi Sposi prefix, 2048-token warmup and 4353-token context,
+with `DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE=1` as the rollback.
+All 1,220,608 reported vocabulary floats were bit-identical across eight runs.
+The [prefill CSV](speed-bench/mimo26-mopd-layer-prepare-abba-m5max-20261010.csv)
+retains the rows. This is a 47% prefill-throughput improvement in that harness.
+
+Separate processes used the same corpus, 4096-token prefix and 4353-token
+context, followed by 128 greedy tokens. Both binaries used the automatic
+63.92 GiB expert cache. The
+[standalone CSV](speed-bench/mimo26-mopd-layer-prepare-standalone-m5max-20261010.csv)
+retains the ABBA sequence. Prefill improved 57%; decode stayed near 10 t/s.
+These runs do not establish a substantial generation-speed improvement or
+release sign-off: one prepared run remained below the 10 t/s floor.
+
+Other existing controls were screened without changing their defaults:
+
+* A 64-total-expert preload improved prefill but cut decode to 4.71 t/s;
+  3008 total (64 per routed layer) decoded at 6.79 t/s. These were single screens.
+* Mmap page-touch preparation lost to parallel pread in an exact four-run
+  comparison, 19.18 versus 51.76 pooled prefill t/s. All 610,304 floats matched.
+* Four decode pread workers versus the default nine gave 18.04 versus
+  17.35 t/s in the paired-session harness. All 41,653,248 floats and 272
+  selected token IDs matched. Its shared warm expert cache makes those
+  absolute rates unsuitable as standalone throughput. The roughly 4% result
+  does not justify changing the default.
+
+Profiler runs were used only for attribution. This result changes neither
+the checkpoint nor quantization and makes no other-host performance claim.
+
+The automatic-chunk interleaved smoke matched all 305,152 final vocabulary
+floats across two repeats, including continued 2048-token chunks. The
+256-token preparation boundary also passed with an explicit 64 GiB cache
+and with cold prefill at the minimum eight-slot cache; each compared 610,304
+floats exactly. MiMo, DFlash and Qwen4 kernel suites passed, along with CPU
+session/transport, server/agent and quality-parser tests.
+
 
 ### Historical RL verification
 

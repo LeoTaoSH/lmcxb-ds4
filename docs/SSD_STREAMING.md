@@ -109,7 +109,18 @@ controlled results and exact-logit checks.
 Continued MiMo chunks of 2 to 64 tokens read their selected MXFP4 experts
 through the cache. They keep the original batched attention, expert dot
 products and final reduction order. Initial chunks and larger chunks retain
-the layer-mapped path.
+the layer-mapped path. Chunks of at least 256 tokens use the existing bounded
+layer-preparation pipeline: eight parallel pread workers, one layer ahead of
+GPU execution. Expert selection, quantization and kernel arithmetic are unchanged.
+
+For controlled A/B measurements, set
+`DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE=1` to restore demand paging.
+`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_THREADS` and
+`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD` tune the existing worker pool
+and lookahead. The measured defaults improved MOPD bulk prefill on the M5 Max;
+they do not promise the same gain in decode or on another SSD. See
+[streamed MiMo tuning](../speed-bench/README.md#streamed-mimo-tuning) for the
+exact-logit A/B tools and profiler controls.
 
 Full GLM 5.3 IQ2_XXS (196.58 GiB) also benefits from caching short tool-result
 prompts. With an 8K context and a 61.35 GiB effective expert cache, a 16-token

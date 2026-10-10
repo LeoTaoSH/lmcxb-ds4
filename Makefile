@@ -133,7 +133,7 @@ tests/test_metal_tp_cancel: tests/test_metal_tp_cancel.c ds4.h ds4_tp.h $(CORE_O
 test-metal-session-batch: tests/test_metal_session_batch
 	DS4_TEST_MODEL="$(DS4_TEST_MODEL)" ./tests/test_metal_session_batch
 
-speed-bench/metal_decode_schedule_bench.o: speed-bench/metal_decode_schedule_bench.c ds4.h
+speed-bench/metal_decode_schedule_bench.o: speed-bench/metal_decode_schedule_bench.c ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 speed-bench/metal_decode_schedule_bench: speed-bench/metal_decode_schedule_bench.o $(CORE_OBJS)
@@ -141,7 +141,7 @@ speed-bench/metal_decode_schedule_bench: speed-bench/metal_decode_schedule_bench
 
 metal-decode-schedule-bench: speed-bench/metal_decode_schedule_bench
 
-speed-bench/metal_prefill_variant_bench.o: speed-bench/metal_prefill_variant_bench.c ds4.h
+speed-bench/metal_prefill_variant_bench.o: speed-bench/metal_prefill_variant_bench.c ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 speed-bench/metal_prefill_variant_bench: speed-bench/metal_prefill_variant_bench.o $(CORE_OBJS)
