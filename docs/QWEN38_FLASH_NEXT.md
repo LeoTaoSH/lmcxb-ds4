@@ -86,6 +86,52 @@ throughput: adding 32 tokens after an 8K Q4 prefix took about 273 ms.
 MTP speed depends on how often drafts are accepted; the table measures
 ordinary decoding.
 
+## Top-5 experts with a healed shared expert
+
+`azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound` routes 5 experts per
+token instead of 10. To compensate, it retrains the shared expert by
+self-distillation, which widens it from 640 to 1280. Its router and routed
+experts are the original ones. `gguf-tools/qwen4_graft_shared.py` copies a
+stock Qwen GGUF and replaces only the 48 trunk shared experts and their gates.
+The healed FP8 weights become Q8_0. It also writes the new
+`expert_used_count` and `expert_shared_feed_forward_length`. The MTP block and
+the BF16 n-grams are copied unchanged. The script needs numpy:
+
+```sh
+python3 gguf-tools/qwen4_graft_shared.py \
+  --model gguf/Qwen3.8-Flash-Next-Q4.gguf \
+  --source /path/to/azampatti-snapshot \
+  --output gguf/Qwen3.8-Flash-Next-Q4-top5-healed.gguf
+```
+
+The runtime reads the routed expert count and the shared width from the GGUF.
+A shared expert wider than the routed experts runs as dense projections rather
+than as an extra routed slot. `DS4_QWEN4_EXPERTS_USED=N` overrides the count on
+any file, for experiments only. Cutting a stock file to 5 experts without
+healing loses noticeably more quality.
+
+October 10, 2026, one Spark, Q4, CUDA, `--mtp`, greedy, 256 tokens:
+
+| Model | Prose | Code |
+| --- | ---: | ---: |
+| Stock, 10 experts | 31-33 t/s | 34-36 t/s |
+| Healed top-5 | 34-38 t/s | 38-42 t/s |
+| Healed top-5, `DS4_QWEN4_MTP_DEPTH=3` | 37-38 t/s | 46-47 t/s |
+
+Perplexity with `ds4 --perplexity-file`, 16K context:
+
+| Text | Stock | Top-5 unhealed | Top-5 healed |
+| --- | ---: | ---: | ---: |
+| English docs, 1.9K tokens | 6.72 | 7.89 | 6.83 |
+| C code, 5.7K tokens | 1.65 | 1.74 | 1.64 |
+| Italian prose, 5.7K tokens | 3.56 | 6.19 | 4.45 |
+
+On the Spark, decode is limited by the dense weights, not the experts. With
+`DS4_QWEN4_TIMING=2`, a verify pass spent 41% in the MoE, 30% in the gated
+delta-net, 19% in the hyper-connections and 0.2% reading n-gram rows. Moving
+the n-gram table into memory would therefore not speed up decode.
+`--mtp-draft` does not apply to Qwen: its draft depth policy chooses 2 or 3.
+
 ## Conversion
 
 See [GGUF conversion](../gguf-tools/README.md) for conversion from the HF
