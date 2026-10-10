@@ -3668,6 +3668,15 @@ int ds4_gpu_qwen4_mtp_stage_tensor(
 int ds4_gpu_qwen4_mtp_combine_tensor(
         ds4_gpu_tensor *R_out, const ds4_gpu_tensor *proj, uint32_t n_embd, uint32_t n_hc);
 
+#define DS4_MIMO2_CACHED_PREFILL_MAX_ROWS 64u
+int ds4_gpu_mimo2_moe_cached_prefill_tensor(
+        ds4_gpu_tensor *mid, ds4_gpu_tensor *part,
+        const ds4_gpu_tensor *x, const ds4_gpu_tensor *selected,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t n_tokens,
+        uint32_t in_dim, uint32_t ff_dim);
+
 /* MiMo V2.6 Flash attention (Metal only, metal/mimo2.metal).  Caches are f16
  * [cache_cap][n_kv][key_dim] and [cache_cap][n_kv][value_dim]; absolute
  * position p lives in row p % cache_cap.

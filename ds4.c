@@ -59421,6 +59421,11 @@ static bool mimo2_graph_seed_stream_experts(ds4_mimo2_gpu_graph *g,
     return glm_graph_begin_commands_if_needed();
 }
 
+static bool mimo2_graph_cached_prefill(const ds4_mimo2_gpu_graph *g, uint32_t T) {
+    return g->streaming && g->pos > 0 && T > 1u &&
+           T <= DS4_MIMO2_CACHED_PREFILL_MAX_ROWS;
+}
+
 /* Sigmoid router with the selection-only bias (noaux_tc, one group), top-k
  * weights renormalized from the unbiased scores, then SwiGLU experts and
  * their weighted sum.  MiMo has no shared expert.  row_experts (streamed
@@ -59489,6 +59494,13 @@ static bool mimo2_graph_moe(ds4_mimo2_gpu_graph *g, const ds4_model *m,
     if (ok && row_experts) {
         fprintf(stderr, "ds4: MiMo streamed verification needs MXFP4 top-eight experts\n");
         return false;
+    }
+    if (ok && stream_one && mimo2_graph_cached_prefill(g, T)) {
+        return ds4_gpu_mimo2_moe_cached_prefill_tensor(g->ffn_mid, g->moe_part,
+                   g->ffn_norm, g->router_selected, m->map, m->size,
+                   gate->abs_offset, up->abs_offset, down->abs_offset, il, NE, T, E, FF) &&
+               ds4_gpu_qwen4_moe_reduce_tensor(g->ffn_out, g->moe_part,
+                   g->router_weights, NULL, NULL, NULL, NULL, T, NU, NU, E, 0u);
     }
     /* Prefill-sized batches use the expert-grouped tiled GEMMs: each expert
      * sees enough rows to fill a tile.  Decode rows keep the per-row kernels. */
@@ -59677,7 +59689,8 @@ static bool mimo2_graph_forward(ds4_mimo2_gpu_graph *g, const ds4_model *m,
     }
     const uint32_t pos0 = g->pos;
     const uint32_t E = DS4_N_EMBD;
-    const bool layer_maps = g->streaming && T > 1u && !rows;
+    const bool layer_maps = g->streaming && T > 1u && !rows &&
+                            !mimo2_graph_cached_prefill(g, T);
     if (g->streaming &&
         !(layer_maps ? metal_graph_stream_map_token(m, w) :
                        metal_graph_stream_map_decode_static_all(m, w))) return false;
@@ -71274,8 +71287,10 @@ static bool ds4_engine_configure_streaming_auto_cache(ds4_engine *e, int ctx_siz
     model_limit = ds4_streaming_manual_cache_safe_bytes(
             e->backend, ctx_size > 0 ? ctx_size : 4096,
             e->prefill_chunk, true);
-    /* GLM's larger fixed tensors and streaming windows need more margin. */
-    if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM_DSA) cache_percent = 86;
+    /* MiMo's CPU-locked cache needs driver headroom below the recommended
+     * working set; a fuller cache stalled command admission on M5 Max. */
+    if (ds4_model_is_mimo2()) cache_percent = 66;
+    else if (DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_GLM_DSA) cache_percent = 86;
 #else
     (void)ctx_size;
 #endif

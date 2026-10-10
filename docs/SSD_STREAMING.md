@@ -33,7 +33,7 @@ Examples:
 ./ds4 --ssd-streaming --ctx 4096
 
 # MiMo V2.6 Flash MOPD MXFP4 on a 128 GB Mac, after local conversion.
-./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
 
 # PRO Q2 on a 128 GB Mac: usable for inspection, but slow.
 ./download_model.sh pro-q2-imatrix
@@ -99,11 +99,17 @@ The historical RL run was measured September 24, 2026 with 4,096 raw prompt toke
 continuation tokens. The automatic cache planned 84.95 GiB of experts and
 7.03 GiB of fixed weights. See the [CSV](../speed-bench/mimo26-mxfp4-ssd-m5max-20260924.csv).
 
-Current MOPD on the measured 128 GB M5 Max needs the explicit 64 GiB cap.
-The automatic 84.95 GiB cache stalled in selected-expert synchronization.
-The smaller cache preserved complete frontier logits and improved the
-latest-only 4K run; [current QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash)
-records both CSVs. This does not change the engine's automatic sizing policy.
+MiMo now budgets 66% of the Metal recommended working set for fixed weights
+and cached experts, subject to the existing context limit. This gives a
+63.92 GiB cache on the measured 128 GB M5 Max and avoids the former 84.95 GiB
+cache's driver-side stalls. Explicit cache sizes and `DS4_SSD_AUTO_CACHE_PCT`
+remain available. See [QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash) for the
+controlled results and exact-logit checks.
+
+Continued MiMo chunks of 2 to 64 tokens read their selected MXFP4 experts
+through the cache. They keep the original batched attention, expert dot
+products and final reduction order. Initial chunks and larger chunks retain
+the layer-mapped path.
 
 Full GLM 5.3 IQ2_XXS (196.58 GiB) also benefits from caching short tool-result
 prompts. With an 8K context and a 61.35 GiB effective expert cache, a 16-token

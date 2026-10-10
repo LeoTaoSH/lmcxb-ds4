@@ -536,6 +536,115 @@ static void test_streamed_mxfp4_top8(void) {
         ds4_gpu_tensor_free(buffers[i]);
 }
 
+static void check_exact_floats(const float *got, const float *want, size_t n, const char *what) {
+    for (size_t i = 0; i < n; i++) {
+        uint32_t a, b;
+        memcpy(&a, got + i, sizeof(a));
+        memcpy(&b, want + i, sizeof(b));
+        if ((a & 0x7f800000u) == 0x7f800000u ||
+            (b & 0x7f800000u) == 0x7f800000u || a != b) {
+            fprintf(stderr, "FAIL %s at %zu: %.9g != %.9g\n", what, i, got[i], want[i]);
+            exit(1);
+        }
+    }
+}
+
+static void test_cached_mxfp4_prefill(void) {
+    enum { E = 256, FF = 256, NE = 128, NU = 8, MAX_T = 64 };
+    const uint64_t expert_bytes = (uint64_t)E / 32u * 17u * FF;
+    const uint64_t slab = expert_bytes * NE;
+    uint8_t *map = g_mx_test_map;
+    ds4_gpu_set_ssd_streaming(false);
+    for (uint64_t b = 0; b < g_mx_test_bytes / 17u; b++) {
+        map[b * 17u] = 117u + (uint8_t)(b % 7u);
+        for (uint32_t i = 1; i < 17u; i++) map[b * 17u + i] ^= (uint8_t)((b + i) % 3u ? 0x80u : 0x08u);
+    }
+    require(msync(map, g_mx_test_bytes, MS_SYNC) == 0, "signed expert fixture flush");
+    void *cache_map = mmap(NULL, g_mx_test_bytes, PROT_READ, MAP_SHARED, g_mx_test_fd, 0);
+    require(cache_map != MAP_FAILED, "unbound cache source map");
+    const size_t nm = MAX_T * NU * FF, np = MAX_T * NU * E, no = MAX_T * E;
+    ds4_gpu_tensor *x = ds4_gpu_tensor_alloc(no * sizeof(float));
+    ds4_gpu_tensor *ids = ds4_gpu_tensor_alloc(MAX_T * NU * sizeof(int32_t));
+    ds4_gpu_tensor *weights = ds4_gpu_tensor_alloc(MAX_T * NU * sizeof(float));
+    ds4_gpu_tensor *mid = ds4_gpu_tensor_alloc(nm * sizeof(float));
+    ds4_gpu_tensor *part = ds4_gpu_tensor_alloc(np * sizeof(float));
+    ds4_gpu_tensor *out = ds4_gpu_tensor_alloc(no * sizeof(float));
+    ds4_gpu_tensor *small = ds4_gpu_tensor_alloc(sizeof(int32_t));
+    require(x && ids && weights && mid && part && out && small, "cached prefill buffers");
+    float *gm = malloc(nm * sizeof(float)), *gp = malloc(np * sizeof(float));
+    float *go = malloc(no * sizeof(float)), *got = malloc(np * sizeof(float));
+    require(gm && gp && go && got, "cached prefill reference buffers");
+    float input[MAX_T * E], routes[MAX_T * NU];
+    int32_t selected[MAX_T * NU];
+    for (size_t i = 0; i < no; i++) input[i] = frand() * 0.15f;
+    for (uint32_t t = 0; t < MAX_T; t++) {
+        for (uint32_t i = 0; i < NU; i++) {
+            selected[t * NU + i] = (int32_t)((t * 11u + i * 7u) % NE);
+            routes[t * NU + i] = (float)(i + 1u) / 36.0f;
+        }
+    }
+    require(ds4_gpu_tensor_write(x, 0, input, sizeof(input)) &&
+            ds4_gpu_tensor_write(ids, 0, selected, sizeof(selected)) &&
+            ds4_gpu_tensor_write(weights, 0, routes, sizeof(routes)), "cached prefill inputs");
+    const uint32_t counts[] = {2, 8, 9, 11, 64};
+    const uint32_t budgets[] = {8, 128};
+    for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+        const uint32_t T = counts[c];
+        const size_t m = (size_t)T * NU * FF, p = (size_t)T * NU * E, o = (size_t)T * E;
+        require(ds4_gpu_begin_commands(), "reference begin");
+        require(ds4_gpu_qwen4_moe_mid_tensor(mid, x, ids, map, g_mx_test_bytes,
+                0, slab, 39, NE, T, NU, E, FF, 0, 0, UINT32_MAX), "mapped mid");
+        require(ds4_gpu_qwen4_moe_down_tensor(part, mid, ids, map, g_mx_test_bytes,
+                2u * slab, 39, NE, T, NU, FF, E, 0, UINT32_MAX), "mapped partials");
+        require(ds4_gpu_qwen4_moe_reduce_tensor(out, part, weights, NULL, NULL, NULL, NULL,
+                T, NU, NU, E, 0), "mapped reduction");
+        require(ds4_gpu_end_commands(), "reference finish");
+        require(ds4_gpu_tensor_read(mid, 0, gm, m * sizeof(float)) &&
+                ds4_gpu_tensor_read(part, 0, gp, p * sizeof(float)) &&
+                ds4_gpu_tensor_read(out, 0, go, o * sizeof(float)), "mapped references");
+        for (size_t b = 0; b < sizeof(budgets) / sizeof(budgets[0]); b++) {
+            ds4_gpu_set_ssd_streaming(true);
+            ds4_gpu_set_streaming_expert_cache_budget(budgets[b]);
+            ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+            for (int pass = 0; pass < 2; pass++) {
+                memset(got, 0xff, np * sizeof(float));
+                require(ds4_gpu_tensor_write(mid, 0, got, m * sizeof(float)) &&
+                        ds4_gpu_tensor_write(part, 0, got, p * sizeof(float)), "poison cached outputs");
+                require(ds4_gpu_begin_commands(), "cached begin");
+                require(ds4_gpu_mimo2_moe_cached_prefill_tensor(mid, part, x, ids,
+                        cache_map, g_mx_test_bytes, 0, slab, 2u * slab, 1, NE, T, E, FF),
+                        "cached mid and partials");
+                require(ds4_gpu_qwen4_moe_reduce_tensor(out, part, weights, NULL, NULL, NULL, NULL,
+                        T, NU, NU, E, 0) && ds4_gpu_end_commands(), "cached reduction");
+                require(ds4_gpu_tensor_read(mid, 0, got, m * sizeof(float)), "read cached mid");
+                check_exact_floats(got, gm, m, "cached mid exact");
+                require(ds4_gpu_tensor_read(part, 0, got, p * sizeof(float)), "read cached partials");
+                check_exact_floats(got, gp, p, "cached partials exact");
+                require(ds4_gpu_tensor_read(out, 0, got, o * sizeof(float)), "read cached output");
+                check_exact_floats(got, go, o, "cached output exact");
+            }
+        }
+        printf("  cached MXFP4 prefill rows=%u: cold/warm, 8/128-slot budgets exact\n", T);
+        ds4_gpu_set_ssd_streaming(false);
+    }
+    ds4_gpu_set_ssd_streaming(true);
+    ds4_gpu_set_streaming_expert_cache_budget(8);
+    ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+    require(!ds4_gpu_mimo2_moe_cached_prefill_tensor(mid, part, x, small,
+            cache_map, g_mx_test_bytes, 0, slab, 2u * slab, 1, NE, 2, E, FF), "short IDs refused");
+    require(!ds4_gpu_mimo2_moe_cached_prefill_tensor(mid, part, x, ids,
+            cache_map, g_mx_test_bytes, 0, slab, 2u * slab, 1, NE, MAX_T + 1, E, FF), "oversized batch refused");
+    selected[NU] = NE;
+    require(ds4_gpu_tensor_write(ids, 0, selected, sizeof(selected)), "invalid ID upload");
+    require(!ds4_gpu_mimo2_moe_cached_prefill_tensor(mid, part, x, ids,
+            cache_map, g_mx_test_bytes, 0, slab, 2u * slab, 1, NE, 2, E, FF), "invalid ID refused");
+    ds4_gpu_set_ssd_streaming(false);
+    ds4_gpu_tensor *buffers[] = {x, ids, weights, mid, part, out, small};
+    for (size_t i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++) ds4_gpu_tensor_free(buffers[i]);
+    free(gm); free(gp); free(go); free(got); munmap(cache_map, g_mx_test_bytes);
+}
+
+
 int main(void) {
     require(ds4_gpu_init(), "GPU initialization");
     const double b_global = 1e7, b_swa = 1e4;
@@ -648,6 +757,7 @@ int main(void) {
     test_refusals();
 
     test_streamed_mxfp4_top8();
+    test_cached_mxfp4_prefill();
     ds4_gpu_cleanup();
     if (g_mx_test_map) munmap(g_mx_test_map, g_mx_test_bytes);
     if (g_mx_test_fd >= 0) close(g_mx_test_fd);

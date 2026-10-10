@@ -181,17 +181,17 @@ Use the current `XiaomiMiMo/MiMo-V2.6-Flash-MOPD` checkpoint, pinned to
 artifact with [the converter guide](../gguf-tools/README.md#convert-mimo-v26-flash).
 
 The MXFP4 file is about 156.8 GiB. It needs 256 GB for full residency;
-on a 128 GB Mac, use SSD streaming with a 64 GiB expert-cache cap:
+on a 128 GB Mac, use SSD streaming with the automatic expert-cache budget:
 
 ```sh
 ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
-  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096
+  --ssd-streaming --ctx 4096
 ./ds4-agent -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
-  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096
+  --ssd-streaming --ctx 4096
 ```
-The automatic budget caused a decode residency cliff on the measured M5 Max.
-The explicit cap preserved all frontier logits and avoided that stall; see
-[the current benchmark](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+MiMo reserves driver headroom when sizing its cache. On the measured 128 GB
+M5 Max, the automatic cache is 63.92 GiB. Short continued prefills use cached
+experts without changing the prefill arithmetic. See [QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
 
 Metal text inference is supported. Vision, audio, tensor parallelism and
 custom `--prefill-chunk` values are unsupported. MiMo selects its own chunk.
@@ -208,7 +208,7 @@ is built from the same pinned release:
 
 ```sh
 ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
-  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --temp 0 \
+  --ssd-streaming --ctx 4096 --temp 0 \
   --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
   --dflash-draft 3 -p "What is 84 * 3 / 2?"
 ```

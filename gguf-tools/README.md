@@ -304,7 +304,7 @@ python3 gguf-tools/mimo26_dflash_validate_gguf.py \
   gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
   --hf models/MiMo-V2.6-Flash-MOPD
 ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
-  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --temp 0 \
+  --ssd-streaming --ctx 4096 --temp 0 \
   --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
   --dflash-draft 3 -p "What is 84 * 3 / 2?"
 ```

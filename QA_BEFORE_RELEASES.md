@@ -2252,7 +2252,7 @@ The MOPD DFlash SSD oracle also matched three ordinary greedy streams
 per call across those prompts. This checks verified output, not a speedup.
 No checkpoint-matched hosted continuation score has been collected for MOPD.
 
-Latest-only M5 Max 128 GB, raw 4096-token Promessi Sposi prefill and
+Initial MOPD baseline on M5 Max 128 GB, raw 4096-token Promessi Sposi prefill and
 128-token greedy decode, one unprofiled run per cache setting:
 
 | Expert cache | Prefill t/s | Decode t/s | Steady decode t/s |
@@ -2266,12 +2266,64 @@ on this run; it is not a repeated benchmark or a quality sign-off.
 A separate profiled 16-token screen reduced selected-expert synchronization
 from 43.33 s to 1.52 s while SSD reads increased from 2.37 to 5.55 GiB.
 All 152576 frontier logits were identical between the two cache budgets.
-The default sizing policy remains unchanged; use the explicit cap on this host.
+These runs precede the automatic-budget and cached-append optimization below.
 
 The live MOPD chat API emitted `sum_two` with arguments 2 and 3, then
 consumed the tool result and answered 5 without repeating the call.
 The continuation reused 115 prompt tokens and appended 11. This smoke does
 not establish the model's claimed tool-repetition improvement across workloads.
+
+
+### MOPD streaming optimization, October 10, 2026
+
+Compared with commit `5650358` on the same M5 Max 128 GB and pinned MOPD MXFP4
+artifact. Neither weights nor router selection changed. The automatic Metal
+budget uses 66% of the recommended working set for model weights plus cached
+experts, giving 63.92 GiB of experts at 4K context. Explicit overrides remain.
+Continued chunks of 2 through 64 tokens bind cached experts to the existing
+small-prefill kernels; attention, dot products and reduction order stay unchanged.
+
+Unprofiled ABBA runs used `speed-bench/promessi_sposi.txt`, 4096 raw prompt
+tokens, 4353 allocated context, 128 greedy decode tokens and automatic cache
+sizing in both binaries. No speculative decoding was enabled.
+
+| Variant | Cache GiB | Prefill t/s, range | Decode t/s, range | Pooled decode t/s |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 84.95 | 17.49-17.86 | 0.23-0.24 | 0.235 |
+| Optimized | 63.92 | 33.84-35.72 | 9.27-10.79 | 9.972 |
+
+The [ABBA CSV](speed-bench/mimo26-mopd-streaming-optimization-m5max-20261010.csv)
+retains each run. The pooled rate divides total tokens by total measured
+seconds, reconstructed from the CSV rates. One optimized run remains below
+the 10 t/s release floor; this is an optimization result, not release sign-off.
+
+Controlled diagnostics found large driver spans before short GPU spans.
+Keeping the 84.95 GiB cache while reducing slabs to 512 MiB did not help;
+neither did removing fixed-weight CPU locks. A 70.37 GiB cache improved the
+stall but left less margin than the selected policy. These observations tie
+the cliff to total residency pressure; the private driver threshold is unknown.
+
+Full-model append checks compared every captured vocabulary float and token
+ID, no-op sync, subsequent greedy decode, and the complete saved KV payload:
+
+| Prefix tokens | Appended tokens | Cache policy | Baseline append seconds | Optimized append seconds |
+| ---: | ---: | --- | ---: | ---: |
+| 256 | 11 | Explicit 64 GiB | 62.314 | 3.128 / 3.671 |
+| 96 | 64 | Explicit 64 GiB | 63.037 | 5.729 |
+| 4096 | 11 | Each binary's automatic budget | 112.586 | 1.596 |
+
+All compared logits, token IDs and KV bytes matched exactly. The 64-token
+append crossed the sliding-window wrap. These append timings are screens,
+not repeated workload medians. A live chat/tool-result turn reused 115 tokens,
+appended 11 in 0.836 seconds and answered 5 after `sum_two(2, 3)`.
+
+`make test-mimo2-kernels` covers exact mid activations, expert partials and
+weighted output for 2/8/9/11/64 rows, cold/warm caches, the minimum eight-slot
+cache, forced eviction, invalid IDs and undersized inputs. It passed with
+Metal validation and with Metal 4/specialization disabled. Qwen4 and DFlash
+kernel suites, CPU session/transport tests, server/agent tests and the quality
+parser passed. Real MOPD MTP and DFlash oracles matched all three plain greedy
+streams each. No CUDA or other-host performance claim is made.
 
 
 ### Historical RL verification

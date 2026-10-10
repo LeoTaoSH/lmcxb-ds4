@@ -88,7 +88,7 @@ perfect, disengaging after repeated second-draft rejections.
 The three nextn layers (`blk.48..50`) ship in the current MOPD GGUF:
 
 ```sh
-./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --mtp
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096 --mtp
 ```
 
 Each cycle drafts up to `DS4_MIMO2_MTP_DEPTH` tokens (1 to 3, default 2).
@@ -124,7 +124,7 @@ Xiaomi ships a DFlash block drafter next to the checkpoint
 
 ```sh
 ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
-  --ssd-streaming --ssd-streaming-cache-experts 64GB --ctx 4096 --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf
+  --ssd-streaming --ctx 4096 --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf
 ```
 
 The drafter reads the target's residual stream after layers 0, 11, 23, 35
