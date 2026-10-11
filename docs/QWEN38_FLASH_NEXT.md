@@ -132,6 +132,59 @@ delta-net, 19% in the hyper-connections and 0.2% reading n-gram rows. Moving
 the n-gram table into memory would therefore not speed up decode.
 `--mtp-draft` does not apply to Qwen: its draft depth policy chooses 2 or 3.
 
+## Spark decode tuning
+
+Three changes make the Spark faster without touching the weights:
+
+- **Q8_0 matvec.** Each lane now reads eight quants of a block per step and
+  keeps two steps in flight. This is the verify pass's largest kernel, and it
+  drops from 70.5 to 60.6 us on average.
+- **Split-K matvec.** Short, wide F16 and Q8_0 matrices, such as the 320 x
+  10240 hyper-connection down projections, now spread each row across eight
+  warps. The F16 case drops from 48 to 36 us.
+- **Q4_0 matvec.** A dedicated kernel serves Q4_0 rows. An int4 output head
+  takes 1.6 ms instead of 2.6 ms.
+
+Each kernel serves T = 1..8 rows with the same per-row arithmetic, so a
+speculative verify still rounds every row like a plain decode. Greedy output
+with `--mtp` matched output without it on every prompt checked.
+
+Two runtime switches cost nothing in quality:
+
+- `DS4_QWEN4_MTP_DRAFT_ROWS=65536` scores MTP drafts over the first 65,536
+  vocabulary rows. Verification still uses the whole head. This gives about
+  +10%. 32,768 and 16,384 rows were slower.
+- `DS4_QWEN4_MTP_DEPTH=3` always drafts two tokens. It helps code and does not
+  change prose.
+
+`gguf-tools/qwen4_retype_dense.py` shrinks the dense weights each verify
+pass reads:
+
+- `--hc-q8` stores the F16 hyper-connection projections as Q8_0.
+- `--head-gptq DIR` converts the AutoRound int4 `lm_head` of a symmetric
+  group-128 GPTQ checkpoint exactly to Q4_0, for example azampatti's.
+
+Measured on one Spark in October 2026. Q4 healed top-5 means the file built by
+`qwen4_graft_shared.py`. All runs use CUDA, `--mtp`, depth 3, 65,536 draft
+rows, greedy decoding and 256 tokens:
+
+| Model | Prose | Code |
+| --- | ---: | ---: |
+| Stock, 10 experts | 37 t/s | 45 t/s |
+| Healed top-5 | 46 t/s | 57 t/s |
+| Healed top-5, `--hc-q8 --head-gptq` | 49 t/s | 62 t/s |
+
+Perplexity for the last row is within 3.3% of healed top-5: English 6.92
+against 6.83, C 1.649 against 1.638, and Italian 4.60 against 4.45. With
+these kernels the GPU is busy about 92% of a decode, and the large Q8_0
+matvecs run near the Spark's practical memory bandwidth. Further gains need
+fewer bytes per token or more tokens per verify pass. Ruled out:
+
+- **CUDA graphs.** Inter-kernel gaps under 50 us total under 1% of the time.
+- **Unrolling the MoE expert loop.** No change, because Q4_K decoding is the
+  limit.
+- **Sixteen quants per lane in the Q8_0 matvec.** Slower.
+
 ## Conversion
 
 See [GGUF conversion](../gguf-tools/README.md) for conversion from the HF
