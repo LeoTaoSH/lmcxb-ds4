@@ -1,0 +1,546 @@
+{
+  "schema": "ds4-mopd-approximate-prerequisites-v1",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "checked_upstream": {
+    "NPUMoE_paper": "https://arxiv.org/html/2604.18788v1",
+    "MoE_Spec_paper": "https://arxiv.org/html/2602.16052v1",
+    "Edge0_paper": "https://arxiv.org/html/2609.18063v2",
+    "Edge0_commit": "40a8c510c8378d08cce4a32d89adb033429edb84",
+    "ANEMLL_commit": "f4ad26d061dc2e426faa19f81c367343bdeb9f0d",
+    "EAGLE_commit": "cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b",
+    "MOPD_artifact_inventory": "https://huggingface.co/api/models/XiaomiMiMo/MiMo-V2.6-Flash-MOPD/revision/b12f5573350bb1704513fcf119fca48e498b0423"
+  },
+  "edge0_actual_config_probe": {
+    "command": "/private/tmp/mimo-serving-gates.cFSYJx/venv/bin/python -c 'from edge0 import AutoConfig; AutoConfig.from_pretrained(\"/Users/mvid/Development/personal/ds4/models/MiMo-V2.6-Flash-MOPD\")'",
+    "exit_code": 1,
+    "error": "KeyError: unknown model mimo_v2; registered: edge0-35b, edge0-8b",
+    "installed_versions": {
+      "mlx": "0.30.6",
+      "mlx_metal": "0.30.6",
+      "mlx_lm": "0.31.0"
+    },
+    "missing": [
+      "MiMo attention/model adapter",
+      "MXFP4/E8M0 per-expert source loader compatible with MiMo",
+      "MOPD-trained cross-token prerouter",
+      "MOPD student-path unmerged recovery LoRA",
+      "MOPD-compatible streaming/checkpointed head and LoRA trainer",
+      "MOPD teacher-router probability calibration captures; normalized hidden inputs are now available from the activation-staging study"
+    ],
+    "released_compatible_artifacts": [],
+    "released_other_backbone_tiers": [
+      "Edge0/Edge0-35B-A3B-preview (qwen3_5_moe)",
+      "Edge0/Edge0-8B-A1B-preview (Ling/Bailing)"
+    ],
+    "weight_format_difference": "Current streaming loader consumes stacked uint32 affine-group64 weight/scales/biases bundles; MOPD has per-expert U8 MXFP4 plus E8M0 scales.",
+    "full_resident_teacher_routed_expert_bf16_gib": 564,
+    "prerouter_feature_dim": 4608
+  },
+  "moe_spec": {
+    "status_at_probe": "No runnable MOPD budgeting path existed at this prerequisite probe; the subsequent native budget and quality experiments are recorded separately under ../quality/.",
+    "missing_at_probe": [
+      "MOPD-compatible EAGLE verification adapter or native DFlash expert-budget hook",
+      "verification-group router probabilities and target-logit captures"
+    ],
+    "current_native_adaptation_points": [
+      "ds4.c mimo2_graph_route",
+      "ds4.c mimo2_graph_moe",
+      "ds4.c mimo2_graph_verify_rows"
+    ],
+    "routing_contract": "sigmoid, noaux_tc, one group, selection-only correction bias, normalized unbiased weights, top8, no shared expert",
+    "paper_backend": "FP16 PyTorch/CUDA A100, EAGLE extension for OLMoE/Qwen3/Mixtral; current EAGLE loader falls back to Mixtral for unknown architectures",
+    "quality_changes": true,
+    "proposed_pilot_at_probe": {
+      "checkpoint": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD@b12f5573350bb1704513fcf119fca48e498b0423",
+      "drafter": "current pinned MOPD DFlash sidecar",
+      "heldout_prompts": 4,
+      "domains": [
+        "coding",
+        "reasoning",
+        "tool-result"
+      ],
+      "max_generated_tokens_each": 64,
+      "temperature": 0,
+      "initial_budget_controls": [
+        "unchanged full routing",
+        "full-budget implementation control",
+        "conservative router-ranked budget16/24"
+      ],
+      "required_outputs": [
+        "actual verification group boundaries",
+        "full router probabilities",
+        "dropped/substituted routing mass",
+        "full target logits",
+        "accepted tokens",
+        "task results",
+        "paired wall latency"
+      ],
+      "stop_gates": [
+        "nonfinite output",
+        "full-budget control mismatch",
+        "malformed tool-call name/arguments"
+      ]
+    },
+    "quality_gate_requirements": [
+      "Fresh pinned-MOPD reference continuations and paired task outputs",
+      "GSM8K/MATH accuracy",
+      "HumanEval/MBPP executable pass@1",
+      "summary ROUGE-L",
+      "tool-call structure and required argument checks",
+      "teacher-forced target-logit/NLL comparisons on the actual deployed approximate path"
+    ],
+    "existing_scorer_limit": "AR score_official does not exercise verification-only expert budgeting; unchanged AR scores cannot validate a budgeted DFlash verifier.",
+    "legacy_fixture_limit": "September24 hosted MiMo fixtures predate MOPD and are not checkpoint-matched parity evidence."
+  },
+  "cpu_id_screen": {
+    "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+    "scope": "CPU routing-ID screen of successive actual autoregressive evaluations. Historical windows are NOT speculative verification batches; count ranking is NOT router-probability ranking; no output-quality or speed conclusions.",
+    "missing_trace_features": [
+      "hidden activations",
+      "router probabilities",
+      "verification-batch boundaries",
+      "expert outputs",
+      "target logits"
+    ],
+    "traces": [
+      {
+        "name": "coding",
+        "audited_current_lookups": 192512,
+        "layers": 47,
+        "evaluations_per_layer": [
+          512
+        ],
+        "rows": [
+          {
+            "window_evaluations": 3,
+            "budget": 8,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.5653031384950185,
+            "selected_expert_occurrence_drop_fraction": 0.43367229870671675,
+            "token_layer_change_fraction": 0.9901960784313726
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 12,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.3482267333129314,
+            "selected_expert_occurrence_drop_fraction": 0.2670264914476429,
+            "token_layer_change_fraction": 0.879808093450146
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 16,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.1475262674691421,
+            "selected_expert_occurrence_drop_fraction": 0.11312578222778473,
+            "token_layer_change_fraction": 0.5170629954109304
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 24,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 32,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 56,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.40362953692115,
+            "min_unique": 10,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 8,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.7654738712874671,
+            "selected_expert_occurrence_drop_fraction": 0.5336168130907274,
+            "token_layer_change_fraction": 0.9980014156639048
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 12,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.6482108069312007,
+            "selected_expert_occurrence_drop_fraction": 0.40848669692301287,
+            "token_layer_change_fraction": 0.9653995086813507
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 16,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.5309477425749343,
+            "selected_expert_occurrence_drop_fraction": 0.3237446392138902,
+            "token_layer_change_fraction": 0.908273306407961
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 24,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.29796814655319726,
+            "selected_expert_occurrence_drop_fraction": 0.1815016446683599,
+            "token_layer_change_fraction": 0.6813507099138111
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 32,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.11217915854950611,
+            "selected_expert_occurrence_drop_fraction": 0.06833180663696549,
+            "token_layer_change_fraction": 0.29354207436399216
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 56,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 34.111337802389976,
+            "min_unique": 17,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          }
+        ]
+      },
+      {
+        "name": "reasoning",
+        "audited_current_lookups": 192512,
+        "layers": 47,
+        "evaluations_per_layer": [
+          512
+        ],
+        "rows": [
+          {
+            "window_evaluations": 3,
+            "budget": 8,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.5636592009065403,
+            "selected_expert_occurrence_drop_fraction": 0.4306789737171464,
+            "token_layer_change_fraction": 0.9882770129328327
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 12,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.3459188619096054,
+            "selected_expert_occurrence_drop_fraction": 0.2642574050896955,
+            "token_layer_change_fraction": 0.8770963704630789
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 16,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.14471878818493966,
+            "selected_expert_occurrence_drop_fraction": 0.11055486024196913,
+            "token_layer_change_fraction": 0.5158114309553609
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 24,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 32,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 56,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 18.334292866082603,
+            "min_unique": 9,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 8,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.7609350776037765,
+            "selected_expert_occurrence_drop_fraction": 0.520714493900154,
+            "token_layer_change_fraction": 0.9962526543698214
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 12,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.6414026164056648,
+            "selected_expert_occurrence_drop_fraction": 0.3958706333014115,
+            "token_layer_change_fraction": 0.9593204813257276
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 16,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.5218962844252444,
+            "selected_expert_occurrence_drop_fraction": 0.3122163467543823,
+            "token_layer_change_fraction": 0.8967398093017446
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 24,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.2859668681519675,
+            "selected_expert_occurrence_drop_fraction": 0.1708841653828538,
+            "token_layer_change_fraction": 0.6588666361327393
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 32,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.1009110387235006,
+            "selected_expert_occurrence_drop_fraction": 0.06030103676562435,
+            "token_layer_change_fraction": 0.2618145480284798
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 56,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 33.46371320314777,
+            "min_unique": 15,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          }
+        ]
+      },
+      {
+        "name": "tool-result",
+        "audited_current_lookups": 192512,
+        "layers": 47,
+        "evaluations_per_layer": [
+          512
+        ],
+        "rows": [
+          {
+            "window_evaluations": 3,
+            "budget": 8,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.5792411595881934,
+            "selected_expert_occurrence_drop_fraction": 0.4589851898206091,
+            "token_layer_change_fraction": 0.9930329578639967
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 12,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.3689802259143211,
+            "selected_expert_occurrence_drop_fraction": 0.2923133083020442,
+            "token_layer_change_fraction": 0.9163537755527743
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 16,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0.16732931356802438,
+            "selected_expert_occurrence_drop_fraction": 0.13256153525239883,
+            "token_layer_change_fraction": 0.6036712557363371
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 24,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 32,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 3,
+            "budget": 56,
+            "layer_windows": 7990,
+            "mean_unique_experts_before": 19.013266583229036,
+            "min_unique": 8,
+            "max_unique": 24,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 8,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.7727475948402908,
+            "selected_expert_occurrence_drop_fraction": 0.5546800183203564,
+            "token_layer_change_fraction": 0.9984177874005913
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 12,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.6591213922604362,
+            "selected_expert_occurrence_drop_fraction": 0.4290086188949494,
+            "token_layer_change_fraction": 0.9726443768996961
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 16,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.5454951896805815,
+            "selected_expert_occurrence_drop_fraction": 0.343293292251322,
+            "token_layer_change_fraction": 0.9281342382479078
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 24,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.3187561060422911,
+            "selected_expert_occurrence_drop_fraction": 0.20037889828038472,
+            "token_layer_change_fraction": 0.747886913436316
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 32,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0.11995992780381182,
+            "selected_expert_occurrence_drop_fraction": 0.07541012616063622,
+            "token_layer_change_fraction": 0.3480867718699255
+          },
+          {
+            "window_evaluations": 7,
+            "budget": 56,
+            "layer_windows": 3431,
+            "mean_unique_experts_before": 35.20314777032935,
+            "min_unique": 18,
+            "max_unique": 56,
+            "unique_expert_load_count_reduction_fraction": 0,
+            "selected_expert_occurrence_drop_fraction": 0,
+            "token_layer_change_fraction": 0
+          }
+        ]
+      }
+    ],
+    "fp16_ane_memory_arithmetic": {
+      "routed_layers": 47,
+      "experts_per_layer": 256,
+      "expert_fp16_bytes": 50331648,
+      "expert_native_mxfp4_bytes": 13369344,
+      "all_expert_fp16_gib": 564,
+      "all_expert_mxfp4_gib": 149.8125,
+      "same_5134_slots_fp16_gib": 240.65625,
+      "group4_fp16_mib": 192,
+      "group8_fp16_mib": 384
+    }
+  },
+  "execution_scope": "Initial CPU prerequisite checks and ID-only historical routing screen. Later normalized-activation captures and native verification-budget pilots are recorded separately under ../activation/ and ../quality/. The released Edge0 adapter/training-asset blockers remain."
+}

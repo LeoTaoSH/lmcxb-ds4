@@ -1,0 +1,2 @@
+model,concurrency,ctx,status,prefill_tps,last_ttft_s,decode_agg_tps,decode_stream_tps,decode_wall_tps,step_ms_mean,step_ms_p50,step_ms_p95,step_ms_max,mixed_step_ms_p50,mixed_step_ms_p95,mixed_decode_tps,mixed_prefill_tps,estimate_gib,predicted_gib,footprint_gib
+MiMo V2.6 Flash,4,256,ok,5.29,193.514,6.52,1.63,6.51,613.829,576.933,871.381,1002.577,0.000,0.000,0.00,0.00,0.89,0.98,0.98

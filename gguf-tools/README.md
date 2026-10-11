@@ -250,6 +250,74 @@ Pass `--quant q4` to the audit as well when checking a Q4 file.
 The audit checks the complete layout, all non-expert tensors, sampled experts
 and native Engram rows. It does not replace [inference quality tests](quality-testing/deepseek-v4.1-flash-20260910/README.md).
 
+## Convert MiMo V2.6 Flash
+
+The current target is `XiaomiMiMo/MiMo-V2.6-Flash-MOPD`, pinned to
+`b12f5573350bb1704513fcf119fca48e498b0423`. Start with native MXFP4
+routed experts and Q8 attention. The converter reads the shard index and
+excludes audio and vision tensors.
+
+Download the text source without changing existing RL files:
+
+```sh
+hf download XiaomiMiMo/MiMo-V2.6-Flash-MOPD \
+  config.json tokenizer.json chat_template.jinja \
+  model.safetensors.index.json model_mtp.safetensors \
+  --revision b12f5573350bb1704513fcf119fca48e498b0423 \
+  --local-dir models/MiMo-V2.6-Flash-MOPD
+hf download XiaomiMiMo/MiMo-V2.6-Flash-MOPD \
+  --include 'model_pp0_ep*_shard0.safetensors' \
+  --revision b12f5573350bb1704513fcf119fca48e498b0423 \
+  --local-dir models/MiMo-V2.6-Flash-MOPD --max-workers 4
+make -C gguf-tools libds4quants.dylib
+python3 gguf-tools/mimo26_quantize.py \
+  --hf models/MiMo-V2.6-Flash-MOPD \
+  --source-revision b12f5573350bb1704513fcf119fca48e498b0423 \
+  --quant mxfp4 --out gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf
+python3 gguf-tools/mimo26_validate_gguf.py \
+  gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --hf models/MiMo-V2.6-Flash-MOPD --quant mxfp4
+```
+
+NumPy and the quantizer library are required. Use `--dry-run` to inspect the
+51-layer plan without writing weights. `--resume` accepts a partial write
+only when the converter, quantizer, source index and imatrix identities match.
+The output records the MOPD repository and source revision.
+
+MXFP4 repacks expert codes and scales exactly. Dense blocks and embeddings
+use Q8_0. Trunk fused QKV stores four TP ranks internally; dequantization
+regroups rank-local Q/K/V rows. MTP QKV tensors are already in global order.
+
+The optional DFlash drafter uses the same pinned release. Its learned mask
+embedding is distinct from the target model's token embedding:
+
+```sh
+hf download XiaomiMiMo/MiMo-V2.6-Flash-MOPD \
+  dflash/config.json dflash/dflash_draft_model.safetensors \
+  dflash/model.safetensors.index.json dflash/mask_embedding.pt \
+  --revision b12f5573350bb1704513fcf119fca48e498b0423 \
+  --local-dir models/MiMo-V2.6-Flash-MOPD
+python3 gguf-tools/mimo26_dflash_convert.py \
+  --hf models/MiMo-V2.6-Flash-MOPD \
+  --out gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf
+python3 gguf-tools/mimo26_dflash_validate_gguf.py \
+  gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
+  --hf models/MiMo-V2.6-Flash-MOPD
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --ssd-streaming --ctx 4096 --temp 0 \
+  --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
+  --dflash-draft 3 -p "What is 84 * 3 / 2?"
+```
+
+The DFlash validator checks all 64 tensors. The drafter uses five layers
+and an eight-row block. Unchanged drafter weights do not imply unchanged
+acceptance or speed with the MOPD backbone.
+
+Resident Q2 requires a fresh MOPD imatrix from the clean corpus and a
+checkpoint-matched quality gate. The September 24 RL fixture and its Q2
+scores are historical evidence, not MOPD parity. Do not reuse the RL imatrix.
+See [MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+
 ## Convert A DSpark Support Checkpoint
 
 The DSpark Flash checkpoint is published as Hugging Face safetensors and stores

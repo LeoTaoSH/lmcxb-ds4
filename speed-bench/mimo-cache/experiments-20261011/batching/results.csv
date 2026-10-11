@@ -1,0 +1,9 @@
+protocol,concurrency,variant,aggregate_tps,stream_tps,step_mean_ms,step_p95_ms,ctx_alloc,source
+paired,2,stock,8.8,,,,600,paired.log
+paired,2,native,8,,,,600,paired.log
+paired,4,stock,5.6,,,,600,paired-four.log
+paired,4,native,5.6,,,,600,paired-four.log
+fresh_latency,2,stock,6.36,3.18,314.226,447.531,344,latency-stock-2.csv
+fresh_latency,2,native,7.39,3.7,270.587,439.409,344,latency-native-2.csv
+fresh_latency,4,stock,6.52,1.63,613.829,871.381,344,latency-stock-4.csv
+fresh_latency,4,native,6.62,1.65,604.577,963.767,344,latency-native-4.csv

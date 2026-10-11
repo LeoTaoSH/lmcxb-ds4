@@ -1,0 +1,22 @@
+[
+  {
+    "mode": "stock",
+    "routes": 24064,
+    "misses": 20167,
+    "initial_snapshot_equal": true,
+    "hit_masks_bytes_and_clocks_equal": true,
+    "selected_tokens_and_top20_steps_equal": 512,
+    "trace_sha256": "8b773d91ae7aa3fd0986d2c86df0dc85eabedcc070b1e40b1e7ace9603911711",
+    "logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34"
+  },
+  {
+    "mode": "learned",
+    "routes": 24064,
+    "misses": 16804,
+    "initial_snapshot_equal": true,
+    "hit_masks_bytes_and_clocks_equal": true,
+    "selected_tokens_and_top20_steps_equal": 512,
+    "trace_sha256": "a4aacb6439ef15b0a9a029ba58131f84d02a763e89141b7fbab6db90a7f4f5b3",
+    "logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34"
+  }
+]

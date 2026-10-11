@@ -1,0 +1,68 @@
+[
+  {
+    "workload": "probability",
+    "mode": "adaptive",
+    "label": "adaptive-v2-screen-probability",
+    "profiled": false,
+    "generated_tokens": 128,
+    "metrics": {
+      "ctx_tokens": "292",
+      "prefill_tokens": "292",
+      "prefill_tps": "9.40",
+      "gen_tokens": "128",
+      "gen_tps": "5.50",
+      "gen_first_ms": "2951.663",
+      "gen_steady_tokens": "127",
+      "gen_steady_tps": "6.24",
+      "kvcache_bytes": "0"
+    },
+    "equals_ordinary": true,
+    "first_ordinary_mismatch": null,
+    "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/adaptive-v2-screen-probability.receipt.json",
+    "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+  },
+  {
+    "workload": "rust-parser",
+    "mode": "adaptive",
+    "label": "adaptive-v2-screen-rust-parser",
+    "profiled": false,
+    "generated_tokens": 128,
+    "metrics": {
+      "ctx_tokens": "327",
+      "prefill_tokens": "327",
+      "prefill_tps": "10.96",
+      "gen_tokens": "128",
+      "gen_tps": "4.57",
+      "gen_first_ms": "3865.079",
+      "gen_steady_tokens": "127",
+      "gen_steady_tps": "5.25",
+      "kvcache_bytes": "0"
+    },
+    "equals_ordinary": true,
+    "first_ordinary_mismatch": null,
+    "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/adaptive-v2-screen-rust-parser.receipt.json",
+    "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+  },
+  {
+    "workload": "tool-debug",
+    "mode": "adaptive",
+    "label": "adaptive-v2-screen-tool-debug",
+    "profiled": false,
+    "generated_tokens": 128,
+    "metrics": {
+      "ctx_tokens": "486",
+      "prefill_tokens": "486",
+      "prefill_tps": "14.15",
+      "gen_tokens": "128",
+      "gen_tps": "5.23",
+      "gen_first_ms": "3037.684",
+      "gen_steady_tokens": "127",
+      "gen_steady_tps": "5.92",
+      "kvcache_bytes": "0"
+    },
+    "equals_ordinary": true,
+    "first_ordinary_mismatch": null,
+    "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/adaptive-v2-screen-tool-debug.receipt.json",
+    "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+  }
+]

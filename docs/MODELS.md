@@ -174,6 +174,50 @@ Ordinary decode is the default. Enable the embedded draft block with `--mtp`:
 No second model file is needed. See [sampling behavior](SPECULATIVE_DECODING.md)
 before choosing between the default opportunistic mode and exact sampling.
 
+## MiMo V2.6 Flash
+
+Use the current `XiaomiMiMo/MiMo-V2.6-Flash-MOPD` checkpoint, pinned to
+`b12f5573350bb1704513fcf119fca48e498b0423`. Build the text-only MXFP4
+artifact with [the converter guide](../gguf-tools/README.md#convert-mimo-v26-flash).
+
+The MXFP4 file is about 156.8 GiB. It needs 256 GB for full residency;
+on a 128 GB Mac, use SSD streaming with the automatic expert-cache budget:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --ssd-streaming --ctx 4096
+./ds4-agent -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --ssd-streaming --ctx 4096
+```
+MiMo reserves driver headroom when sizing its cache. On the measured 128 GB
+M5 Max, the automatic cache is 63.92 GiB. Short continued prefills use cached
+experts without changing the prefill arithmetic. See [QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+
+Metal text inference is supported. Vision, audio, tensor parallelism and
+custom `--prefill-chunk` values are unsupported. MiMo selects its own chunk.
+The backbone has 9 global and 39 sliding-window attention layers, 256
+routed experts (top 8), and three embedded MTP blocks.
+
+ChatML turns, compact `<tool_call>` calls and directional steering are
+supported. CLI and agent sampling defaults are temperature 1.0, top-p 0.95
+and min-p 0 unless explicitly set. `--nothink` requests a direct reply;
+the server exposes `mimo-v2.6-flash-chat` and `mimo-v2.6-flash-reasoner`.
+
+Native MTP is enabled with `--mtp`. The optional 1.45 GiB DFlash sidecar
+is built from the same pinned release:
+
+```sh
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf \
+  --ssd-streaming --ctx 4096 --temp 0 \
+  --dflash gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf \
+  --dflash-draft 3 -p "What is 84 * 3 / 2?"
+```
+
+MOPD has different backbone weights from RL. Earlier RL continuation scores
+and speed measurements do not qualify this release. Resident Q2 needs a new
+MOPD imatrix and quality gate. See [MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+
+
 ## Full GLM 5.3 and GLM 5.2
 
 Full GLM 5.3 Q2 is about 197 GiB. Use a sufficiently large machine or streaming:

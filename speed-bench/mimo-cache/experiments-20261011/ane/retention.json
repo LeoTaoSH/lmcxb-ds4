@@ -1,0 +1,349 @@
+{
+  "original_root": "/private/tmp/mimo-serving-gates.cFSYJx",
+  "retained_root": "speed-bench/local-runs/mimo-serving-20261011-ane",
+  "retained": "Original reproduction scripts, numeric inputs, converted/compiled CoreML packages, raw results and physical Instruments trace.",
+  "removed": [
+    "venv",
+    "EAGLE",
+    "Anemll",
+    "Edge0",
+    "__pycache__"
+  ],
+  "environment": {
+    "python": "3.12.13 (main, Apr  7 2026, 21:09:58) [Clang 22.1.1 ]",
+    "packages": [
+      [
+        "Jinja2",
+        "3.1.6"
+      ],
+      [
+        "MarkupSafe",
+        "3.0.4"
+      ],
+      [
+        "PyYAML",
+        "6.0.3"
+      ],
+      [
+        "Pygments",
+        "2.21.0"
+      ],
+      [
+        "annotated-doc",
+        "0.0.5"
+      ],
+      [
+        "anyio",
+        "4.15.1"
+      ],
+      [
+        "attrs",
+        "26.1.0"
+      ],
+      [
+        "cattrs",
+        "26.2.1"
+      ],
+      [
+        "click",
+        "8.5.0"
+      ],
+      [
+        "coremltools",
+        "9.0"
+      ],
+      [
+        "edge0",
+        "0.1.0"
+      ],
+      [
+        "filelock",
+        "4.1.0"
+      ],
+      [
+        "fsspec",
+        "2026.9.0"
+      ],
+      [
+        "h11",
+        "0.16.0"
+      ],
+      [
+        "hf-xet",
+        "1.7.0"
+      ],
+      [
+        "httpcore2",
+        "2.13.1"
+      ],
+      [
+        "httpx2",
+        "2.13.1"
+      ],
+      [
+        "huggingface_hub",
+        "2.2.0"
+      ],
+      [
+        "idna",
+        "3.20"
+      ],
+      [
+        "markdown-it-py",
+        "4.2.0"
+      ],
+      [
+        "mdurl",
+        "0.1.2"
+      ],
+      [
+        "mlx",
+        "0.30.6"
+      ],
+      [
+        "mlx-lm",
+        "0.31.0"
+      ],
+      [
+        "mlx-metal",
+        "0.30.6"
+      ],
+      [
+        "mpmath",
+        "1.3.0"
+      ],
+      [
+        "numpy",
+        "2.5.4"
+      ],
+      [
+        "packaging",
+        "26.3"
+      ],
+      [
+        "protobuf",
+        "7.36.2"
+      ],
+      [
+        "psutil",
+        "7.2.2"
+      ],
+      [
+        "pyaml",
+        "26.7.0"
+      ],
+      [
+        "regex",
+        "2026.9.29"
+      ],
+      [
+        "rich",
+        "15.0.0"
+      ],
+      [
+        "safetensors",
+        "0.8.0"
+      ],
+      [
+        "sentencepiece",
+        "0.2.2"
+      ],
+      [
+        "shellingham",
+        "1.5.4"
+      ],
+      [
+        "sympy",
+        "1.14.0"
+      ],
+      [
+        "tokenizers",
+        "0.23.3"
+      ],
+      [
+        "tqdm",
+        "4.70.1"
+      ],
+      [
+        "transformers",
+        "5.19.0"
+      ],
+      [
+        "truststore",
+        "0.10.4"
+      ],
+      [
+        "typer",
+        "0.27.3"
+      ],
+      [
+        "typing_extensions",
+        "4.16.0"
+      ]
+    ]
+  },
+  "files": [
+    {
+      "name": "ane-hw-intervals-internal.xml",
+      "bytes": 272058,
+      "sha256": "87abf72ad00135520dead39e68bdc2aa95f83038be7b2db1f2a1b2b01153bf15"
+    },
+    {
+      "name": "approximation_screen.json",
+      "bytes": 16642,
+      "sha256": "cabd92f7c7967d49a98e1466ccbb419f163f9e32367a90af5146b47a3f1cb761"
+    },
+    {
+      "name": "approximation_screen.log",
+      "bytes": 16642,
+      "sha256": "cabd92f7c7967d49a98e1466ccbb419f163f9e32367a90af5146b47a3f1cb761"
+    },
+    {
+      "name": "approximation_screen.py",
+      "bytes": 3441,
+      "sha256": "b01b3cd1e81c41e5f86c46ad511f377b89a15177181420cd6b3f103c8cd98f90"
+    },
+    {
+      "name": "conversion.log",
+      "bytes": 4190,
+      "sha256": "1bf802d586e25a20668a3e0c69216242d089092f23cfe1571fbafa6042d66d91"
+    },
+    {
+      "name": "coreml-os-signpost.xml",
+      "bytes": 1738,
+      "sha256": "b7ea7ab496fe343c3cad057efd8ff7ab9eb0959216d88adc866b679ca0e78848"
+    },
+    {
+      "name": "coreml_manifest.json",
+      "bytes": 2944,
+      "sha256": "c33d44f10fa05dcf07c9bf9eff5774d9c3bd978e5d2b159a19475b74d32a0cb1"
+    },
+    {
+      "name": "coreml_placement.json",
+      "bytes": 20771,
+      "sha256": "1c9418b1a3f1fbab5d2fed8b5709de1af9392e9f3e04075f75e4cd741c6e16e6"
+    },
+    {
+      "name": "coreml_results.json",
+      "bytes": 25495,
+      "sha256": "3eddaed8a43fcf35081e585b0405d6cf5332c24adef7fb4e3d1d9cedcef78dd5"
+    },
+    {
+      "name": "edge0_mopd_resolution.log",
+      "bytes": 2006,
+      "sha256": "55a10c9aecee28dc98b9e3a993da71ea3ce230906a0e4482ee0d9f15609be801"
+    },
+    {
+      "name": "edge0_mopd_resolution_isolated.log",
+      "bytes": 605,
+      "sha256": "90f762ccdf9e38b18ec854978fe557645c45bce99b579576265801e2588b2f58"
+    },
+    {
+      "name": "expert_coreml.py",
+      "bytes": 7975,
+      "sha256": "fe003a0b1de3c6c5fcd8a68d2a2564d02f15bca9733eb8a9bf344c10d1c91364"
+    },
+    {
+      "name": "expert_weights.npz",
+      "bytes": 50332386,
+      "sha256": "7f6edd4222cd51fb264c5aeb60d2d27f672c2961f3670e7c3ff7cb642ebce96e"
+    },
+    {
+      "name": "group_conversion.log",
+      "bytes": 8499,
+      "sha256": "886ca55c2bbb59564142719fdd47179bd189d862ff809551b70ae4dcfccd839e"
+    },
+    {
+      "name": "group_coreml.py",
+      "bytes": 5309,
+      "sha256": "49ffe8069b1507970ed495a4c0337f4f3e1bf291036814381512e2bd82960298"
+    },
+    {
+      "name": "group_input.npy",
+      "bytes": 1048704,
+      "sha256": "ec933c15097bb28192251f07db7a3332c98d926335262833e82b1d9f2398b65b"
+    },
+    {
+      "name": "group_manifest.json",
+      "bytes": 10648,
+      "sha256": "d154e3ccf58d5efbc89e8fab9b99b649ab82f0d51c26ed2295c0467d3a0ee3fa"
+    },
+    {
+      "name": "group_prediction.log",
+      "bytes": 2660,
+      "sha256": "a2168e917f23ee3dc0289b45b000b3732a1a823374cd776ffff64b9fff1f330b"
+    },
+    {
+      "name": "group_results.json",
+      "bytes": 3699,
+      "sha256": "73567f588687de51f5e2eb436ee7411f1947f34e958549f6120928c567b89d7a"
+    },
+    {
+      "name": "group_weights.npz",
+      "bytes": 201327330,
+      "sha256": "11e6af4c3852e05f3f71487c6ac70a6949d838f431832df045e93d7a5a38a68f"
+    },
+    {
+      "name": "input_c1.npy",
+      "bytes": 8320,
+      "sha256": "9ca7dd7f1bbd945dd71ef688029e66ba06bc2f4445ac92812c42d571f5007658"
+    },
+    {
+      "name": "input_c32.npy",
+      "bytes": 262272,
+      "sha256": "d25d0e75f0ca5a0bf1b55e407b0001bcef2ebbb37f7dc0ed951b7af6849374b2"
+    },
+    {
+      "name": "metal-gpu-intervals.xml",
+      "bytes": 3468857,
+      "sha256": "4f03567f7ca80674885f4998915d1f546202284620f5bd34119966350c5cc748"
+    },
+    {
+      "name": "pilot_evidence.json",
+      "bytes": 28938,
+      "sha256": "16d310303076cf23f377d9c47452e20076ae9a9d06388facc5202e9a82a33f26"
+    },
+    {
+      "name": "placement.log",
+      "bytes": 13344,
+      "sha256": "51b66ce660e1d1ed07034e3326c20b36b8dadb54f3f3b543a0690cdc6ed05a67"
+    },
+    {
+      "name": "placement.py",
+      "bytes": 1313,
+      "sha256": "47c27e45735f00082d7e7a966eb65129e921eb4bdb86049c584093e268f98ac6"
+    },
+    {
+      "name": "prediction.log",
+      "bytes": 17044,
+      "sha256": "ff03240b46cdf0c3605f2c9bf4c29282648a1b1c13574c8271d7858ccf8b885c"
+    },
+    {
+      "name": "summarize_evidence.py",
+      "bytes": 7063,
+      "sha256": "8248099af53f427bd701ad2a877f6d35834c4b8385e07cc04861bc9745f7454a"
+    },
+    {
+      "name": "trace_capture.log",
+      "bytes": 248,
+      "sha256": "c44a0904406226bd808630b2ce1061270b51229b0a813b3c133447bc40fafb68"
+    },
+    {
+      "name": "trace_coreml.py",
+      "bytes": 643,
+      "sha256": "d2f14b06bf42c6346df9f3c9e91b470310b35645b5e81a5124825864846db369"
+    },
+    {
+      "name": "trace_summary.json",
+      "bytes": 2849,
+      "sha256": "fe27fe71baf5ae03a42f646a30d7909fb9b34208ab237c4b7730c110547256ec"
+    },
+    {
+      "name": "trace_toc.xml",
+      "bytes": 39696,
+      "sha256": "5bc4312cfc9cf1543c96c3208308600f019d560aa2e6ac43f090b42087fb1bae"
+    }
+  ],
+  "upstream_pins": "approximate-prerequisites.json records the removed release-checkout commits.",
+  "scope": "Local untracked research artifacts; no runtime installation or default change."
+}

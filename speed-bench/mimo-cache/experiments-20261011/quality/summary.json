@@ -1,0 +1,916 @@
+{
+  "probe": "teacher-continuation-distortion",
+  "status": "corrected raw-prefix grid complete",
+  "tokenizer": "ds4_tokenize_text",
+  "supersedes": "rendered-prefix-invalidated/summary.json; those numbers are invalidated and excluded",
+  "invalidation_reason": "Prior probe used rendered-chat tokenization while raw teacher capture used text tokenization.",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "binary": "/tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality_raw",
+  "binary_sha256": "7e80ef8f389ebd1bc73aecbab94dca8847c7e143403b4fa9f2c4e0017a43a15a",
+  "context": 4096,
+  "block": 8,
+  "rows_per_workload": 128,
+  "cache_experts_observed": 5134,
+  "successful_grid_runs": 18,
+  "all_prefix_counts_bound_to_baseline": true,
+  "prefix_count_evidence_file": "prefix-count-checks.json",
+  "old_reference_rejection_smoke_passed": true,
+  "controls": [
+    {
+      "case": "probability",
+      "variant": "unmasked",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-unmasked.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2946299957268388,
+      "reference_teacher_mean_nll": 0.2946299957268388,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "probability",
+      "variant": "budget256",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-budget256.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2946299957268388,
+      "reference_teacher_mean_nll": 0.2946299957268388,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27205,
+        "kept_unique_sum": 27205,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "unmasked",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-unmasked.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.16879740604934798,
+      "reference_teacher_mean_nll": 0.16879740604934798,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget256",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-budget256.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.16879740604934798,
+      "reference_teacher_mean_nll": 0.16879740604934798,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29380,
+        "kept_unique_sum": 29380,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "unmasked",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-unmasked.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2780788503592155,
+      "reference_teacher_mean_nll": 0.2780788503592155,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget256",
+      "accepted": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-budget256.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2780788503592155,
+      "reference_teacher_mean_nll": 0.2780788503592155,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30603,
+        "kept_unique_sum": 30603,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    }
+  ],
+  "all_controls_exact": true,
+  "references": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-reference.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2946299957268388,
+      "reference_teacher_mean_nll": null,
+      "teacher_mean_nll_delta": null,
+      "mean_kl_reference_to_candidate": null,
+      "argmax_agreements": 0,
+      "argmax_agreement": null,
+      "max_logit_drift": null,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "reference",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-reference.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.16879740604934798,
+      "reference_teacher_mean_nll": null,
+      "teacher_mean_nll_delta": null,
+      "mean_kl_reference_to_candidate": null,
+      "argmax_agreements": 0,
+      "argmax_agreement": null,
+      "max_logit_drift": null,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "reference",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-reference.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2780788503592155,
+      "reference_teacher_mean_nll": null,
+      "teacher_mean_nll_delta": null,
+      "mean_kl_reference_to_candidate": null,
+      "argmax_agreements": 0,
+      "argmax_agreement": null,
+      "max_logit_drift": null,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    }
+  ],
+  "candidate_results": [
+    {
+      "case": "probability",
+      "variant": "budget8",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-budget8.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.7959039370028279,
+      "reference_teacher_mean_nll": 0.2946299957268388,
+      "teacher_mean_nll_delta": 0.5012739412759889,
+      "mean_kl_reference_to_candidate": 0.5682462935507469,
+      "argmax_agreements": 99,
+      "argmax_agreement": 0.7734375,
+      "max_logit_drift": 32.840343952178955,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 26702,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 20686,
+        "truncated_slots_sum": 26339
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "probability",
+      "variant": "budget16",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-budget16.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.3022596961491735,
+      "reference_teacher_mean_nll": 0.2946299957268388,
+      "teacher_mean_nll_delta": 0.007629700422334521,
+      "mean_kl_reference_to_candidate": 0.10250841113369241,
+      "argmax_agreements": 116,
+      "argmax_agreement": 0.90625,
+      "max_logit_drift": 12.732707500457764,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27103,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 15071,
+        "truncated_slots_sum": 16208
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": true,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "probability",
+      "variant": "budget32",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-raw-budget32.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+        "baseline_prompt_tokens": 292,
+        "probe_prefix_tokens": 292,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.3189118165072646,
+      "reference_teacher_mean_nll": 0.2946299957268388,
+      "teacher_mean_nll_delta": 0.024281820780425734,
+      "mean_kl_reference_to_candidate": 0.012220888578187126,
+      "argmax_agreements": 119,
+      "argmax_agreement": 0.9296875,
+      "max_logit_drift": 11.016931533813477,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27202,
+        "kept_unique_sum": 23218,
+        "truncated_unique_sum": 3984,
+        "truncated_slots_sum": 4252
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": true,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget8",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-budget8.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.8091557102871049,
+      "reference_teacher_mean_nll": 0.16879740604934798,
+      "teacher_mean_nll_delta": 0.6403583042377567,
+      "mean_kl_reference_to_candidate": 0.6473321118176332,
+      "argmax_agreements": 98,
+      "argmax_agreement": 0.765625,
+      "max_logit_drift": 21.433049201965332,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29001,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 22985,
+        "truncated_slots_sum": 28370
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget16",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-budget16.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.4340343247119079,
+      "reference_teacher_mean_nll": 0.16879740604934798,
+      "teacher_mean_nll_delta": 0.26523691866256005,
+      "mean_kl_reference_to_candidate": 0.27988465795640166,
+      "argmax_agreements": 115,
+      "argmax_agreement": 0.8984375,
+      "max_logit_drift": 20.261804580688477,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29435,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 17403,
+        "truncated_slots_sum": 18719
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget32",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-raw-budget32.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+        "baseline_prompt_tokens": 327,
+        "probe_prefix_tokens": 327,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.18264237850281229,
+      "reference_teacher_mean_nll": 0.16879740604934798,
+      "teacher_mean_nll_delta": 0.01384497245346427,
+      "mean_kl_reference_to_candidate": 0.010043057699715566,
+      "argmax_agreements": 122,
+      "argmax_agreement": 0.953125,
+      "max_logit_drift": 11.550642013549805,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29402,
+        "kept_unique_sum": 23737,
+        "truncated_unique_sum": 5665,
+        "truncated_slots_sum": 5948
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": true,
+        "kl": true,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "argmax"
+      ]
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget8",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-budget8.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.9631591004744039,
+      "reference_teacher_mean_nll": 0.2780788503592155,
+      "teacher_mean_nll_delta": 0.6850802501151882,
+      "mean_kl_reference_to_candidate": 0.7198306797849604,
+      "argmax_agreements": 92,
+      "argmax_agreement": 0.71875,
+      "max_logit_drift": 22.294616222381592,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30145,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 24129,
+        "truncated_slots_sum": 29840
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget16",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-budget16.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.510773262212651,
+      "reference_teacher_mean_nll": 0.2780788503592155,
+      "teacher_mean_nll_delta": 0.2326944118534352,
+      "mean_kl_reference_to_candidate": 0.31568151814285217,
+      "argmax_agreements": 103,
+      "argmax_agreement": 0.8046875,
+      "max_logit_drift": 16.400855779647827,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30588,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 18556,
+        "truncated_slots_sum": 19980
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget32",
+      "accepted": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-raw-budget32.log",
+      "prefix_count_check": {
+        "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+        "baseline_prompt_tokens": 486,
+        "probe_prefix_tokens": 486,
+        "passed": true
+      },
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "teacher_label_check": true,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.2972864196549233,
+      "reference_teacher_mean_nll": 0.2780788503592155,
+      "teacher_mean_nll_delta": 0.01920756929570775,
+      "mean_kl_reference_to_candidate": 0.021758468251128416,
+      "argmax_agreements": 119,
+      "argmax_agreement": 0.9296875,
+      "max_logit_drift": 10.579966068267822,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30671,
+        "kept_unique_sum": 23982,
+        "truncated_unique_sum": 6689,
+        "truncated_slots_sum": 6971
+      },
+      "screen_checks": {
+        "prefix_count": true,
+        "finite": true,
+        "nll": true,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "kl",
+        "argmax"
+      ]
+    }
+  ],
+  "budget_verdicts": [
+    {
+      "budget": 8,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "rust-parser",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    },
+    {
+      "budget": 16,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "rust-parser",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    },
+    {
+      "budget": 32,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "nll",
+            "argmax"
+          ]
+        },
+        {
+          "case": "rust-parser",
+          "failures": [
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    }
+  ],
+  "budgets_passing_all_workloads": [],
+  "stopped_cases": [],
+  "gate_file": "gates.json",
+  "gates": {
+    "scope": "Numerical screen before any approximate-verifier throughput trial; not a task-accuracy or deployment acceptance gate.",
+    "set_before_main_inspected_candidate_results": true,
+    "workloads": [
+      "probability",
+      "rust-parser",
+      "tool-debug"
+    ],
+    "rows_per_workload": 128,
+    "verification_block": 8,
+    "full_union_control": {
+      "maximum_absolute_logit_drift": 0,
+      "argmax_agreement": 1,
+      "teacher_nll_delta": 0
+    },
+    "candidate_requirements_each_workload": {
+      "all_logits_finite": true,
+      "maximum_mean_teacher_nll_increase_nats": 0.02,
+      "maximum_mean_reference_to_candidate_kl_nats": 0.02,
+      "minimum_argmax_agreement": 0.99
+    },
+    "promotion": "No default change. Passing this screen permits an isolated throughput trial only; task accuracy, executable code, and live tool-call validity remain separate requirements."
+  },
+  "gates_sha256": "6c1f33acc57f3f814e4757dc4b55aab6597f93b59911de71c5c8249e8b98befa",
+  "limitations": [
+    "Teacher continuation fixed to129 IDs, scored as128 post-token labels per workload.",
+    "Approximate rows commit into target KV; later row distortion includes propagated approximation.",
+    "Three heldout prefixes provide a numerical screen only. No task-accuracy, live-tool-call validity, executable-code, or serving-speed claim.",
+    "No throughput trials executed and no defaults changed."
+  ],
+  "large_artifact_directory": "/tmp/ds4-serving-experiments.VLO26y",
+  "completed_at": "2026-10-11T07:40:23.536Z"
+}

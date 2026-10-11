@@ -396,6 +396,14 @@ int ds4_gpu_qwen4_batch_mm_q8_tensor(
 uint64_t ds4_gpu_recommended_working_set_size(void);
 uint32_t ds4_gpu_stream_expert_cache_configured_count(void);
 uint32_t ds4_gpu_stream_expert_cache_current_count(void);
+#ifdef __APPLE__
+typedef struct {
+    uint64_t read_bytes;
+    double read_ms;
+} ds4_gpu_stream_expert_io;
+ds4_gpu_stream_expert_io ds4_gpu_stream_expert_cache_io(void);
+int ds4_gpu_stream_expert_cache_set_rank_model(const char *path);
+#endif
 typedef struct ds4_gpu_stream_expert_table {
     const void *model_map;
     uint64_t    model_size;
@@ -3667,6 +3675,159 @@ int ds4_gpu_qwen4_mtp_stage_tensor(
         uint32_t n_embd, uint32_t n_hc, float eps);
 int ds4_gpu_qwen4_mtp_combine_tensor(
         ds4_gpu_tensor *R_out, const ds4_gpu_tensor *proj, uint32_t n_embd, uint32_t n_hc);
+
+/* Exact top-eight MXFP4 streamed decode rows. Each row has its own tensor
+ * views; gate/up/mid/experts scratch may be shared because dispatch is serial.
+ * x/out are in_dim floats, selected/weights are eight IDs/floats, gate/up/mid
+ * are 8*ff_dim floats and experts is 8*in_dim floats. add_in must be NULL.
+ * Supported only with the ordinary fused decode policy, single-device Metal,
+ * 256-aligned dimensions, 128..384 experts and a cache budget of at least 8.
+ * The predicate checks current backend policy without initializing Metal.
+ * The call performs one router synchronization, then reuses the unchanged
+ * slots8 row kernels and cache loader. Cache pressure tiles at safe in-flight
+ * boundaries, including an eight-slot budget. No row arithmetic is regrouped.
+ * Return 1 only for this shared schedule, 0 for unsupported input or an error;
+ * there is no resident or generic fallback. An existing command batch remains
+ * active on success; without one, the call waits for its output before return.
+ * Callers choose the opt-in and retain their existing loop for unsupported
+ * shapes. A failed call must not be retried as a generic fallback. */
+#define DS4_MIMO2_MOE_MAX_ROWS 8u
+typedef struct {
+    ds4_gpu_tensor *out, *gate, *up, *mid, *experts;
+    const ds4_gpu_tensor *x, *selected, *weights, *add_in;
+} ds4_gpu_mimo2_moe_row;
+int ds4_gpu_mimo2_moe_rows_supported(uint32_t n_rows, uint32_t n_total_expert,
+                                      uint32_t in_dim, uint32_t ff_dim);
+int ds4_gpu_mimo2_moe_rows_tensor(
+        const ds4_gpu_mimo2_moe_row *rows, uint32_t n_rows,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t in_dim, uint32_t ff_dim);
+
+/* Quality-changing verification pilot. Budget is 1..256 and <= n_total_expert,
+ * rows are 2..DS4_MIMO2_MOE_MAX_ROWS, and the streamed slots8 policy is required.
+ * Rank the natural top-eight union by summed unbiased route weights (ID breaks
+ * ties), then zero excluded weights without renormalizing. Inputs stay intact.
+ * Stats are cleared on entry and populated only on success; NULL is allowed.
+ * Successful calls print actual exclusions, including zero for a full union. */
+#define DS4_MIMO2_VERIFY_EXPERT_BUDGET_MAX 256u
+typedef struct {
+    uint32_t natural_unique, kept_unique, truncated_unique, truncated_slots;
+} ds4_gpu_mimo2_verify_budget_stats;
+int ds4_gpu_mimo2_moe_verify_budget_tensor(
+        const ds4_gpu_mimo2_moe_row *rows, uint32_t n_rows, uint32_t expert_budget,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t in_dim, uint32_t ff_dim,
+        ds4_gpu_mimo2_verify_budget_stats *stats);
+
+
+#define DS4_MIMO2_CACHED_PREFILL_MAX_ROWS 64u
+int ds4_gpu_mimo2_moe_cached_prefill_tensor(
+        ds4_gpu_tensor *mid, ds4_gpu_tensor *part,
+        const ds4_gpu_tensor *x, const ds4_gpu_tensor *selected,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t n_tokens,
+        uint32_t in_dim, uint32_t ff_dim);
+
+/* MiMo V2.6 Flash attention (Metal only, metal/mimo2.metal).  Caches are f16
+ * [cache_cap][n_kv][key_dim] and [cache_cap][n_kv][value_dim]; absolute
+ * position p lives in row p % cache_cap.
+ *
+ * qkv_rope_cache: qkv is [n_tokens][n_head*key_dim + n_kv*key_dim +
+ * n_kv*value_dim] f32 (fused projection, canonical Q,K,V order).  Writes q
+ * [n_tokens][n_head][key_dim], k [n_tokens][n_kv][key_dim] and v
+ * [n_tokens][n_kv][value_dim] as f32, with rotate-half RoPE on the first
+ * rot_dim dims of q and k (angle = pos * rope_freq[i], rope_freq holds
+ * rot_dim/2 entries) and v multiplied by value_scale.  With both caches it
+ * also stores the last min(n_tokens, cache_cap) tokens' k/v rows; with both
+ * NULL it only stages q/k/v.
+ *
+ * attention: writes heads [n_tokens][n_head][value_dim] f32, causal
+ * attention of query pos0+t over the keys max(0, pos0+t-sliding_window+1) ..
+ * pos0+t (all keys when sliding_window is 0).  sinks, when non-NULL, is f32
+ * [n_head]: one extra softmax logit per head with no value.
+ *  - k_cur/v_cur NULL: every key comes from the caches, so the chunk must
+ *    already be stored and no row a query needs may have been overwritten
+ *    by a later row of the chunk: pos0 + n_tokens <= cache_cap, or
+ *    sliding_window > 0 and cache_cap >= sliding_window + n_tokens - 1.
+ *  - k_cur/v_cur given (the staged k/v of this chunk): keys at positions
+ *    >= pos0 come from them, rounded to f16 as the caches hold them, older
+ *    keys from the ring.  Requires sliding_window > 0 and cache_cap >=
+ *    sliding_window - 1; any n_tokens.
+ *
+ * kv_commit: stores the f16 k/v rows of the last min(n_tokens, cache_cap)
+ * tokens of a staged chunk at (pos0 + t) % cache_cap.
+ *
+ * All join the active command batch and return 1 on success. */
+int ds4_gpu_mimo2_qkv_rope_cache_tensor(
+        ds4_gpu_tensor *q, ds4_gpu_tensor *k, ds4_gpu_tensor *v,
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *qkv,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t rot_dim, float value_scale, const float *rope_freq);
+int ds4_gpu_mimo2_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_cache, const ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k_cur, const ds4_gpu_tensor *v_cur,
+        const ds4_gpu_tensor *sinks,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_head, uint32_t n_kv, uint32_t key_dim, uint32_t value_dim,
+        uint32_t sliding_window, float scale);
+int ds4_gpu_mimo2_kv_commit_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_tokens, uint32_t pos0, uint32_t cache_cap,
+        uint32_t n_kv, uint32_t key_dim, uint32_t value_dim);
+
+/* DFlash block drafter (Metal only, metal/dflash.metal).  All join the
+ * active command batch and return 1 on success.
+ *
+ * capture_rows: features[dst_row0 + r][slot][:] = src[src_row0 + r][:] for
+ * r < n_rows; features rows hold n_slots concatenated n_embd-wide pieces.
+ *
+ * head_norm_rope: in place on x [n_rows][n_heads][head_dim] f32: per-head
+ * RMSNorm with weight [head_dim] (f32 tensor), then rotate-half RoPE on the
+ * first rot_dim dims at position pos0 + row (angle = pos * rope_freq[i],
+ * rot_dim / 2 entries).  head_dim <= 256, rot_dim <= 128.
+ *
+ * store_kv: rows of k and v ([n_rows][width] f32) go to f16 caches
+ * [cache_cap][width] at row (pos0 + r) % cache_cap, v times value_scale.
+ *
+ * attention: heads [n_rows][n_head][head_dim] f32.  Query row t sits at
+ * position pos0 + t and attends, without a causal mask, to the ring keys at
+ * positions [max(ctx_lo, pos0 + t - window + 1), ctx_hi) (ring row p %
+ * ring_cap, ctx_hi <= pos0, ctx_hi - ctx_lo <= ring_cap) and to all n_rows
+ * block keys (f16 [n_rows][n_kv][head_dim]).  sinks, when non-NULL, is f32
+ * [n_head]: one extra softmax logit per head with no value.  Requires
+ * window + n_rows <= 2049 and head_dim % 4 == 0.
+ *
+ * argmax_prob: per row of logits [n_rows][n_vocab], the lowest index of the
+ * largest logit (int32) and its softmax probability (f32). */
+int ds4_gpu_dflash_capture_rows_tensor(
+        ds4_gpu_tensor *features, const ds4_gpu_tensor *src,
+        uint32_t src_row0, uint32_t dst_row0, uint32_t n_rows,
+        uint32_t n_embd, uint32_t n_slots, uint32_t slot);
+int ds4_gpu_dflash_head_norm_rope_tensor(
+        ds4_gpu_tensor *x, const ds4_gpu_tensor *weight,
+        uint32_t n_rows, uint32_t n_heads, uint32_t head_dim, uint32_t rot_dim,
+        uint32_t pos0, float eps, const float *rope_freq);
+int ds4_gpu_dflash_store_kv_tensor(
+        ds4_gpu_tensor *key_cache, ds4_gpu_tensor *value_cache,
+        const ds4_gpu_tensor *k, const ds4_gpu_tensor *v,
+        uint32_t n_rows, uint32_t pos0, uint32_t cache_cap, uint32_t width, float value_scale);
+int ds4_gpu_dflash_attention_tensor(
+        ds4_gpu_tensor *heads, const ds4_gpu_tensor *q,
+        const ds4_gpu_tensor *key_ring, const ds4_gpu_tensor *value_ring,
+        uint32_t ring_cap, uint32_t ctx_lo, uint32_t ctx_hi,
+        const ds4_gpu_tensor *block_k, const ds4_gpu_tensor *block_v,
+        const ds4_gpu_tensor *sinks, uint32_t n_rows, uint32_t pos0,
+        uint32_t n_head, uint32_t n_kv, uint32_t head_dim, uint32_t window, float scale);
+int ds4_gpu_dflash_argmax_prob_tensor(
+        ds4_gpu_tensor *index, ds4_gpu_tensor *prob, const ds4_gpu_tensor *logits,
+        uint32_t n_rows, uint32_t n_vocab);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,36 @@
+{
+  "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f",
+  "command": [
+    "/private/tmp/ds4-serving-experiments.VLO26y/final-spec-bench",
+    "-m",
+    "/Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+    "--ssd-streaming",
+    "--prompt-file",
+    "/Users/mvid/Development/personal/ds4/speed-bench/promessi_sposi.txt",
+    "--ctx-start",
+    "128",
+    "--ctx-max",
+    "129",
+    "--step-incr",
+    "1",
+    "--ctx-alloc",
+    "512",
+    "--gen-tokens",
+    "0",
+    "--dflash",
+    "/Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf",
+    "--dump-frontier-logits-dir",
+    "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/experiments-20261011/spec-final/frontiers-gen0-logits",
+    "--csv",
+    "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/experiments-20261011/spec-final/frontiers-gen0.csv",
+    "--dump-generated-tokens",
+    "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/experiments-20261011/spec-final/frontiers-gen0.tokens.jsonl"
+  ],
+  "environment": {
+    "DS4_MIMO2_EXPERT_ROWS": "1"
+  },
+  "inherited_DS4_environment": "removed",
+  "cwd": "/Users/mvid/Development/personal/ds4",
+  "returncode": 0,
+  "log_sha256": "df8105c0b7ef95a763459c5ff2f64f79d59b66037f6e5d65358ee5b40871f76f"
+}

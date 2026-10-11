@@ -1,0 +1,8 @@
+<|im_start|>system
+Solve probability questions from the stated information. Give a checkable derivation, exact fractions where possible, and a numerical sanity check. Do not call tools.<|im_end|><|im_start|>user
+An urn initially contains 5 red balls, 4 blue balls and 3 green balls. Three balls are drawn uniformly without replacement and hidden. Then a fourth ball is drawn and its color is observed. You are told that the fourth ball is red, and that the three hidden balls did not all have the same color.
+
+Find the conditional probability that the hidden balls contain exactly one ball of each color. Also find the conditional expected number of red balls among the hidden three. Derive the joint counts rather than assuming the fourth observation leaves the distribution of the first three unchanged. Show two approaches: direct ordered or unordered counting with the fourth red ball distinguished, and conditioning on the first three color counts. Explain why the two approaches agree.
+
+Finally generalize the probability of one hidden ball of each color to an urn with r red, b blue and g green balls, where r is at least 2 and b,g are positive. State the denominator conditions under which the conditional probability is defined, and check that your formula specializes to the numeric case. Distinguish events involving the ordered drawing sequence from events involving an unordered hidden set.<|im_end|><|im_start|>assistant
+<think></think>

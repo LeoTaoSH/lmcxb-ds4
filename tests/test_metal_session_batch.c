@@ -2,6 +2,11 @@
  *
  * Run with:
  *   DS4_TEST_MODEL=/path/to/model.gguf make test-metal-session-batch
+ * MiMo streamed native oracle (requires MXFP4 top-eight experts):
+ *   DS4_TEST_MIMO2_NATIVE=1 DS4_TEST_SESSION_COUNT=8 DS4_TEST_MODEL=/path/to/mimo.gguf make test-metal-session-batch
+ *   DS4_TEST_MIMO2_CACHE_EXPERTS=8 exercises bounded-cache evictions.
+ * The MiMo mode rejects serial fallback, compares bitwise full logits and
+ * serialized KV state, and crosses the 128-row sliding-window ring boundary.
  * Optional steering coverage:
  *   DS4_TEST_DIRECTIONAL_STEERING_FILE=/path/to/direction.f32
  *   DS4_TEST_DIRECTIONAL_STEERING_FFN=1
@@ -412,6 +417,138 @@ static void check_batch_isolation(ds4_engine *engine, int count, int steps,
             (double)count * steps / seconds[0], (double)count * steps / seconds[1], count * steps);
 }
 
+/* Full MiMo oracle: require-mode makes a successful batch evidence that the
+ * native scheduler ran. Snapshot equality covers tokens, logits and every KV
+ * layer; scalar continuation then checks the graph's private decode position. */
+static void compare_mimo_state(ds4_session *actual, ds4_session *expected,
+                               int row, int step) {
+    ds4_session_snapshot a = {0}, b = {0};
+    char err[256] = {0};
+    if (ds4_session_save_snapshot(actual, &a, err, sizeof(err)) ||
+        ds4_session_save_snapshot(expected, &b, err, sizeof(err))) {
+        fprintf(stderr, "MiMo snapshot: %s\n", err);
+        fail("MiMo state save", row, step);
+    }
+    if (a.len != b.len || memcmp(a.ptr, b.ptr, (size_t)a.len))
+        fail("MiMo full session state", row, step);
+    ds4_session_snapshot_free(&a);
+    ds4_session_snapshot_free(&b);
+}
+
+static void check_mimo_native(ds4_engine *engine, int count, int steps,
+                              uint32_t ctx, const char *prompt_text) {
+    if (count > 8) fail("MiMo native needs 2..8 sessions", count, -1);
+    const int vocab = ds4_engine_vocab_size(engine);
+    const size_t bytes = (size_t)vocab * sizeof(float);
+    float *expected = malloc(bytes), *actual = malloc(bytes);
+    ds4_session *batched[MAX_SESSION_COUNT] = {0}, *serial[MAX_SESSION_COUNT] = {0};
+    ds4_decode_item items[MAX_SESSION_COUNT];
+    ds4_tokens extra = {0};
+    char err[256] = {0};
+    if (!expected || !actual) fail("MiMo oracle allocation", -1, -1);
+    compare_argmax_only = false;
+    setenv("DS4_MIMO2_SESSION_BATCH", "require", 1);
+    ds4_tokenize_text(engine, " Verify the preceding result using a short independent example.", &extra);
+    if (!extra.len) fail("MiMo continuation tokenize", -1, -1);
+    for (int i = 0; i < count; i++) {
+        ds4_tokens prompt = {0};
+        ds4_encode_chat_prompt(engine, NULL, prompt_text ? prompt_text : prompts[i % 8],
+                               DS4_THINK_NONE, &prompt);
+        /* The target's 128-row SWA ring wraps during decode. A supplied long
+         * prompt can also exercise repeated wraps before native batching. */
+        while (prompt.len < 124 + i)
+            ds4_tokens_push(&prompt, extra.v[prompt.len % extra.len]);
+        for (int j = 0; j < i; j++) ds4_tokens_push(&prompt, extra.v[j % extra.len]);
+        if (prompt.len + steps + count + 8 >= (int)ctx) fail("MiMo test context too short", i, -1);
+        if (ds4_session_create(&batched[i], engine, ctx) ||
+            ds4_session_create(&serial[i], engine, ctx) ||
+            ds4_session_sync(batched[i], &prompt, err, sizeof(err)) ||
+            ds4_session_sync(serial[i], &prompt, err, sizeof(err))) {
+            fprintf(stderr, "MiMo prefill: %s\n", err);
+            fail("MiMo initial sessions", i, -1);
+        }
+        ds4_tokens_free(&prompt);
+        compare_mimo_state(batched[i], serial[i], i, -1);
+    }
+    for (int step = 0; step < steps + 3; step++) {
+        /* Leave and re-enter native batching through the ordinary one-token
+         * path, with unequal amounts of progress in different sessions. */
+        if (step == steps) {
+            for (int i = 0; i < count; i++) {
+                for (int j = 0; j <= i % 3; j++) {
+                    const int token = extra.v[(i + j) % extra.len];
+                    if (ds4_session_eval(batched[i], token, err, sizeof(err)) ||
+                        ds4_session_eval(serial[i], token, err, sizeof(err)))
+                        fail("MiMo scalar continuation", i, j);
+                }
+                compare_mimo_state(batched[i], serial[i], i, step);
+            }
+        }
+        if (step == steps + 1) setenv("DS4_MIMO2_SESSION_BATCH", "0", 1);
+        if (step == steps + 2) setenv("DS4_MIMO2_SESSION_BATCH", "require", 1);
+        for (int row = 0; row < count; row++) {
+            const int i = (row + step) % count;
+            items[row] = (ds4_decode_item){batched[i], ds4_session_argmax(serial[i])};
+        }
+        if (ds4_sessions_eval_batch(items, count, err, sizeof(err))) {
+            fprintf(stderr, "MiMo batch: %s\n", err);
+            fail("MiMo native dispatch", -1, step);
+        }
+        for (int row = 0; row < count; row++) {
+            const int i = (row + step) % count;
+            if (ds4_session_eval(serial[i], items[row].token, err, sizeof(err)))
+                fail("MiMo scalar reference", i, step);
+            archive_logits(serial[i], expected, vocab, i, step);
+            compare_logits(batched[i], expected, actual, vocab, ds4_session_argmax(serial[i]),
+                           0.0f, i, step);
+            if (memcmp(expected, actual, bytes)) fail("MiMo bitwise logits", i, step);
+            if (ds4_session_pos(batched[i]) != ds4_session_pos(serial[i]))
+                fail("MiMo private position", i, step);
+        }
+    }
+    ds4_session_snapshot saved[MAX_SESSION_COUNT] = {0};
+    for (int i = 0; i < count; i++) {
+        compare_mimo_state(batched[i], serial[i], i, steps + 3);
+        if (ds4_session_save_snapshot(serial[i], &saved[i], err, sizeof(err)))
+            fail("MiMo recovery snapshot", i, -1);
+        items[i] = (ds4_decode_item){batched[i], ds4_session_argmax(serial[i])};
+    }
+    const int position = ds4_session_pos(batched[0]);
+    const int token = items[count - 1].token;
+    items[count - 1].token = vocab;
+    if (!ds4_sessions_eval_batch(items, count, err, sizeof(err)))
+        fail("MiMo invalid token accepted", -1, -1);
+    items[count - 1].token = token;
+    if (ds4_session_pos(batched[0]) != position) fail("MiMo invalid input advanced", 0, -1);
+    for (int i = 0; i < count; i++) compare_mimo_state(batched[i], serial[i], i, -1);
+    /* An unsupported invalid member takes the correctness fallback. Earlier
+     * rows may execute, so failure must invalidate the entire logical batch. */
+    setenv("DS4_MIMO2_SESSION_BATCH", "1", 1);
+    ds4_session_invalidate(batched[count - 1]);
+    if (!ds4_sessions_eval_batch(items, count, err, sizeof(err)))
+        fail("MiMo invalid checkpoint accepted", -1, -1);
+    for (int i = 0; i < count; i++) {
+        if (ds4_session_pos(batched[i]) != 0) fail("MiMo failed batch not invalidated", i, -1);
+        if (ds4_session_load_snapshot(batched[i], &saved[i], err, sizeof(err)))
+            fail("MiMo failed batch restore", i, -1);
+        ds4_session_snapshot_free(&saved[i]);
+    }
+    setenv("DS4_MIMO2_SESSION_BATCH", "require", 1);
+    if (ds4_sessions_eval_batch(items, count, err, sizeof(err)))
+        fail("MiMo restored native batch", -1, -1);
+    for (int i = 0; i < count; i++) {
+        if (ds4_session_eval(serial[i], items[i].token, err, sizeof(err)))
+            fail("MiMo restored scalar", i, -1);
+        compare_mimo_state(batched[i], serial[i], i, -1);
+        ds4_session_free(batched[i]);
+        ds4_session_free(serial[i]);
+    }
+    ds4_tokens_free(&extra);
+    free(expected); free(actual);
+    fprintf(stderr, "MiMo native batch PASS sessions=%d steps=%d all_logits=bitwise "
+                    "state=bitwise positions=unequal scalar_continuation disabled_fallback recovery\n",
+            count, steps);
+}
 int main(void) {
     const char *model = getenv("DS4_TEST_MODEL");
     if (!model || !model[0]) {
@@ -445,6 +582,17 @@ int main(void) {
         .placement_session_count_hint = session_count,
         .share_session_prefill_workspace = true,
     };
+    if (getenv("DS4_TEST_MIMO2_NATIVE")) {
+        opt.ssd_streaming = true;
+        const char *cache = getenv("DS4_TEST_MIMO2_CACHE_EXPERTS");
+        if (cache && cache[0]) {
+            char *end = NULL;
+            const unsigned long slots = strtoul(cache, &end, 10);
+            if (end == cache || *end || slots < 8u || slots > UINT32_MAX)
+                fail("invalid MiMo cache slots", -1, -1);
+            opt.ssd_streaming_cache_experts = (uint32_t)slots;
+        }
+    }
     const char *steering_file =
         getenv("DS4_TEST_DIRECTIONAL_STEERING_FILE");
     if (steering_file && steering_file[0]) {
@@ -519,6 +667,13 @@ int main(void) {
         }
     }
 
+    if (getenv("DS4_TEST_MIMO2_NATIVE")) {
+        if (tp_leader) fail("MiMo native test needs single-host Metal", -1, -1);
+        check_mimo_native(engine, session_count, decode_steps, context_size, prompt_file_text);
+        free(prompt_file_text);
+        ds4_engine_close(engine);
+        return 0;
+    }
     if (getenv("DS4_TEST_BATCH_ISOLATION") || getenv("DS4_TEST_MIXED_SHAPES")) {
         if (getenv("DS4_TEST_MIXED_SHAPES")) check_mixed_shapes(engine, context_size);
         else check_batch_isolation(engine, session_count, decode_steps, context_size, prompt_file_text);

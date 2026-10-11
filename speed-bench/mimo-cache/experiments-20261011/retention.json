@@ -1,0 +1,23 @@
+{
+  "original_roots": [
+    "/tmp/ds4-serving-experiments.VLO26y",
+    "/private/tmp/ds4-serving-experiments.VLO26y"
+  ],
+  "retained_root": "speed-bench/local-runs/mimo-serving-20261011",
+  "original_paths_in_receipts": "Historical command paths; replace either original-root prefix with retained_root to locate raw artifacts.",
+  "contents": [
+    "frozen executables",
+    "raw cache and activation captures",
+    "frozen activation predictor",
+    "teacher token/logprob captures",
+    "valid and invalidated full-vocabulary quality references",
+    "raw logs"
+  ],
+  "frontier_logits": {
+    "original": "speed-bench/mimo-cache/experiments-20261011/spec-final/frontiers-gen{0,3}-logits",
+    "retained": "speed-bench/local-runs/mimo-serving-20261011/frontier-logits"
+  },
+  "ANE_retention": "ane/retention.json",
+  "relocation_check": "Activation model/source hashes passed load_frozen after relocation; compressed held-out traces match the original raw hashes.",
+  "learned_report_fix": "Post-freeze CLI aggregate reporting was corrected; frozen coefficients and native ranking arithmetic were unchanged."
+}

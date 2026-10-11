@@ -1,0 +1,138 @@
+{
+  "audited_replay_sha256": "9c5c3c7458f5ef4fa3d9c8254b0f1bd21ca34b53ac4a977b7890bfef147ed927",
+  "features": [
+    {
+      "definition": "log1p((clock-last_used)/256); snapshot last_used is exact",
+      "name": "clock_recency"
+    },
+    {
+      "definition": "log1p(integer current-policy hotness, half-life 16 tokens)",
+      "name": "hotness"
+    },
+    {
+      "definition": "log1p(sum of observed accesses weighted by exp2(-token_age/4))",
+      "name": "frequency_4"
+    },
+    {
+      "definition": "log1p(sum of observed accesses weighted by exp2(-token_age/64))",
+      "name": "frequency_64"
+    },
+    {
+      "definition": "log1p(tokens since last observed access); zero when unobserved",
+      "name": "token_recency"
+    },
+    {
+      "definition": "log1p(last observed token reuse gap); zero before second access",
+      "name": "last_gap"
+    },
+    {
+      "definition": "log1p(reuse-gap EMA, new gap weight 0.25); first gap initializes EMA",
+      "name": "mean_gap"
+    },
+    {
+      "definition": "1 after at least one post-snapshot access, otherwise 0",
+      "name": "observed"
+    },
+    {
+      "definition": "1 after at least two post-snapshot accesses, otherwise 0",
+      "name": "gap_known"
+    }
+  ],
+  "holdout_policy": "Frozen before fresh traces; evaluate only, no refitting or hyperparameter tuning",
+  "implementation_sha256": "6b5dbf4a8fe7e5b53b9a0dbcc3404709cff72b4fa92c4dc3af01cd0f75855ece",
+  "inference": {
+    "admission": "mandatory all selected experts; protect complete current route set",
+    "budget": "same exact expert-slot budget and initial residents as trace",
+    "formula": "score = intercept + sum(weights[i] * features[i]); evict lowest score",
+    "history": "bounded per-expert state, retained after eviction; reset on snapshot",
+    "identifiers": "no expert/layer ID or workload/phase feature",
+    "label": "future reuse within horizon_tokens; train inputs only, censored tail excluded",
+    "probability": "sigmoid(score), unnecessary for ranking",
+    "tie_break": "oldest last_used, ascending layer, ascending expert"
+  },
+  "intercept": -0.7655486151909798,
+  "kind": "linear_logistic_retention",
+  "settings": {
+    "candidates_per_sample": 32,
+    "horizon_tokens": 16,
+    "l2": 0.001,
+    "max_iterations": 30,
+    "sample_every": 32,
+    "seed": 20261010,
+    "tolerance": 1e-08
+  },
+  "training": {
+    "collection": [
+      {
+        "censored_decisions": 12,
+        "collection_seconds": 0.4896709583699703,
+        "dataset_bytes": 1008640,
+        "positive_labels": 5317,
+        "sampled_decisions": 394,
+        "samples": 12608,
+        "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/coding.jsonl.gz"
+      },
+      {
+        "censored_decisions": 14,
+        "collection_seconds": 0.5092147081159055,
+        "dataset_bytes": 880640,
+        "positive_labels": 4595,
+        "sampled_decisions": 344,
+        "samples": 11008,
+        "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/reasoning.jsonl.gz"
+      },
+      {
+        "censored_decisions": 12,
+        "collection_seconds": 0.6005801251158118,
+        "dataset_bytes": 1036800,
+        "positive_labels": 5645,
+        "sampled_decisions": 405,
+        "samples": 12960,
+        "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/tool-result.jsonl.gz"
+      }
+    ],
+    "fit": {
+      "fit_seconds": 0.0321044996380806,
+      "iterations": 6,
+      "mean_regularized_log_loss": 0.5788832296267762,
+      "parameter_count": 10,
+      "positive_label_rate": 0.425333552055993,
+      "samples": 36576
+    }
+  },
+  "training_inputs": [
+    {
+      "budget": 5134,
+      "expert_bytes": 13369344,
+      "routes": 24064,
+      "sha256": "2a304275f9c189dd85bb69d52691bce01b07ae38b520682d40ba81e63504465a",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/coding.jsonl.gz"
+    },
+    {
+      "budget": 5134,
+      "expert_bytes": 13369344,
+      "routes": 24064,
+      "sha256": "0b787445292f5e407bc36d9b4990db74df329ac7e37533e96fb6b9cf88e354da",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/reasoning.jsonl.gz"
+    },
+    {
+      "budget": 5134,
+      "expert_bytes": 13369344,
+      "routes": 24064,
+      "sha256": "86166889598bdce648d2d78b1c0538f861bbaf6e10324918316fd6e5e07ac8d5",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/tool-result.jsonl.gz"
+    }
+  ],
+  "version": 1,
+  "weights": [
+    -0.28324965220411613,
+    0.2490918770777213,
+    0.5227117670560624,
+    0.999782998528141,
+    0.22981648260381676,
+    0.0829072412440736,
+    -0.1602625446313677,
+    -0.9974721265199133,
+    0.19383627890883637
+  ]
+}

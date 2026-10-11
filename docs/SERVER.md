@@ -75,6 +75,7 @@ The startup line reports both figures.
 | Metal, GLM 5.2 | Ordered fallback |
 | Metal, GLM 5.3 | Native batching through 2051 visible tokens; ordered fallback afterward |
 | Metal, Qwen3.8 Flash Next | Native batching of the shared work; recurrent state, caches and PLE history stay per session |
+| Metal SSD streaming, MiMo V2.6 Flash | Ordered fallback by default; opt-in native decoding for 2-8 sessions |
 | CUDA, supported multi-GPU Flash TP layout | Native grouped decode and mixed prefill/decode |
 | Single-GPU CUDA, including Spark | Ordered fallback |
 
@@ -82,6 +83,13 @@ Fallback executes the rows separately. It provides concurrency and scheduling
 fairness, not the aggregate speedup of native batching. Native grouping may
 change floating-point reduction order slightly. V4.1 sessions containing images
 use the ordered fallback.
+
+Streamed MiMo can opt into layer-major shared-expert decoding with
+`DS4_MIMO2_SESSION_BATCH=1`. Attention, KV state and expert arithmetic stay
+per session. Unsupported configurations use ordered fallback; the diagnostic
+value `require` rejects fallback. This path excludes speculation, TP and
+steering. Full-logit and saved-state comparisons passed at two and eight
+sessions, but throughput and tail latency were mixed, so it is not the default.
 
 Long prefills yield to active decoders in bounded intervals, normally 128
 tokens. `--mixed-prefill-quantum N` changes that interval for testing.

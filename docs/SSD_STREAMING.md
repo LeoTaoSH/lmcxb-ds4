@@ -7,9 +7,9 @@ SSD streaming keeps a bounded cache of routed experts and reads missing
 experts from the GGUF. It trades speed for capacity; it does not remove the
 memory needed for other weights, activations, scratch, and the context.
 
-Metal supports streaming for DeepSeek and GLM. CUDA has streaming paths too,
-and ROCm supports GLM 5.2/5.3 streaming. Do not infer support for every model
-and tensor layout from the existence of the flag.
+Metal supports streaming for DeepSeek, GLM, and MiMo V2.6 Flash MXFP4.
+CUDA has streaming paths too, and ROCm supports GLM 5.2/5.3 streaming.
+Do not infer support for every model and tensor layout from the flag.
 
 ## Start with the automatic budget
 
@@ -32,6 +32,9 @@ Examples:
 ./download_model.sh glm53-q4
 ./ds4 --ssd-streaming --ctx 4096
 
+# MiMo V2.6 Flash MOPD MXFP4 on a 128 GB Mac, after local conversion.
+./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
+
 # PRO Q2 on a 128 GB Mac: usable for inspection, but slow.
 ./download_model.sh pro-q2-imatrix
 ./ds4 --ssd-streaming --ctx 32768 --nothink
@@ -49,7 +52,7 @@ To leave more room for context or other sessions:
 ./ds4 --ssd-streaming --ssd-streaming-cache-experts 32GB
 ```
 
-A byte budget is a target, not a guaranteed allocation. DwarfStar reserves
+A byte budget is a target, not a guaranteed allocation. DwarfStar may reserve
 routed-prefill headroom and fits the cache to the remaining model, graph,
 context, and backend budget. The effective value may be smaller than requested.
 Non-routed weights and KV state are additional to that expert-cache budget.
@@ -59,8 +62,9 @@ expert slots rather than a byte budget. It is also subject to memory limits.
 
 By default, GLM spends the cache budget on selected experts across all layers.
 `--ssd-streaming-full-layers N` reserves full routed prefix layers instead.
-Metal also keeps the non-routed weights resident when it can; they are needed
-by every token, and paging them back in delays generation after a prompt.
+MiMo prefill caches frequent routes for decode; `--ssd-streaming-cold` skips
+that preload. Metal keeps non-routed weights resident when it can. Those
+weights are used by every token; paging them back in delays generation.
 An oversized expert cache can displace those weights and slow decoding.
 More cache helps only while the rest of the working set still fits.
 
@@ -81,6 +85,7 @@ On a 128 GB M5 Max, with automatic cache sizing and no speculative decoding:
 | --- | ---: | ---: | ---: | --- |
 | GLM 5.3 Flash Q4_K, 177.77 GiB | 121 t/s | 104 t/s | 11.9 / 14.9 t/s | Three-run median |
 | DeepSeek Flash Vision Exp MXFP4, 145.26 GiB | 300 t/s | 263 t/s | 11.9 / 19.3 t/s | Single run |
+| MiMo V2.6 Flash RL MXFP4, 156.85 GiB | 38.74 t/s | n/a | 13.31 t/s | Historical RL run, 4K frontier |
 
 September 6, 2026. GLM used a 2K prompt and a 1K append; DeepSeek used 8K
 and a 4K append. Both generated 128 tokens at each frontier. DeepSeek's latest
@@ -89,6 +94,52 @@ directly comparable to the earlier 64-token measurement. Generation includes
 the first-token wait. Cache reuse depends on the prompt, so these are
 workload references, not a speed
 guarantee for every model larger than RAM.
+
+The historical RL run was measured September 24, 2026 with 4,096 raw prompt tokens and 128
+continuation tokens. The automatic cache planned 84.95 GiB of experts and
+7.03 GiB of fixed weights. See the [CSV](../speed-bench/mimo26-mxfp4-ssd-m5max-20260924.csv).
+
+MiMo now budgets 66% of the Metal recommended working set for fixed weights
+and cached experts, subject to the existing context limit. This gives a
+63.92 GiB cache on the measured 128 GB M5 Max and avoids the former 84.95 GiB
+cache's driver-side stalls. Explicit cache sizes and `DS4_SSD_AUTO_CACHE_PCT`
+remain available. See [QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash) for the
+controlled results and exact-logit checks.
+
+Continued MiMo chunks of 2 to 64 tokens read their selected MXFP4 experts
+through the cache. They keep the original batched attention, expert dot
+products and final reduction order. Initial chunks and larger chunks retain
+the layer-mapped path. Chunks of at least 256 tokens use the existing bounded
+layer-preparation pipeline: eight parallel pread workers, one layer ahead of
+GPU execution. Expert selection, quantization and kernel arithmetic are unchanged.
+
+For controlled A/B measurements, set
+`DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE=1` to restore demand paging.
+`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_THREADS` and
+`DS4_METAL_STREAMING_PREFILL_LAYER_PREPARE_AHEAD` tune the existing worker pool
+and lookahead. The measured defaults improved MOPD bulk prefill on the M5 Max;
+they do not promise the same gain in decode or on another SSD. See
+[streamed MiMo tuning](../speed-bench/README.md#streamed-mimo-tuning) for the
+exact-logit A/B tools and profiler controls.
+
+### MiMo cache-policy experiments
+
+The default replacement policy remains decayed route frequency with an LRU
+tie-break. To try the frozen causal ranker on streamed MiMo, set
+
+```sh
+DS4_MIMO2_CACHE_RANK_MODEL=speed-bench/mimo-cache/learned/frozen-linear-v1.json \
+  ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
+```
+
+The ranker changes eviction priority only. It retains the real router, expert
+weights and cache budget. Held-out replay reduced logical requested bytes,
+but standalone ABBA throughput was mixed. It is opt-in; unset the variable
+to use the default. Results and limitations are in
+[MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+The route-history and activation-based staging studies increased total
+logical reads even with optimistic readiness, so neither enables runtime
+prefetching. See the [experiment tools](../speed-bench/README.md#learned-replacement-and-predictive-staging).
 
 Full GLM 5.3 IQ2_XXS (196.58 GiB) also benefits from caching short tool-result
 prompts. With an 8K context and a 61.35 GiB effective expert cache, a 16-token

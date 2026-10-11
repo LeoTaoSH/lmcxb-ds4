@@ -1,0 +1,758 @@
+{
+  "probe": "teacher-continuation-distortion",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "binary": "/tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality",
+  "binary_sha256": "46dc9a9b902a7eba516d8b4a71cb607419c19b29355653245fb81b7b956b1edf",
+  "context": 4096,
+  "block": 8,
+  "rows_per_workload": 128,
+  "cache_experts_observed": 5134,
+  "controls": [
+    {
+      "case": "probability",
+      "variant": "unmasked",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-unmasked.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.40387944818127053,
+      "reference_teacher_mean_nll": 0.40387944818127053,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0
+    },
+    {
+      "case": "probability",
+      "variant": "budget256",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget256.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.40387944818127053,
+      "reference_teacher_mean_nll": 0.40387944818127053,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27063,
+        "kept_unique_sum": 27063,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "unmasked",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-unmasked.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.19642876129991277,
+      "reference_teacher_mean_nll": 0.19642876129991277,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget256",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget256.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.19642876129991277,
+      "reference_teacher_mean_nll": 0.19642876129991277,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29566,
+        "kept_unique_sum": 29566,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "unmasked",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-unmasked.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.3379361601749581,
+      "reference_teacher_mean_nll": 0.3379361601749581,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget256",
+      "success": true,
+      "control_passed": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget256.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.3379361601749581,
+      "reference_teacher_mean_nll": 0.3379361601749581,
+      "teacher_mean_nll_delta": 0,
+      "mean_kl_reference_to_candidate": 0,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 0,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30728,
+        "kept_unique_sum": 30728,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    }
+  ],
+  "all_controls_exact": true,
+  "references": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-reference-r2.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-reference-r2.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.40387944818127053
+    },
+    {
+      "case": "rust-parser",
+      "variant": "reference",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-reference.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.19642876129991277,
+      "reference_teacher_mean_nll": null,
+      "teacher_mean_nll_delta": null,
+      "mean_kl_reference_to_candidate": null,
+      "argmax_agreements": 0,
+      "argmax_agreement": null,
+      "max_logit_drift": null,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "reference",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-reference.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 0,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.3379361601749581,
+      "reference_teacher_mean_nll": null,
+      "teacher_mean_nll_delta": null,
+      "mean_kl_reference_to_candidate": null,
+      "argmax_agreements": 0,
+      "argmax_agreement": null,
+      "max_logit_drift": null,
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    }
+  ],
+  "candidate_results": [
+    {
+      "case": "probability",
+      "variant": "budget8",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget8.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.973682234844224,
+      "reference_teacher_mean_nll": 0.40387944818127053,
+      "teacher_mean_nll_delta": 0.5698027866629533,
+      "mean_kl_reference_to_candidate": 0.5849563307987548,
+      "argmax_agreements": 106,
+      "argmax_agreement": 0.828125,
+      "max_logit_drift": 33.58141231536865,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 26850,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 20834,
+        "truncated_slots_sum": 26458
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "probability",
+      "variant": "budget16",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget16.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.42960862026399926,
+      "reference_teacher_mean_nll": 0.40387944818127053,
+      "teacher_mean_nll_delta": 0.02572917208272861,
+      "mean_kl_reference_to_candidate": 0.12561829662322602,
+      "argmax_agreements": 118,
+      "argmax_agreement": 0.921875,
+      "max_logit_drift": 13.753371953964233,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27169,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 15137,
+        "truncated_slots_sum": 16320
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "probability",
+      "variant": "budget32",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget32.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.4068637465982582,
+      "reference_teacher_mean_nll": 0.40387944818127053,
+      "teacher_mean_nll_delta": 0.00298429841698772,
+      "mean_kl_reference_to_candidate": 0.007669694350380758,
+      "argmax_agreements": 126,
+      "argmax_agreement": 0.984375,
+      "max_logit_drift": 13.672531127929688,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27165,
+        "kept_unique_sum": 23272,
+        "truncated_unique_sum": 3893,
+        "truncated_slots_sum": 4175
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": true,
+        "kl": true,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget8",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget8.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.9633388532950452,
+      "reference_teacher_mean_nll": 0.19642876129991277,
+      "teacher_mean_nll_delta": 0.7669100919951332,
+      "mean_kl_reference_to_candidate": 0.705808359606885,
+      "argmax_agreements": 104,
+      "argmax_agreement": 0.8125,
+      "max_logit_drift": 19.37340998649597,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29196,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 23180,
+        "truncated_slots_sum": 28538
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget16",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget16.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.4513563644580464,
+      "reference_teacher_mean_nll": 0.19642876129991277,
+      "teacher_mean_nll_delta": 0.25492760315813373,
+      "mean_kl_reference_to_candidate": 0.24225271860918313,
+      "argmax_agreements": 115,
+      "argmax_agreement": 0.8984375,
+      "max_logit_drift": 22.969369888305664,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29531,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 17499,
+        "truncated_slots_sum": 18740
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget32",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget32.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.1934669228304572,
+      "reference_teacher_mean_nll": 0.19642876129991277,
+      "teacher_mean_nll_delta": -0.0029618384694554425,
+      "mean_kl_reference_to_candidate": 0.012492191229649376,
+      "argmax_agreements": 128,
+      "argmax_agreement": 1,
+      "max_logit_drift": 13.096444606781006,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29663,
+        "kept_unique_sum": 23796,
+        "truncated_unique_sum": 5867,
+        "truncated_slots_sum": 6161
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": true,
+        "kl": true,
+        "argmax": true
+      },
+      "screen_passed": true,
+      "screen_failures": []
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget8",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget8.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 1.2139325091846105,
+      "reference_teacher_mean_nll": 0.3379361601749581,
+      "teacher_mean_nll_delta": 0.8759963490096516,
+      "mean_kl_reference_to_candidate": 0.9426716742054029,
+      "argmax_agreements": 90,
+      "argmax_agreement": 0.703125,
+      "max_logit_drift": 19.546409606933594,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30406,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 24390,
+        "truncated_slots_sum": 30066
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget16",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget16.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.5471140893885721,
+      "reference_teacher_mean_nll": 0.3379361601749581,
+      "teacher_mean_nll_delta": 0.20917792921361397,
+      "mean_kl_reference_to_candidate": 0.3783479314778349,
+      "argmax_agreements": 102,
+      "argmax_agreement": 0.796875,
+      "max_logit_drift": 16.212989807128906,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30585,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 18553,
+        "truncated_slots_sum": 20072
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget32",
+      "success": true,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget32.log",
+      "cache_experts_observed": 5134,
+      "scored_rows": 128,
+      "finite_checks": {
+        "candidate_values": 19529728,
+        "reference_values": 19529728,
+        "candidate_nonfinite": 0,
+        "reference_nonfinite": 0
+      },
+      "teacher_mean_nll": 0.4045493624342932,
+      "reference_teacher_mean_nll": 0.3379361601749581,
+      "teacher_mean_nll_delta": 0.06661320225933497,
+      "mean_kl_reference_to_candidate": 0.0282722263363305,
+      "argmax_agreements": 119,
+      "argmax_agreement": 0.9296875,
+      "max_logit_drift": 7.008865594863892,
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30785,
+        "kept_unique_sum": 23977,
+        "truncated_unique_sum": 6808,
+        "truncated_slots_sum": 7124
+      },
+      "screen_checks": {
+        "finite": true,
+        "nll": false,
+        "kl": false,
+        "argmax": false
+      },
+      "screen_passed": false,
+      "screen_failures": [
+        "nll",
+        "kl",
+        "argmax"
+      ]
+    }
+  ],
+  "budget_verdicts": [
+    {
+      "budget": 8,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "rust-parser",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    },
+    {
+      "budget": 16,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "rust-parser",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    },
+    {
+      "budget": 32,
+      "screen_passed_all_workloads": false,
+      "workloads_passed": [
+        "rust-parser"
+      ],
+      "workloads_failed": [
+        {
+          "case": "probability",
+          "failures": [
+            "argmax"
+          ]
+        },
+        {
+          "case": "tool-debug",
+          "failures": [
+            "nll",
+            "kl",
+            "argmax"
+          ]
+        }
+      ]
+    }
+  ],
+  "budgets_passing_all_workloads": [],
+  "stopped_cases": [],
+  "gate_file": "gates.json",
+  "gates": {
+    "scope": "Numerical screen before any approximate-verifier throughput trial; not a task-accuracy or deployment acceptance gate.",
+    "set_before_main_inspected_candidate_results": true,
+    "workloads": [
+      "probability",
+      "rust-parser",
+      "tool-debug"
+    ],
+    "rows_per_workload": 128,
+    "verification_block": 8,
+    "full_union_control": {
+      "maximum_absolute_logit_drift": 0,
+      "argmax_agreement": 1,
+      "teacher_nll_delta": 0
+    },
+    "candidate_requirements_each_workload": {
+      "all_logits_finite": true,
+      "maximum_mean_teacher_nll_increase_nats": 0.02,
+      "maximum_mean_reference_to_candidate_kl_nats": 0.02,
+      "minimum_argmax_agreement": 0.99
+    },
+    "promotion": "No default change. Passing this screen permits an isolated throughput trial only; task accuracy, executable code, and live tool-call validity remain separate requirements."
+  },
+  "limitations": [
+    "Teacher continuation fixed to 129 supplied IDs, with 128 post-token labels per workload.",
+    "Approximate rows commit into the target KV, so later row distortion includes propagated approximation.",
+    "Three heldout prefixes provide a numerical screen only; no task-accuracy, live-tool-call validity, executable-code, or serving-speed claim.",
+    "No throughput trials executed and no defaults changed."
+  ],
+  "infrastructure_attempts": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "attempt": 1,
+      "status": "interrupted_by_eval_default_30_second_deadline",
+      "recovered_with": "both eval and bash timeout0, new reference/JSON/log paths",
+      "no_quality_result": true
+    }
+  ],
+  "large_artifact_directory": "/tmp/ds4-serving-experiments.VLO26y",
+  "completed_at": "2026-10-11T06:39:36.777Z"
+}

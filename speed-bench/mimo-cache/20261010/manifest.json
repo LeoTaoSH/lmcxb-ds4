@@ -1,0 +1,52 @@
+{
+  "recorded_utc": "2026-10-11T02:04:17.073899+00:00",
+  "runtime_base_commit": "c077c31",
+  "capture_metal_source_sha256": "14396b5db04119e95bed3fe4f819ef84394e48c03a1fd0b5521c8c70e6e32321",
+  "model": "MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "hardware": "Apple M5 Max 128 GiB",
+  "ctx": 4096,
+  "temperature": 0,
+  "max_tokens": 512,
+  "speculation": false,
+  "cache_slots": 5134,
+  "expert_bytes": 13369344,
+  "trace_version": 1,
+  "timing_summary": true,
+  "workloads": "Fixed synthetic raw MiMo prompts; tool-result is a serialized fixture, not a live tool call.",
+  "cases": [
+    {
+      "workload": "coding",
+      "prompt_tokens": 295,
+      "decode_steps": 512,
+      "prompt_sha256": "d892c68efe38bab78b8b4209ad8fad95c7b80e95acde05e049bd5b0a890338d0",
+      "trace_sha256": "2a304275f9c189dd85bb69d52691bce01b07ae38b520682d40ba81e63504465a",
+      "trace_bytes": 680705,
+      "read_hint_wall_ms": 62979.668,
+      "selected_sync_wall_ms": 48301.117,
+      "token_ids_sha256": "62f1f03ed5a2111c91fee3fded7bc430ffa4da161be6a667cb3ce83b1543744a"
+    },
+    {
+      "workload": "reasoning",
+      "prompt_tokens": 356,
+      "decode_steps": 512,
+      "prompt_sha256": "dc6b62f8b763239fefefa8344ba8bdf3a5e6994d23e548735ed98cb4791231e1",
+      "trace_sha256": "0b787445292f5e407bc36d9b4990db74df329ac7e37533e96fb6b9cf88e354da",
+      "trace_bytes": 661032,
+      "read_hint_wall_ms": 38975.958,
+      "selected_sync_wall_ms": 42259.547,
+      "token_ids_sha256": "99a169aee935c39787abc89b49532b2e3ca7a27c122c9c7dd835430ce9265884"
+    },
+    {
+      "workload": "tool-result",
+      "prompt_tokens": 529,
+      "decode_steps": 512,
+      "prompt_sha256": "9298d51f8051e687846dc7fad0cec9e54b771854a1d462b22607d8352fca7548",
+      "trace_sha256": "86166889598bdce648d2d78b1c0538f861bbaf6e10324918316fd6e5e07ac8d5",
+      "trace_bytes": 688163,
+      "read_hint_wall_ms": 66080.741,
+      "selected_sync_wall_ms": 48395.171,
+      "token_ids_sha256": "8d3565ff2d548ee43fa883193f60d28d45081e51ae6b8568ebb14c97012ab86c"
+    }
+  ]
+}

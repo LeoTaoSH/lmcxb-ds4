@@ -1,0 +1,199 @@
+{
+  "schema": "ds4-mopd-serving-experiments-v1",
+  "model": "MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "hardware": "Apple M5 Max128GiB, Metal",
+  "cache_experts": 5134,
+  "new_runtime_features_disabled_by_default": true,
+  "shared_dflash_abba": [
+    {
+      "workload": "probability",
+      "legacy_tps": 4.0847001223990205,
+      "shared_tps": 3.8462953367875645,
+      "all128_token_streams_equal_to_legacy": true
+    },
+    {
+      "workload": "rust-parser",
+      "legacy_tps": 4.328752735229759,
+      "shared_tps": 5.45992673992674,
+      "all128_token_streams_equal_to_legacy": true
+    },
+    {
+      "workload": "tool-debug",
+      "legacy_tps": 4.377949886104783,
+      "shared_tps": 4.564556407447974,
+      "all128_token_streams_equal_to_legacy": true
+    }
+  ],
+  "adaptive_rust256_tps": {
+    "shared3": 5.4923076923076914,
+    "adaptive": 5.916455696202532
+  },
+  "adaptive_comparison_limit": "Different continuations after index219; not an output-matched speedup.",
+  "default_before_correction": {
+    "baseline": {
+      "prefill_tps": 57.285777317744284,
+      "gen_tps": 9.669702296258354
+    },
+    "final": {
+      "prefill_tps": 51.91296817445069,
+      "gen_tps": 8.802208501664753
+    }
+  },
+  "default_after_correction": {
+    "rebuilt-baseline": {
+      "prefill_tps": 56.943558034776686,
+      "gen_tps": 10.382726119125428
+    },
+    "integer-key": {
+      "prefill_tps": 56.81102151081826,
+      "gen_tps": 10.784509432850562
+    }
+  },
+  "default_decoded_outputs_equal": true,
+  "final_native_policy_audits": [
+    {
+      "mode": "stock",
+      "routes": 24064,
+      "misses": 20167,
+      "initial_snapshot_equal": true,
+      "hit_masks_bytes_and_clocks_equal": true,
+      "selected_tokens_and_top20_steps_equal": 512,
+      "trace_sha256": "8b773d91ae7aa3fd0986d2c86df0dc85eabedcc070b1e40b1e7ace9603911711",
+      "logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34"
+    },
+    {
+      "mode": "learned",
+      "routes": 24064,
+      "misses": 16804,
+      "initial_snapshot_equal": true,
+      "hit_masks_bytes_and_clocks_equal": true,
+      "selected_tokens_and_top20_steps_equal": 512,
+      "trace_sha256": "a4aacb6439ef15b0a9a029ba58131f84d02a763e89141b7fbab6db90a7f4f5b3",
+      "logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34"
+    }
+  ],
+  "learned_miss_reduction_pct": 11.73946270060549,
+  "corrected_quality": [
+    {
+      "workload": "probability",
+      "budget": 8,
+      "nll_delta_nats": 0.5012739412759889,
+      "kl_nats": 0.5682462935507469,
+      "argmax_agreement": 0.7734375,
+      "screen_passed": false
+    },
+    {
+      "workload": "probability",
+      "budget": 16,
+      "nll_delta_nats": 0.007629700422334521,
+      "kl_nats": 0.10250841113369241,
+      "argmax_agreement": 0.90625,
+      "screen_passed": false
+    },
+    {
+      "workload": "probability",
+      "budget": 32,
+      "nll_delta_nats": 0.024281820780425734,
+      "kl_nats": 0.012220888578187126,
+      "argmax_agreement": 0.9296875,
+      "screen_passed": false
+    },
+    {
+      "workload": "rust-parser",
+      "budget": 8,
+      "nll_delta_nats": 0.6403583042377567,
+      "kl_nats": 0.6473321118176332,
+      "argmax_agreement": 0.765625,
+      "screen_passed": false
+    },
+    {
+      "workload": "rust-parser",
+      "budget": 16,
+      "nll_delta_nats": 0.26523691866256005,
+      "kl_nats": 0.27988465795640166,
+      "argmax_agreement": 0.8984375,
+      "screen_passed": false
+    },
+    {
+      "workload": "rust-parser",
+      "budget": 32,
+      "nll_delta_nats": 0.01384497245346427,
+      "kl_nats": 0.010043057699715566,
+      "argmax_agreement": 0.953125,
+      "screen_passed": false
+    },
+    {
+      "workload": "tool-debug",
+      "budget": 8,
+      "nll_delta_nats": 0.6850802501151882,
+      "kl_nats": 0.7198306797849604,
+      "argmax_agreement": 0.71875,
+      "screen_passed": false
+    },
+    {
+      "workload": "tool-debug",
+      "budget": 16,
+      "nll_delta_nats": 0.2326944118534352,
+      "kl_nats": 0.31568151814285217,
+      "argmax_agreement": 0.8046875,
+      "screen_passed": false
+    },
+    {
+      "workload": "tool-debug",
+      "budget": 32,
+      "nll_delta_nats": 0.01920756929570775,
+      "kl_nats": 0.021758468251128416,
+      "argmax_agreement": 0.9296875,
+      "screen_passed": false
+    }
+  ],
+  "quality_protocol": "Raw tokenizer;18 prefix-count and teacher-pair checks;6 exact controls; unchanged numerical gates. Prior rendered-prefix results invalidated.",
+  "decisions": {
+    "learned_cache": "opt-in; mixed throughput",
+    "shared_dflash": "opt-in; mixed throughput",
+    "adaptive_depth": "opt-in; output-matched speedup not established",
+    "predictive_staging": "traffic gate failed; no runtime prefetch enabled",
+    "native_batching": "opt-in; mixed throughput and tail latency",
+    "ANE": "physical expert pilot only; no full-model serving claim",
+    "expert_budget": "quality gate failed; no throughput trial",
+    "Edge0": "blocked by missing MOPD adapter and trained assets"
+  },
+  "baseline_commit": "11001a3",
+  "default_run_order": "ABBA then BAAB; eight fresh processes",
+  "source_hash_scope": "Final integer-key implementation. Earlier optional-feature timing receipts predate cache-comparator hardening; their historical rates are not reattributed to this final binary.",
+  "source_sha256": {
+    "Makefile": "5ba028515c0a27a8ca73da4ae843a5c1a54137aed65a1679318bff570852e1b8",
+    "ds4.c": "779669f28cc213c19cae285e7c7c2c865400de6554ac5f964f2dd2a76e7d5141",
+    "ds4_metal.m": "11e0b88bdd701cae6bd35f12b99009b4c1d4a2e80fc6feb99d95de5ca69f20cf",
+    "ds4_gpu.h": "e86c056133566413b7f1c0cd63a5635b15299691721352146d559e37021ccace",
+    "ds4_bench.c": "3ee617fdbcff0f21af0210cea28acc67d613613693a45614f19dd05253d6f2f4",
+    "ds4_help.c": "27375ec02dc48a5b378bbd12a00217b2e1227743e3b8ad24e790e14fcd10734e",
+    "ds4_cache_rank.h": "9f16b5d5dcbfa80818c91c10718c68262ab93b7dc7c8d4733a2c6efd8b092c81",
+    "ds4_dflash_policy.h": "6e85b5e0b563373d9d565d759157debc01dbad83b017eaa7698e2fa6d52dc35c",
+    "speed-bench/session_concurrency_bench.c": "6821d65baf1c64d12326374c2ae2a79ce5a5cfbc2cd9f967bd97d24e30434fbf",
+    "speed-bench/mimo_verify_quality.c": "fc91ded7be226d50a3920752a8dbb8fe97871ed4304d095b3e09393eb37f57d5",
+    "speed-bench/expert_cache_replay.py": "9c5c3c7458f5ef4fa3d9c8254b0f1bd21ca34b53ac4a977b7890bfef147ed927",
+    "speed-bench/expert_cache_learned.py": "17f9b639629a4c8a459a761c45c638568334a7eebe2c7422148aeb372df9df67",
+    "speed-bench/expert_prefetch_replay.py": "341bcb3cb94383d14790dbe835f89d44d646a5c45d709d2f2375272a8748615d",
+    "speed-bench/expert_activation_prefetch.py": "7778ff4c4f46f58e3246a8cee66511cbdb2bb6378aef858b277ac80caecd11be"
+  },
+  "frozen_binary_sha256": {
+    "baseline-ds4": "901e4803ea5f1e42fcf5d1cfd37b697a59e26c32b6f02a899c517ab6ca8984d5",
+    "baseline-bench": "979efabb20987ba0f8874464fde71f10ec891f7b21a533912fd29b46f891bd3a",
+    "rank-bench": "19ae29f7e004438b18f8e3cb0a8b7a67edf0c6b744f9b717c66bb8b7263e00ea",
+    "native-session-bench": "6902e4f2033dd04c1d77104fc1936b0383f24e9a6eb6b600b476132d95ac4533",
+    "spec-bench": "6511bc9a487aa5883446e82be4fd5c0ab62eb0e07eac8fc3978d049b768ba0e7",
+    "final-spec-bench": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f",
+    "mimo_verify_quality": "46dc9a9b902a7eba516d8b4a71cb607419c19b29355653245fb81b7b956b1edf",
+    "mimo_verify_quality_raw": "7e80ef8f389ebd1bc73aecbab94dca8847c7e143403b4fa9f2c4e0017a43a15a",
+    "activation/capture-ds4": "9466792898b8c524fcf3255f3daeab21e304ad4561cbe1ac67e318898afc16df",
+    "rebuilt-baseline-bench": "385ffdcece7bb5fc92b37436ba90d4f35dbe61695ac6bccae8854ae428902355",
+    "fast-cache-bench": "15b29504c8b79fbb9367a0ade4235e98d2fba4345d7858eab271968a14242507",
+    "backend-only-bench": "b82b003968a6591d799b01ef01eca1e586d6c2aa1f36144d9947ec8b3755162c",
+    "integer-ablation-bench": "da7e81a3b92bf1c3e059db7b13b3f891ae76d258d8d7b0deabc671171aea7a9d",
+    "integer-key-bench": "e8a3a8cbe7065ddf547117e16b8b31e53c7be086824d2c8e4ef9ce84019ed384",
+    "integer-key-ds4": "f85570f2d0ab741d2583090d9c5c5995b7ac9a1a5dc28cf2c79043b22ffd2b02",
+    "mimo_verify_quality_integer": "7c02097705cfe5f1018f1f00da19c240f1a78eff863cfe66753c9fddfc97517f"
+  }
+}

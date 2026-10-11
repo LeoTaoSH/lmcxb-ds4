@@ -1,0 +1,3 @@
+variant,prompt_tokens,ctx,warmup_tokens,measured_tokens,seconds,tokens_per_second
+hints_on,295,4096,16,256,34.165625,7.4929
+hints_off,295,4096,16,256,35.387313,7.2342

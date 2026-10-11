@@ -1,0 +1,52 @@
+{
+  "workload": "probability",
+  "mode": "adaptive",
+  "label": "adaptive-v2-profile-probability",
+  "profiled": true,
+  "generated_tokens": 128,
+  "metrics": {
+    "ctx_tokens": "292",
+    "prefill_tokens": "292",
+    "prefill_tps": "9.76",
+    "gen_tokens": "128",
+    "gen_tps": "4.30",
+    "gen_first_ms": "4285.612",
+    "gen_steady_tokens": "127",
+    "gen_steady_tps": "4.98",
+    "kvcache_bytes": "0"
+  },
+  "equals_ordinary": true,
+  "first_ordinary_mismatch": null,
+  "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/adaptive-v2-profile-probability.receipt.json",
+  "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f",
+  "profile_caps": {
+    "0": {
+      "cycles": 3,
+      "drafted": 0,
+      "committed": 3,
+      "ms": 4762.54,
+      "read_bytes": 2820931584
+    },
+    "1": {
+      "cycles": 4,
+      "drafted": 4,
+      "committed": 5,
+      "ms": 3505.307,
+      "read_bytes": 6804996096
+    },
+    "3": {
+      "cycles": 9,
+      "drafted": 24,
+      "committed": 29,
+      "ms": 5096.360000000001,
+      "read_bytes": 15628763136
+    },
+    "7": {
+      "cycles": 39,
+      "drafted": 95,
+      "committed": 91,
+      "ms": 16425.150000000005,
+      "read_bytes": 64306544640
+    }
+  }
+}

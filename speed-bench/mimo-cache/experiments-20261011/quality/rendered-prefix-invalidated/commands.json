@@ -1,0 +1,684 @@
+{
+  "probe": "teacher-continuation-distortion",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "cwd": "/Users/mvid/Development/personal/ds4",
+  "binary": "/tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality",
+  "copy_command": "cp speed-bench/mimo_verify_quality /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality",
+  "hashes": {
+    "speed-bench/mimo_verify_quality.c": "4c2772eb6ebe1a5cb63a487aa480dba4d0c3500e723d7cb85f5a03c48d15a24e",
+    "ds4.c": "78062164172d365720a1c4b13783342e4f92cbc95b27a2eaaf47169c0fd8ad64",
+    "ds4_metal.m": "7eea472ddff62699f4c1166bc735f6aa1b9b17764a6530ac40eae9568e4059c4",
+    "metal/moe.metal": "cc12b597de5ac9f9b5cfa4f5eaf0625d0014e14e79d4f521690ac90ab230e475",
+    "binary": "46dc9a9b902a7eba516d8b4a71cb607419c19b29355653245fb81b7b956b1edf"
+  },
+  "protocol": {
+    "context": 4096,
+    "block": 8,
+    "rows": 128,
+    "teacher_ids_required": 129,
+    "cache": "default automatic; observed slots checked in each log",
+    "strict_math": "same binary for reference and every comparison",
+    "gate": "unmasked and budget256 must have max_logit_drift=0, argmax_agreement=1, teacher_mean_nll_delta=0 before budgets8/16/32; failed case stops",
+    "claims": "teacher-continuation distortion only; no accuracy or speed claim",
+    "lease": "exclusive GPU/model lease from Main",
+    "bash_timeout_seconds": 0,
+    "eval_timeout_seconds": 0,
+    "large_artifacts": "/tmp/ds4-serving-experiments.VLO26y"
+  },
+  "planned_commands": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-reference.log 2>&1"
+    },
+    {
+      "case": "probability",
+      "variant": "unmasked",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-unmasked.log 2>&1"
+    },
+    {
+      "case": "probability",
+      "variant": "budget256",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget256.log 2>&1"
+    },
+    {
+      "case": "probability",
+      "variant": "budget8",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget8.log 2>&1"
+    },
+    {
+      "case": "probability",
+      "variant": "budget16",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget16.log 2>&1"
+    },
+    {
+      "case": "probability",
+      "variant": "budget32",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget32.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "reference",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-reference.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "unmasked",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-unmasked.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget256",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget256.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget8",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget8.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget16",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget16.log 2>&1"
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget32",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget32.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "reference",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-reference.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "unmasked",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-unmasked.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget256",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget256.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget8",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget8.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget16",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget16.log 2>&1"
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget32",
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget32.log 2>&1"
+    }
+  ],
+  "executions": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-probability.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-reference.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "status": "interrupted_by_eval_default_30_second_deadline",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-reference.log",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-reference.json",
+      "reference": "/tmp/ds4-serving-experiments.VLO26y/quality-probability.ref",
+      "note": "No remaining mimo_verify_quality process after interruption; failed infrastructure attempt is not a quality control result.",
+      "empty_json_removed": true
+    },
+    {
+      "case": "probability",
+      "variant": "reference",
+      "attempt": 2,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-reference-r2.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-reference-r2.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:21:41.271Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 52.61 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 52611.513917028904
+        }
+      },
+      "finished_at": "2026-10-11T06:22:33.895Z",
+      "status": "completed",
+      "cache_experts_observed": 5134,
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-reference-r2.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-reference-r2.log"
+    },
+    {
+      "case": "probability",
+      "variant": "unmasked",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-unmasked.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:23:01.844Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 54.72 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 54716.35483297706
+        }
+      },
+      "finished_at": "2026-10-11T06:23:56.567Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-unmasked.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "control_passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget256",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget256.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:23:56.576Z",
+      "tool_result": {
+        "text": "Backgrounded as job bg_78 (no deadline); its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken.",
+        "details": {
+          "async": {
+            "state": "running",
+            "jobId": "bg_78",
+            "type": "bash"
+          },
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0
+        }
+      },
+      "finished_at": "2026-10-11T06:25:28.638Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget256.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27063,
+        "kept_unique_sum": 27063,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      },
+      "control_passed": true,
+      "background_job_completed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget8",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget8.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:25:36.356Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 48.72 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 48720.44304201007
+        }
+      },
+      "finished_at": "2026-10-11T06:26:25.087Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget8.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 26850,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 20834,
+        "truncated_slots_sum": 26458
+      }
+    },
+    {
+      "case": "probability",
+      "variant": "budget16",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget16.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:26:25.091Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 45.31 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 45305.530583024025
+        }
+      },
+      "finished_at": "2026-10-11T06:27:10.409Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget16.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27169,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 15137,
+        "truncated_slots_sum": 16320
+      }
+    },
+    {
+      "case": "probability",
+      "variant": "budget32",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt --tokens /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref --json speed-bench/mimo-cache/experiments-20261011/quality/probability-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-probability-budget32.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:27:10.414Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 58.15 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 58148.951916992664
+        }
+      },
+      "finished_at": "2026-10-11T06:28:08.578Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-budget32.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 27165,
+        "kept_unique_sum": 23272,
+        "truncated_unique_sum": 3893,
+        "truncated_slots_sum": 4175
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "reference",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-reference.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:28:15.933Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 57.80 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 57796.52320897579
+        }
+      },
+      "finished_at": "2026-10-11T06:29:13.736Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-reference.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "unmasked",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-unmasked.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:29:13.739Z",
+      "tool_result": {
+        "text": "Backgrounded as job bg_79 (no deadline); its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken.",
+        "details": {
+          "async": {
+            "state": "running",
+            "jobId": "bg_79",
+            "type": "bash"
+          },
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0
+        }
+      },
+      "background_completion": {
+        "text": "## Completed (1)\n\n### bg_79 [bash] — completed\nLabel: env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_AD...\nDelivery: not auto-delivered; recovered by this snapshot.\n```\n(no output)\n\nWall time: 62.37 seconds\n```",
+        "details": {
+          "op": "wait",
+          "meta": {
+            "source": {
+              "type": "report",
+              "value": "background jobs snapshot"
+            }
+          },
+          "jobs": [
+            {
+              "id": "bg_79",
+              "type": "bash",
+              "status": "completed",
+              "label": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_AD...",
+              "durationMs": 62371,
+              "resultText": "(no output)\n\nWall time: 62.37 seconds"
+            }
+          ]
+        }
+      },
+      "finished_at": "2026-10-11T06:30:16.116Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-unmasked.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      },
+      "control_passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget256",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget256.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:30:16.119Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 58.07 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 58066.31099998951
+        }
+      },
+      "finished_at": "2026-10-11T06:31:14.195Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget256.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29566,
+        "kept_unique_sum": 29566,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      },
+      "control_passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget8",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget8.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:31:14.200Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 42.48 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 42476.99679198861
+        }
+      },
+      "finished_at": "2026-10-11T06:31:56.698Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget8.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29196,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 23180,
+        "truncated_slots_sum": 28538
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget16",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget16.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:31:56.703Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 41.14 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 41140.52325001359
+        }
+      },
+      "finished_at": "2026-10-11T06:32:37.865Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget16.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29531,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 17499,
+        "truncated_slots_sum": 18740
+      }
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget32",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/rust-parser.txt --tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref --json speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget32.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:32:37.869Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 53.61 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 53613.887667000294
+        }
+      },
+      "finished_at": "2026-10-11T06:33:31.493Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser-budget32.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 29663,
+        "kept_unique_sum": 23796,
+        "truncated_unique_sum": 5867,
+        "truncated_slots_sum": 6161
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "reference",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --write-reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-reference.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-reference.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:33:31.496Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 51.69 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 51690.66566699743
+        }
+      },
+      "finished_at": "2026-10-11T06:34:23.197Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-reference.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-reference.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "unmasked",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-unmasked.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-unmasked.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:34:23.200Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 51.73 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 51732.17937502265
+        }
+      },
+      "finished_at": "2026-10-11T06:35:14.946Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-unmasked.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-unmasked.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 0,
+        "natural_unique_sum": 0,
+        "kept_unique_sum": 0,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      },
+      "control_passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget256",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=256 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget256.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget256.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:35:14.949Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 59.45 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 59454.099709004164
+        }
+      },
+      "finished_at": "2026-10-11T06:36:14.423Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget256.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget256.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30728,
+        "kept_unique_sum": 30728,
+        "truncated_unique_sum": 0,
+        "truncated_slots_sum": 0
+      },
+      "control_passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget8",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=8 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget8.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget8.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:36:14.429Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 42.67 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 42673.21658399701
+        }
+      },
+      "finished_at": "2026-10-11T06:36:57.112Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget8.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget8.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30406,
+        "kept_unique_sum": 6016,
+        "truncated_unique_sum": 24390,
+        "truncated_slots_sum": 30066
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget16",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=16 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget16.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget16.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:36:57.115Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 53.27 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 53273.13566699624
+        }
+      },
+      "finished_at": "2026-10-11T06:37:50.403Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget16.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget16.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30585,
+        "kept_unique_sum": 12032,
+        "truncated_unique_sum": 18553,
+        "truncated_slots_sum": 20072
+      }
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget32",
+      "attempt": 1,
+      "command": "env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET -u DS4_MIMO2_CACHE_RANK_MODEL -u DS4_MIMO2_SESSION_BATCH -u DS4_MIMO2_DFLASH_ADAPTIVE -u DS4_MIMO2_DFLASH_COST_PROFILE -u DS4_MIMO2_ACTIVATION_TRACE -u DS4_METAL_STREAMING_EXPERT_CACHE_TRACE -u DS4_METAL_STREAMING_MAP_TRACE -u DS4_METAL_TRACE_ALLOCS -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_EXPERT_ROWS=1 DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 /tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality --model /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --prompt-file speed-bench/mimo-cache/holdout-20261011/tool-debug.txt --tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens --ctx 4096 --block 8 --limit 128 --reference /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref --json speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget32.json > /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget32.log 2>&1",
+      "bash_timeout_seconds": 0,
+      "eval_timeout_seconds": 0,
+      "started_at": "2026-10-11T06:37:50.408Z",
+      "tool_result": {
+        "text": "(no output)\n\nWall time: 54.65 seconds",
+        "details": {
+          "timeoutDisabled": true,
+          "requestedTimeoutSeconds": 0,
+          "wallTimeMs": 54654.26600000262
+        }
+      },
+      "finished_at": "2026-10-11T06:38:45.082Z",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-budget32.json",
+      "log": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug-budget32.log",
+      "cache_experts_observed": 5134,
+      "status": "completed",
+      "budget_log": {
+        "events": 752,
+        "natural_unique_sum": 30785,
+        "kept_unique_sum": 23977,
+        "truncated_unique_sum": 6808,
+        "truncated_slots_sum": 7124
+      }
+    }
+  ],
+  "build_recipe": "$(CC) $(filter-out -ffast-math,$(CFLAGS)) -Wno-unused-function -I. -c -o speed-bench/mimo_verify_quality.o speed-bench/mimo_verify_quality.c; link CORE_OBJS excluding ds4.o with same strict CFLAGS",
+  "completed_at": "2026-10-11T06:39:36.777Z",
+  "successful_grid_runs": 18,
+  "result_file": "summary.json"
+}

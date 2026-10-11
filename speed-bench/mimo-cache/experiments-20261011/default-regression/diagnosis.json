@@ -1,0 +1,13 @@
+{
+  "status": "corrected and verified",
+  "observed_comparison": "default-abba/results.json: eight fresh processes, ABBA then BAAB, identical startup headers and decoded output",
+  "baseline_decode_tps": 9.669702296258354,
+  "pre_fix_decode_tps": 8.802208501664753,
+  "compiled_default_cost": "The shared priority helper reserves a 160-byte stack frame and saves callee-saved integer/FP registers before testing whether the learned model is disabled. Eviction/reuse scans call it for eligible candidates.",
+  "correction": "Stock hotness and all cache comparisons remain integer-only. Policy choice is hoisted once per scan; finite learned scores are encoded as order-preserving uint64 keys only in the active learned path, with signed-zero ties preserved.",
+  "partial_correction": "Splitting out the learned scorer removed the unconditional call frame but did not remove the measured decode gap. The integer-selector ablation then matched the rebuilt baseline in its balanced component comparison.",
+  "final_confirmation": "final/results.json: eight fresh ABBA/BAAB processes; clean rebuilt baseline10.382726t/s, corrected implementation10.784509t/s; prefill56.943558 versus56.811022t/s; all decoded output identical.",
+  "final_correctness": "final/policy-audits.json: both policies match all24064 route masks, logical bytes and clocks;512 selected-token/top20 steps identical. Full-budget quality matches all128 full-vocabulary rows.",
+  "causal_limit": "Generated code and integer-selector isolation support removing default floating-point policy work. Timing variation remains; this is not a general speedup claim for the optional policies.",
+  "other_observation": "Optional verifier rows enlarged the core routed-layer frame and added a route-helper call; no new default kernel sequence, graph capacity, checkpoint policy or GPU synchronization was found."
+}

@@ -1,0 +1,231 @@
+{
+  "baseline_script_sha256": "9c5c3c7458f5ef4fa3d9c8254b0f1bd21ca34b53ac4a977b7890bfef147ed927",
+  "cpu_inference": [
+    {
+      "prediction_cpu_microseconds_per_event": 23.716727615249223,
+      "width": 1
+    },
+    {
+      "prediction_cpu_microseconds_per_event": 24.81672484485718,
+      "width": 2
+    },
+    {
+      "prediction_cpu_microseconds_per_event": 22.518436945921145,
+      "width": 4
+    }
+  ],
+  "freeze_path": "/private/tmp/ds4-serving-experiments.VLO26y/activation/model/freeze.json",
+  "frozen_model_path": "/private/tmp/ds4-serving-experiments.VLO26y/activation/model/model.npz",
+  "heldout_inputs": [
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "7a9e2ef605d0903d9c130046fbf17899dbf5f3c8abe25006b6879e1b0803d9e2",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/rust-parser.bin"
+      },
+      "name": "rust-parser",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4113191,
+        "routes": 24064,
+        "sha256": "a10b817f9d3259540f078696899542cd99c54323f8fb62ab42b7dbe513858024",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/rust-parser.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    },
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "39829426f59c8ddd27a5f647473a4062df07083fd5670f2a7d9cecc3e9dda738",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/probability.bin"
+      },
+      "name": "probability",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4099571,
+        "routes": 24064,
+        "sha256": "90ffa2d1b9575184df3750a69d21bf367492b136f651622f29e8f2d7b3898881",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/probability.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    },
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "f45e8479514db67f9a4a2cd2daf49afc291caa0770a7edbad0e958cc429e5c6c",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/tool-debug.bin"
+      },
+      "name": "tool-debug",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4105286,
+        "routes": 24064,
+        "sha256": "67058829d8890f436cd18995a94ed5df3bd3c681db36a46046feebe830e36ae9",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/holdout/tool-debug.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    }
+  ],
+  "model_file_bytes": 24892880,
+  "model_mib": 23.739700317382812,
+  "model_sha256": "6ba8328667133a9e3e0e9eacbe9e00040b7b77b2b2a909f27a8ada89b25423b7",
+  "numpy_version": "2.5.3",
+  "predictor_script_sha256": "7778ff4c4f46f58e3246a8cee66511cbdb2bb6378aef858b277ac80caecd11be",
+  "python_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "settings": {
+    "activation_features": 256,
+    "expert_domain": 256,
+    "feature_selection": "highest training-prefix variance; coordinate-ID ties",
+    "final_fit": "refit feature selection, normalization and head on all initial three prompts",
+    "head": "per-layer regularized linear multi-label least squares; unpenalized intercept",
+    "input_dim": 4096,
+    "inputs": "standardized selected current ffn_norm coordinates plus current route multi-hot",
+    "lookahead_layer_events": 2,
+    "model": "MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+    "ridge_candidates": [
+      0.001,
+      0.01,
+      0.1,
+      1
+    ],
+    "selected": 8,
+    "selection": "maximize aggregate top-four precision on final 20% of initial prompts; stronger-ridge ties",
+    "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+    "staging": {
+      "expert_domain": 256,
+      "expiry": "after target event; early demand may promote; footer wastes pending loads",
+      "layer_sequence": "training-frozen cyclic order; no cross-trace training pairs",
+      "lookahead_layer_events": 2,
+      "prefetch_hotness": "none; only demand advances hotness and cache clock",
+      "prior_pseudoroutes": 32,
+      "ready_model": "all staging loads ready immediately after source event",
+      "reservation": "dynamic occupied staging slots inside the original total, not extra slots",
+      "score": "mean over current IDs of (coactivation_count + 32 * target_prior) / (source_count + 32)",
+      "staging_capacity": "min(total_cache_slots, lookahead_layer_events * width)",
+      "tie_break": "ascending expert ID",
+      "total_cache_slots": 5134,
+      "widths": [
+        1,
+        2,
+        4
+      ]
+    },
+    "tie_break": "ascending expert ID",
+    "total_cache_slots": 5134,
+    "validation_boundary": "target wholly in prefix or source wholly in suffix; no cross-prompt pairs",
+    "widths": [
+      1,
+      2,
+      4
+    ]
+  },
+  "staging_script_sha256": "341bcb3cb94383d14790dbe835f89d44d646a5c45d709d2f2375272a8748615d",
+  "training_compute": {
+    "cpu_seconds": 64.463395,
+    "parameter_bytes": 24834236,
+    "selected_ridge": 0.1,
+    "training_pairs": 72186,
+    "validation_aggregate": [
+      {
+        "correct": 42261,
+        "precision": 0.7277846662533581,
+        "predictions": 58068,
+        "ridge": 0.001
+      },
+      {
+        "correct": 43629,
+        "precision": 0.751343252738169,
+        "predictions": 58068,
+        "ridge": 0.01
+      },
+      {
+        "correct": 43761,
+        "precision": 0.7536164496796859,
+        "predictions": 58068,
+        "ridge": 0.1
+      },
+      {
+        "correct": 41159,
+        "precision": 0.7088069160294826,
+        "predictions": 58068,
+        "ridge": 1
+      }
+    ],
+    "wall_seconds": 8.117287000175565
+  },
+  "training_inputs": [
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "b2789dab013bd36af3277e3e0ac3b83d4292bff3f531efc3a4c1f31a1a0779d9",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/coding.bin"
+      },
+      "name": "coding",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4102430,
+        "routes": 24064,
+        "sha256": "c3cf24799fe0b705fd3e656ab3cd341dfd6db0dc55f7c00520a09f8064d4eb66",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/coding.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    },
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "e7d91128824e57b3b45916816e7de3018d123a37f4586e11de9da01a1bee7ef2",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/reasoning.bin"
+      },
+      "name": "reasoning",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4089952,
+        "routes": 24064,
+        "sha256": "5923d5a3e2527013bd97c61dcc9355f7cd878a7d888a5fc11289b4fcf4a517f2",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/reasoning.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    },
+    {
+      "activations": {
+        "file_bytes": 395612216,
+        "input_dim": 4096,
+        "model_file_bytes": 168419206848,
+        "records": 24064,
+        "sha256": "8d645ecf0f2ef3827ff6d225fb4d9af9883979cd7343a56907294a6b2d59d229",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/tool-result.bin"
+      },
+      "name": "tool-result",
+      "trace": {
+        "expert_bytes": 13369344,
+        "file_bytes": 4105856,
+        "routes": 24064,
+        "sha256": "1b3ad599c2e4f28a6d7b927a45eb0bb3cf768216b14a46d17cc3764718ab8a79",
+        "source": "/private/tmp/ds4-serving-experiments.VLO26y/activation/train/tool-result.jsonl",
+        "tokens": 512,
+        "total_slots": 5134
+      }
+    }
+  ],
+  "version": 1
+}

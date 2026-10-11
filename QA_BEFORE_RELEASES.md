@@ -1487,6 +1487,9 @@ context sweeps and memory limits.
 | M3 Ultra 512 GB, Metal | GLM 5.3 Flash Q4 with Q8 KDA/head, 2048-token prompt | 437.62 t/s | 24.74 t/s |
 | Two M5 Max, Metal RDMA TP | GLM 5.2 IQ2_XXS, 4096-token prefill, 256 teacher-forced decode tokens | about 214 t/s | about 16.7 t/s |
 | M5 Max, Metal | GLM 5.3 full Q2 SSD, 16 GiB expert budget, section 7 commands | 12.59 t/s median | 6.14 t/s median |
+| M5 Max 128 GB, Metal | MiMo V2.6 Flash bootstrap Q2 resident, 4096-token prefill, 128-token decode | 669.60 t/s | 38.06 t/s |
+| M5 Max 128 GB, Metal | GLM 5.3 Flash Q2 resident, matched run | 452.20 t/s | 26.46 t/s |
+| M5 Max 128 GB, Metal SSD | MiMo V2.6 Flash MXFP4, 4096-token prefill, 128-token decode | 38.74 t/s | 13.31 t/s |
 | DGX Spark, CUDA | GLM 5.3 Flash Q2, 2048-token prefill, 16 decode tokens | 531.39 t/s | 14.35 t/s |
 | Strix Halo, ROCm | Flash 0731 IQ2, temperature-1 128-token code prompt | - | 16.26 ordinary; 12.28 opportunistic; 13.52 exact t/s |
 | 8x L40S, CUDA TP | Flash Q4, 2048-token prefill benchmark | 1524.84 t/s | 46.93 t/s |
@@ -2227,6 +2230,553 @@ At 8K context and a 1024-token chunk, planned memory is about 42.86/70.87 GiB
 for Q2/Q4, excluding the 95.37 GiB disk table. Check physical memory and swap,
 not only this plan. Repeat conventional Metal with Metal 4 disabled, and test
 a physical pre-M5 device before advertising its performance or memory fit.
+
+## 20. MiMo V2.6 Flash
+
+Current target: `XiaomiMiMo/MiMo-V2.6-Flash-MOPD` revision
+`b12f5573350bb1704513fcf119fca48e498b0423`. Use a distinct MOPD MXFP4
+artifact and validate its metadata, layout and source blocks. Recheck plain
+decode, tool calls, MTP and DFlash against this backbone. The September 24
+fixture predates MOPD and is not a checkpoint-matched parity reference.
+
+The pinned MOPD source has 137 downloaded files with matching revision,
+published blob identity and file size. The 156.85 GiB MXFP4 target passed
+508 tensor-layout and metadata checks plus 27 sampled source-expert checks.
+The 1.45 GiB DFlash sidecar passed all 64 tensor checks, including exact F32
+source widening and the Q8_0 error bound. A cold SSD CLI arithmetic smoke
+returned 126; that short run is not a steady-state throughput benchmark.
+The MOPD MXFP4 SSD MTP oracle matched ordinary greedy decoding on all three
+prompts (160, 74 and 75 tokens), with up to three tokens committed per call.
+The MOPD DFlash SSD oracle also matched three ordinary greedy streams
+(192, 74 and 71 tokens), with up to eight committed tokens and 6.74 tokens
+per call across those prompts. This checks verified output, not a speedup.
+No checkpoint-matched hosted continuation score has been collected for MOPD.
+
+Initial MOPD baseline on M5 Max 128 GB, raw 4096-token Promessi Sposi prefill and
+128-token greedy decode, one unprofiled run per cache setting:
+
+| Expert cache | Prefill t/s | Decode t/s | Steady decode t/s |
+| --- | ---: | ---: | ---: |
+| Automatic, 84.95 GiB | 22.78 | 0.29 | 0.29 |
+| Explicit 64 GiB | 38.59 | 11.47 | 12.76 |
+
+The [automatic CSV](speed-bench/mimo26-mopd-mxfp4-ssd-m5max-20261009.csv) and [64 GiB CSV](speed-bench/mimo26-mopd-mxfp4-ssd-cache64-m5max-20261009.csv)
+retain the complete timing rows. The explicit cap clears the 10 t/s floor
+on this run; it is not a repeated benchmark or a quality sign-off.
+A separate profiled 16-token screen reduced selected-expert synchronization
+from 43.33 s to 1.52 s while SSD reads increased from 2.37 to 5.55 GiB.
+All 152576 frontier logits were identical between the two cache budgets.
+These runs precede the automatic-budget and cached-append optimization below.
+
+The live MOPD chat API emitted `sum_two` with arguments 2 and 3, then
+consumed the tool result and answered 5 without repeating the call.
+The continuation reused 115 prompt tokens and appended 11. This smoke does
+not establish the model's claimed tool-repetition improvement across workloads.
+
+
+### MOPD streaming optimization, October 10, 2026
+
+Compared with commit `5650358` on the same M5 Max 128 GB and pinned MOPD MXFP4
+artifact. Neither weights nor router selection changed. The automatic Metal
+budget uses 66% of the recommended working set for model weights plus cached
+experts, giving 63.92 GiB of experts at 4K context. Explicit overrides remain.
+Continued chunks of 2 through 64 tokens bind cached experts to the existing
+small-prefill kernels; attention, dot products and reduction order stay unchanged.
+
+Unprofiled ABBA runs used `speed-bench/promessi_sposi.txt`, 4096 raw prompt
+tokens, 4353 allocated context, 128 greedy decode tokens and automatic cache
+sizing in both binaries. No speculative decoding was enabled.
+
+| Variant | Cache GiB | Prefill t/s, range | Decode t/s, range | Pooled decode t/s |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 84.95 | 17.49-17.86 | 0.23-0.24 | 0.235 |
+| Optimized | 63.92 | 33.84-35.72 | 9.27-10.79 | 9.972 |
+
+The [ABBA CSV](speed-bench/mimo26-mopd-streaming-optimization-m5max-20261010.csv)
+retains each run. The pooled rate divides total tokens by total measured
+seconds, reconstructed from the CSV rates. One optimized run remains below
+the 10 t/s release floor; this is an optimization result, not release sign-off.
+
+Controlled diagnostics found large driver spans before short GPU spans.
+Keeping the 84.95 GiB cache while reducing slabs to 512 MiB did not help;
+neither did removing fixed-weight CPU locks. A 70.37 GiB cache improved the
+stall but left less margin than the selected policy. These observations tie
+the cliff to total residency pressure; the private driver threshold is unknown.
+
+Full-model append checks compared every captured vocabulary float and token
+ID, no-op sync, subsequent greedy decode, and the complete saved KV payload:
+
+| Prefix tokens | Appended tokens | Cache policy | Baseline append seconds | Optimized append seconds |
+| ---: | ---: | --- | ---: | ---: |
+| 256 | 11 | Explicit 64 GiB | 62.314 | 3.128 / 3.671 |
+| 96 | 64 | Explicit 64 GiB | 63.037 | 5.729 |
+| 4096 | 11 | Each binary's automatic budget | 112.586 | 1.596 |
+
+All compared logits, token IDs and KV bytes matched exactly. The 64-token
+append crossed the sliding-window wrap. These append timings are screens,
+not repeated workload medians. A live chat/tool-result turn reused 115 tokens,
+appended 11 in 0.836 seconds and answered 5 after `sum_two(2, 3)`.
+
+`make test-mimo2-kernels` covers exact mid activations, expert partials and
+weighted output for 2/8/9/11/64 rows, cold/warm caches, the minimum eight-slot
+cache, forced eviction, invalid IDs and undersized inputs. It passed with
+Metal validation and with Metal 4/specialization disabled. Qwen4 and DFlash
+kernel suites, CPU session/transport tests, server/agent tests and the quality
+parser passed. Real MOPD MTP and DFlash oracles matched all three plain greedy
+streams each. No CUDA or other-host performance claim is made.
+
+### Reusing streamed layer preparation, October 10, 2026
+
+Compared with commit `fc36600` on the same M5 Max 128 GB and pinned MOPD
+MXFP4 checkpoint. MiMo already selected M5 NAX dense and grouped MoE kernels;
+the encoder timeline showed those kernels running. Bulk prefill now uses the
+existing parallel pread layer-preparation pipeline, with eight workers and
+one layer of lookahead for chunks of at least 256 tokens. Every exit drains
+the worker slots. Cache sizing, preload policy and kernel arithmetic are unchanged.
+
+The existing prefill/decode A/B tools now accept SSD/cache options. Prefill
+accepts `--prefill-chunk 0` for graph-selected chunks; decode accepts numeric
+`--candidate-value` settings. See the
+[commands](speed-bench/README.md#streamed-mimo-tuning). No timing profiler
+was enabled for either confirmation below.
+
+| Comparison | Baseline prefill t/s | Prepared prefill t/s | Baseline decode t/s | Prepared decode t/s |
+| --- | ---: | ---: | ---: | ---: |
+| Same-engine ABBA + BAAB, four runs per variant | 35.90 | 52.75 | n/a | n/a |
+| Separate-process ABBA, two runs per binary | 32.89 | 51.79 | 9.10 | 9.99 |
+
+Rates pool tokens over elapsed time. The same-engine comparison used a
+4096-token raw Promessi Sposi prefix, 2048-token warmup and 4353-token context,
+with `DS4_METAL_DISABLE_STREAMING_PREFILL_LAYER_PREPARE=1` as the rollback.
+All 1,220,608 reported vocabulary floats were bit-identical across eight runs.
+The [prefill CSV](speed-bench/mimo26-mopd-layer-prepare-abba-m5max-20261010.csv)
+retains the rows. This is a 47% prefill-throughput improvement in that harness.
+
+Separate processes used the same corpus, 4096-token prefix and 4353-token
+context, followed by 128 greedy tokens. Both binaries used the automatic
+63.92 GiB expert cache. The
+[standalone CSV](speed-bench/mimo26-mopd-layer-prepare-standalone-m5max-20261010.csv)
+retains the ABBA sequence. Prefill improved 57%; decode stayed near 10 t/s.
+These runs do not establish a substantial generation-speed improvement or
+release sign-off: one prepared run remained below the 10 t/s floor.
+
+Other existing controls were screened without changing their defaults:
+
+* A 64-total-expert preload improved prefill but cut decode to 4.71 t/s;
+  3008 total (64 per routed layer) decoded at 6.79 t/s. These were single screens.
+* Mmap page-touch preparation lost to parallel pread in an exact four-run
+  comparison, 19.18 versus 51.76 pooled prefill t/s. All 610,304 floats matched.
+* Four decode pread workers versus the default nine gave 18.04 versus
+  17.35 t/s in the paired-session harness. All 41,653,248 floats and 272
+  selected token IDs matched. Its shared warm expert cache makes those
+  absolute rates unsuitable as standalone throughput. The roughly 4% result
+  does not justify changing the default.
+
+Profiler runs were used only for attribution. This result changes neither
+the checkpoint nor quantization and makes no other-host performance claim.
+
+The automatic-chunk interleaved smoke matched all 305,152 final vocabulary
+floats across two repeats, including continued 2048-token chunks. The
+256-token preparation boundary also passed with an explicit 64 GiB cache
+and with cold prefill at the minimum eight-slot cache; each compared 610,304
+floats exactly. MiMo, DFlash and Qwen4 kernel suites passed, along with CPU
+session/transport, server/agent and quality-parser tests.
+
+### Expert-cache replay study, October 2026
+
+The pinned MOPD MXFP4 model ran three fixed synthetic inputs from
+[speed-bench/mimo-cache](speed-bench/mimo-cache/), each for 512 greedy decode
+evaluations at context 4096, without speculation. Coding used 295 prompt
+tokens, reasoning 356, and the serialized tool-result continuation 529. The
+latter is a workload fixture, not a live tool execution or a quality benchmark.
+Every run retained the automatic 5134-slot (63.92 GiB) cache and started with
+5123 actual preloaded experts. Each routed expert is 12.75 MiB.
+
+The new opt-in cache trace captures actual warm state, including ages and
+nonresident route-hotness counters. The replay tool matched every observed
+hit mask, logical read-byte count and cache clock across all 72,192 layer
+routes (577,536 expert selections) before comparing policies. Compressed
+[traces and reports](speed-bench/mimo-cache/20261010/) include a manifest with
+source revision, capture-source hash and input/trace hashes.
+
+| Workload | Current hit rate | Logical MiB/evaluation | Read-ahead ms/evaluation | Blocking pread ms/evaluation | Complete load ms/evaluation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Coding | 89.11% | 522.08 | 123.01 | 57.12 | 184.53 |
+| Reasoning | 90.59% | 450.93 | 76.12 | 44.23 | 123.49 |
+| Tool-result continuation | 88.09% | 570.86 | 129.06 | 59.39 | 192.77 |
+
+Pread bytes include OS-page-cache hits; these are not physical SSD byte
+measurements. Complete load time includes the pread interval plus preparation
+and installation, including read-ahead advice. Do not add the two timings.
+Timing-summary instrumentation was enabled. GPU synchronization and driver
+waits lie outside these load measurements; they do not establish steady-state
+throughput or predict another policy's latency.
+
+| Workload | Layer-FIFO variant: logical read increase | Hindsight oracle: logical read reduction |
+| --- | ---: | ---: |
+| Coding | 191.71% | 60.10% |
+| Reasoning | 210.03% | 59.03% |
+| Tool-result continuation | 164.77% | 61.67% |
+
+The layer-FIFO result is the explicitly named `least_stale_layer_fifo`
+variant described in the [tool documentation](speed-bench/README.md#expert-cache-trace-replay).
+It is demand-only and paper-inspired; the paper does not fully specify its
+warm-state and fallback rules, and this experiment does not reproduce its
+prefetching. This variant is not promoted. The runtime's decayed-hotness policy
+is unchanged. The oracle has the same initial cache and budget, equal-sized
+experts and mandatory admission with the current request protected. Its future
+knowledge minimizes misses on this finite trace, not execution time; the
+remaining headroom motivates prediction research, not a claimed speedup.
+
+Tracing on/off produced identical 512 selected tokens and all dumped top-20
+logits/logprobs on the coding input. The 19 replay tests passed, including
+exhaustive small-state comparisons against an independent optimal oracle,
+protected batched requests, decay, warm state, malformed/truncated input and
+baseline-audit failures. Session/transport, quality-parser, server/agent and
+MiMo/DFlash/Qwen4 kernel suites also passed.
+
+The recorded read-ahead cost motivated an uninstrumented same-engine A/B of
+the existing `DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD=1` setting on the coding fixture,
+with a 295-token prefix, context 4096, 16 warmup tokens and 256 measured tokens
+per variant, including greedy selection:
+
+| Read-ahead hints | Measured decode t/s |
+| --- | ---: |
+| Enabled (default) | 7.49 |
+| Disabled | 7.23 |
+
+All 41,653,248 vocabulary floats and 272 selected IDs matched. The
+[A/B rows](speed-bench/mimo-cache/20261010/readahead-ab.csv) retain the timings.
+This is a single paired-session screen with a shared expert cache, not a
+standalone throughput claim. Disabling advice did not win; that default is
+also unchanged. Time inside read-ahead advice cannot be treated as pure
+overhead that disappears without increasing subsequent read costs.
+
+### Serving experiments, October 11, 2026
+
+These experiments use only the pinned MOPD MXFP4 target and its matching
+DFlash sidecar on the M5 Max 128 GB. The automatic cache remains 5134 experts
+(63.92 GiB). No new runtime experiment is enabled by default. Full records are
+in [experiments-20261011](speed-bench/mimo-cache/experiments-20261011/).
+
+#### Shared DFlash scheduling and adaptive depth
+
+Shared expert rows passed the complete three-prompt MOPD DFlash oracle and
+the 1/2/4/8-row kernel comparisons, including minimum-cache fences. Separate
+processes then used legacy/shared/shared/legacy order, 128 generated tokens
+per run, draft cap7 and the default probability floor0.4. All four complete
+streams matched the legacy verifier within each workload:
+
+| Workload | Legacy verifier, pooled t/s | Shared scheduling, pooled t/s |
+| --- | ---: | ---: |
+| Probability | 4.08 | 3.85 |
+| Rust parser | 4.33 | 5.46 |
+| Tool-debug fixture | 4.38 | 4.56 |
+
+The probability regression and substantial Rust-control variability prevent a
+general speedup claim. Shared scheduling remains opt-in. The earlier single-run
+screen also showed legacy and shared cap7 diverging from ordinary decode at
+token index5 on tool-debug; equality to the existing verifier is distinct from
+equality to one-token decoding.
+
+The final adaptive controller uses only configured depth arms that fit the
+remaining token budget. Its profiled 128-token probability smoke used only
+depths0/1/3/7 and matched ordinary output. Unprofiled 128-token screens matched
+ordinary output on all three workloads. A separate Rust comparison used
+fixed-cap3/adaptive/adaptive/fixed-cap3 order, with shared scheduling and
+256 generated tokens:
+
+| Mode | Pooled generation t/s |
+| --- | ---: |
+| Fixed cap3 | 5.49 |
+| Adaptive, maximum7 | 5.92 |
+
+The fixed and adaptive continuations differed after token index219, so this
+does not establish an output-matched speedup. Both adaptive runs matched the
+ordinary 256-token continuation. Choices depend on measured latency, and
+first-use costs in early depth arms can bias a short run's estimates. The
+controller remains opt-in. [Final receipts and token streams](speed-bench/mimo-cache/experiments-20261011/spec-final/)
+retain every run; no new speculative default is promoted.
+
+#### Learned replacement
+
+The causal linear ranker was trained on the original three traces, then frozen
+before inspecting the three new held-out traces. Features use past recency,
+frequency and reuse gaps; expert IDs and workload labels are not features.
+Each held-out capture has 512 evaluations at context 4096. The model reduced
+aggregate logical misses from 68,044 to 60,056 (11.74%). Native replay matched
+every mask, byte count and clock across the probability capture's 24,064
+routes and 16,804 misses. Its 512 selected tokens and all dumped top-20
+logits/logprobs matched the ordinary baseline.
+
+Fresh-process throughput used stock/learned/learned/stock order, 256 generated
+tokens per run and identical prompts/cache/context. Rates pool tokens over
+measured seconds reconstructed from the CSV:
+
+| Held-out workload | Logical miss reduction | Stock decode t/s | Learned decode t/s |
+| --- | ---: | ---: | ---: |
+| Probability | 16.68% | 6.64 | 5.89 |
+| Rust parser | 7.79% | 4.86 | 5.47 |
+| Tool-debug fixture | 11.71% | 5.70 | 5.86 |
+
+The [ABBA rows](speed-bench/mimo-cache/experiments-20261011/ranking-abba.csv)
+show substantial run variability and a probability regression. Fewer logical
+reads do not establish a general speedup. The native ranker remains opt-in.
+
+#### Predictive staging
+
+Both predictors use two routed-layer events of lookahead, including wrap to
+the next token. Staging slots come from the same 5134-slot cache. Every issued
+read counts, including wrong predictions and footer leftovers; readiness is
+optimistically immediate. Models were frozen before held-out evaluation.
+
+| Predictor | Experts predicted/event | Exposed misses saved | Total logical read change |
+| --- | ---: | ---: | ---: |
+| Route-history coactivation | 1 | 596 | +23.87% |
+| Route-history coactivation | 2 | 1,371 | +50.94% |
+| Route-history coactivation | 4 | 2,990 | +105.55% |
+| Activation ridge | 1 | 1,771 | +12.21% |
+| Activation ridge | 2 | 3,842 | +27.51% |
+| Activation ridge | 4 | 8,003 | +65.62% |
+
+The activation model uses 47 ridge heads over 256 training-selected normalized
+activation coordinates plus current router IDs. It occupies 23.74 MiB and
+needed roughly 23-25 CPU microseconds per layer-event prediction in this
+replay. All six real activation captures preserved their baseline routing and
+generated outputs. Neither predictor merits runtime staging under this traffic
+gate. These figures are simulations of logical requests, not physical SSD
+bytes or serving throughput.
+
+#### Native concurrent decode
+
+The opt-in layer-major path shares expert scheduling while retaining each
+session's original one-row attention, KV and output arithmetic. Full logits
+and serialized state matched at two and eight sessions, including unequal
+positions, sliding-window wrap, scalar continuation and disabled fallback.
+The `require` diagnostic confirmed native execution.
+
+The paired 256-prefix/64-generation screen gave 8.8 versus 8.0 aggregate t/s
+at two sessions and 5.6 versus 5.6 at four (stock versus native, printed
+precision). Separate fresh-process latency screens used one stock run followed
+by one native run:
+
+| Sessions | Stock aggregate t/s | Native aggregate t/s | Stock p95 step ms | Native p95 step ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 6.36 | 7.39 | 447.53 | 439.41 |
+| 4 | 6.52 | 6.62 | 871.38 | 963.77 |
+
+The protocols allocate different contexts and are retained separately in the
+[batching records](speed-bench/mimo-cache/experiments-20261011/batching/).
+The single fresh pair does not establish a repeatable gain, and four-session
+tail latency regressed. Native batching remains opt-in.
+
+#### Apple Neural Engine
+
+The isolated CoreML pilot used actual pinned layer1 experts, converted exactly
+from MXFP4 to FP16, with seeded Gaussian inputs. Each configuration made 12
+predictions, excluding the first two; CPU_ONLY preceded CPU_AND_NE. It was
+neither a full-model run nor a native Metal comparison.
+
+| Expert group and rows | CPU_ONLY median ms | CPU_AND_NE median ms | NE-request relative L2 error |
+| --- | ---: | ---: | ---: |
+| One expert, one row | 1.851 | 0.468 | 0.002919 |
+| One expert, 32 rows | 0.620 | 0.532 | 0.000870 |
+| Four experts, 32 rows | 2.349 | 1.779 | 0.001238 |
+
+Errors are relative to NumPy FP32 arithmetic over the same FP16 inputs and
+weights; all outputs were finite. A separate physical trace recorded 1,103
+Apple Neural Engine prediction intervals for the four-expert model, median
+1.281 ms. This proves ANE execution for that traced model, not absence of CPU
+fallback in every operation. The FP16 expert set would occupy 564 GiB; even
+5134 FP16 slots need 240.66 GiB. No MiMo converter was found in the checked
+ANEMLL/NPUMoE releases. The [ANE records](speed-bench/mimo-cache/experiments-20261011/ane/)
+do not support a ds4 throughput or full-model quality claim.
+
+#### Approximate verification and Edge0
+
+The MoE-Spec-inspired native pilot bounds each verifier layer's expert union
+using summed real router weights, with excluded contributions zeroed and no
+renormalization. It is a native adaptation, not a reproduction of the paper.
+The numerical screen was declared before the main agent inspected candidate
+results: every workload must remain finite, mean teacher-NLL increase and
+mean reference-to-candidate KL must each be at most 0.02 nats, and argmax
+agreement must be at least 99%.
+
+The initial quality grid parsed rendered-chat markers while the reference
+continuations used raw-text tokenization. Its figures are invalidated and
+retained only under [rendered-prefix-invalidated](speed-bench/mimo-cache/experiments-20261011/quality/rendered-prefix-invalidated/).
+The corrected probe follows the CLI/benchmark raw-text contract. Reference
+headers bind exact prefix and teacher IDs and reject mixing these encodings.
+The corrected probe rejected the old reference before evaluating any rows.
+All 18 corrected runs matched the original raw prefix counts and every
+input/next-label teacher pair. Each workload used 128 scored rows, block 8 and
+context 4096. Unmasked and budget 256 controls matched all logits exactly.
+The unchanged numerical gates rejected even the most lenient reduced budget 32:
+
+| Workload | Teacher-NLL delta, nats | Mean KL, nats | Argmax agreement |
+| --- | ---: | ---: | ---: |
+| Probability | +0.024282 | 0.012221 | 92.97% |
+| Rust parser | +0.013845 | 0.010043 | 95.31% |
+| Tool-debug fixture | +0.019208 | 0.021758 | 92.97% |
+
+No budget8/16/32 passed any complete workload screen, so none advanced to a
+throughput trial. [Corrected per-row reports](speed-bench/mimo-cache/experiments-20261011/quality/)
+retain the raw-prefix checks and controls.
+
+Quality reports measure teacher-continuation distortion, not task accuracy
+or live tool-call validity. No quality-changing default was introduced.
+
+The installed upstream Edge0 loader rejected the actual MOPD directory with
+`unknown model mimo_v2; registered: edge0-35b, edge0-8b`. Its released
+adapter/weight format does not support MiMo MXFP4/E8M0, and no MOPD-trained
+prerouter, recovery LoRA or compatible trainer was available. Normalized hidden
+captures now exist, but they do not supply those missing components. This
+checkpoint-specific blocker was recorded without substituting another model.
+
+#### Default-path regression guard
+
+The first integration paid learned-policy overhead even when the model was
+unset: stock integer hotness became floating-point priority comparisons,
+with the learned scorer's call frame in cache scans. Removing only that call
+frame was insufficient. An integer-only selector ablation recovered baseline
+decode throughput. The final implementation selects policy once per scan,
+keeps stock hotness as an integer, and encodes finite learned scores as
+order-preserving integer keys only when enabled. Signed-zero ties remain LRU
+ties. Neither routing nor expert arithmetic changed.
+
+Both cohorts below used eight fresh processes in ABBA then BAAB order,
+Promessi Sposi prefix 4096, generation 128, context 4353 and the same 5134-slot
+cache. Each cohort has its own control; do not compare absolute rates between
+cohorts. The final control was rebuilt from commit `11001a3` with the same
+compiler flags. All decoded outputs matched the original baseline.
+
+| Cohort | Build | Pooled prefill t/s | Pooled decode t/s |
+| --- | --- | ---: | ---: |
+| Initial guard | Original baseline | 57.29 | 9.67 |
+| Initial guard | Experimental integration before correction | 51.91 | 8.80 |
+| Final confirmation | Clean rebuilt baseline | 56.94 | 10.38 |
+| Final confirmation | Integer-priority implementation | 56.81 | 10.78 |
+
+The [regression records](speed-bench/mimo-cache/experiments-20261011/default-regression/)
+include the component-isolation runs and generated-code evidence. The final
+stock and learned captures each matched all 24,064 hit masks, logical byte
+counts and cache clocks against their respective CPU policies, with identical
+512-token/top-20-logit streams. They retained 20,167 and 16,804 misses respectively.
+The final full-budget quality check also matched all 128 full-vocabulary rows.
+
+Earlier optional-feature timings in this section predate this cache-comparator
+correction. Their frozen binaries and receipts remain available; those rates
+are not assigned to the final build. No new option is promoted by this study.
+
+#### Checks and scope
+
+The Metal applications and CPU-only core/benchmark objects built. All 65 CPU
+cache-replay, learning and staging tests passed, along with the cache-rank and
+cost-policy C tests and strict verifier-quality self-test. CPU session/transport,
+server/agent and MiMo/DFlash/Qwen4 Metal kernel suites passed. The two-frontier
+DFlash benchmark smoke matched every pre-probe logit against a no-generation
+control at prefixes128 and129, including replay after the first probe; each
+generated probe stopped at the requested three tokens.
+
+These checks do not establish CUDA/ROCm behavior, another host's performance,
+physical multi-host transport or full release-quality sign-off.
+
+### Historical RL verification
+
+The cleaned upstream-based branch passed Metal and macOS CPU builds, server
+and agent tests, quality-parser tests, and the MiMo/DFlash kernel suites. Real
+Q2 MTP and DFlash checks matched three ordinary greedy streams each. Both
+direction-capture components produced finite 48-by-4096 float arrays; runtime
+FFN steering at scale 0.3 changed the prompt logits relative to scale zero.
+CPU build success does not add CPU MiMo inference. These checks do not replace
+the continuation-quality gate below.
+
+Pinned source: `XiaomiMiMo/MiMo-V2.6-Flash-RL` revision
+`5711b268169967567844e1e560e8a3966da959b1`. Text-only Metal GGUFs
+contain 508 tensors. The first 86.35 GiB Q2 artifact used an imatrix from 200
+prompts that included all 100 official fixture prompts word for word (SHA-256
+`cd385eaf714cae08cec72491040c8a61b5b8a012878fcf852a7f31a28bd4ff37`).
+Its official parity would be biased. The hard-smoke and core prompts below are
+separate; their Q2 scores describe this first artifact.
+
+The release Q2 and 84.13 GiB AttnQ4 files were rebuilt from the zero-overlap
+200-prompt corpus `gguf-tools/imatrix/dataset/mimo26-v2.6-flash-clean.txt`
+(SHA-256 `7ad3f432d6cdd6c5a04080555d0664563d50c6732518c3173b9f88ac87572dd0`,
+maximum fixture word Jaccard 0.278). Resident bootstrap Q2 collected 35,106
+tokens and 13,199,856 routes, covering 12,020/12,032 expert slots (99.90%).
+The clean imatrix SHA-256 is
+`184ca5c03645e30e69ab81e6a0aa1ed85442268960d8b6e98f1523c73d916214`.
+The 12 unvisited experts use weight-energy importance. Both rebuilt files
+passed 508 tensor layouts and 27 sampled experts against source. The
+uncalibrated bootstrap answered `84 * 3 / 2` incorrectly; clean Q2, AttnQ4,
+and the 156.85 GiB MXFP4 tier answered 126. The 1.45 GiB DFlash sidecar
+has 64 validated tensors, including its learned mask embedding.
+
+| Hard-smoke at temperature 0 | First-imatrix Q2 resident | MXFP4 SSD |
+| --- | ---: | ---: |
+| 2048-token cap | 7/12 (1 failed, 4 incomplete) | 8/12 (1 failed, 3 incomplete) |
+| Incomplete cases retried at 4096 tokens | 8/12 (2 failed, 2 incomplete) | 8/12 (1 failed, 3 incomplete) |
+
+The first-imatrix Q2 core run with a 2048-token cap passed 43/92 (7 failed, 42 incomplete).
+Five of its incomplete cases were retested at native budgets: four passed and
+one remained incomplete after 15,491 tokens. The other 37 were retried with
+up to 4096 tokens: seven passed, three failed and 27 remained incomplete.
+Combined Q2 core result: 54/92 passed, 10 failed, 28 incomplete. This mixed
+budget score is not a matched quantization comparison.
+
+| Held-out suite, temperature 0 | Leak-free Q2 resident | MXFP4 SSD |
+| --- | ---: | ---: |
+| Hard-smoke, 2048 tokens with one 4096-token retry | 8/12 (0 failed, 4 incomplete) | 8/12 (1 failed, 3 incomplete) |
+| Core, bounded as below | 53/92 (7 failed, 32 incomplete) | 58/92 (9 failed, 25 incomplete) |
+
+Clean Q2 core first pass scored 42/92 (3 failed, 47 incomplete). Its final
+case budgets were 2048 tokens for 45 cases and 4096 for 47. MXFP4 core ran
+in four retained tranches: final budgets were 2048 tokens for 31 cases and
+4096 for 61. Both tiers passed 45 of the same cases; MXFP4 alone passed 13,
+Q2 alone passed 8, and neither passed 26. These mixed-budget core scores are
+descriptive, not a controlled quantization comparison.
+
+The same-day M5 Max 4K-context benchmark CSVs are
+[`mimo26-q2-m5max-20260924.csv`](speed-bench/mimo26-q2-m5max-20260924.csv)
+and [`glm53-flash-q2-m5max-20260924.csv`](speed-bench/glm53-flash-q2-m5max-20260924.csv).
+Bootstrap MiMo Q2 prefill was 669.60 t/s versus 452.20 for GLM, and decode
+38.06 versus 26.46 t/s. Both ratios exceed the 0.85 go/no-go floor. The
+MXFP4 SSD run recorded 38.74 prefill and 13.31 decode t/s, above the 10 t/s
+streaming floor.
+
+Native MTP committed within the established 2.0-logit near-argmax bound on
+calibrated Q2; one batched numerical tie diverged from plain decode at token
+22 (gap 0.1547). The MXFP4 oracle produced identical tokens on all three
+prompts. On first-imatrix Q2 with the exported Olympiad hard-smoke prompt,
+plain decode generated 39.63 t/s; MTP generated 27.68 t/s with 100/311
+drafts accepted (32.2%).
+That 0.70x ratio triggered the DFlash port. Its three-prompt oracle produced
+identical greedy tokens with up to eight committed per call. A dumped draft
+block matched an independent NumPy reference (minimum hidden-row cosine
+0.9999998). On the same Olympiad prompt, DFlash default draft width seven
+generated 32.22 t/s; `--dflash-draft 3` generated 41.69 t/s.
+
+The first-party Xiaomi OpenRouter route supplied 100 temperature-zero,
+no-thinking continuations without a system message. All responses report
+`xiaomi/mimo-v2.6-flash` from Xiaomi; local and API prompt-token counts agree
+on 100/100. Neither endpoint supplies token logprobs, so API probability
+metrics are unavailable. These numbers compare the local teacher-forced
+continuation to hosted FP8 text:
+
+| MiMo GGUF | First-token match | Local average NLL | Average greedy LCP |
+| --- | ---: | ---: | ---: |
+| Clean Q2, Q8 attention | 65/100 | 0.339311 | 6.99 |
+| Clean Q2, Q4 attention | 62/100 | 0.356618 | 6.23 |
+| MXFP4 SSD, Q8 attention | 92/100 | 0.262704 | 16.81 |
+
+The GLM 5.3 Flash Q2 reference in section 6 is 89/100 first-token matches.
+MXFP4 clears that reference, while both resident Q2 files fall short. MXFP4
+and clean Q2 differ in API-match status on 29 cases, which caps their direct
+local first-token agreement at 71/100; the plan's 89/100 pair gate fails.
+The equivalent upper bound for MXFP4 versus AttnQ4 is 66/100. See the
+[fixture README](gguf-tools/quality-testing/mimo-v2.6-flash-20260924-openrouter/README.md)
+for request settings and case-level results. Do not sign off Q2 as
+quality-equivalent to source MXFP4.
 
 ## 19. Release Sign-off
 

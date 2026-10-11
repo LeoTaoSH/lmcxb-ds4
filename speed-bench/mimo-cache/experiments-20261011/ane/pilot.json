@@ -1,0 +1,963 @@
+{
+  "schema": "ds4-mopd-coreml-expert-pilot-v1",
+  "repository": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "hardware": "Apple M5 Max 128GiB",
+  "software": {
+    "xcode": "26.6 (17F113)",
+    "python": "3.12.13 isolated venv",
+    "coremltools": "9.0",
+    "numpy": "2.5.4"
+  },
+  "model_scope": "layer1 expert0 at capacities1/32 and layer1 experts0..3 grouped at32 tokens/expert; actual downloaded MXFP4/E8M0 weights dequantized to FP16 constants",
+  "input_kind": "seeded standard-Gaussian synthetic FFN inputs, not captured model hidden states",
+  "reference": "CPU NumPy FP32 SwiGLU over the same dequantized FP16 weights and identical FP16 inputs, no clamps or router",
+  "weight_hashes_by_expert": [
+    {
+      "model.layers.1.mlp.experts.0.gate_proj.weight": {
+        "sha256": "95e968d756175cdc002a33ed16fb9fca9eafddaeab9346b16b78e54a74bf4387",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.0.gate_proj.weight_scale": {
+        "sha256": "2bdc24ea7b3409584797ceaac008a9349edd30a0a9c2b2862649f87c54e5f1ab",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "gate_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.0.up_proj.weight": {
+        "sha256": "6ef37b4df8b6e3ccd8fd1e61e7b0ff334beb4cb0120676b1bd75813e41496267",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.0.up_proj.weight_scale": {
+        "sha256": "d999ab0bbb26f85c6f50793aacb7f86ac1d3b052083cdc01792699bad0abeb6e",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "up_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.0.down_proj.weight": {
+        "sha256": "7e23eb906824fcc0a3dd08f3f353b845a99a8dff37322f4b59b47b105aa67561",
+        "bytes": 4194304,
+        "shape": [
+          4096,
+          1024
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.0.down_proj.weight_scale": {
+        "sha256": "131651287598214c21afbdbe4edf33a2c29b5f88a91bd78057501189f84b65be",
+        "bytes": 262144,
+        "shape": [
+          4096,
+          64
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "down_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          4096,
+          2048
+        ]
+      }
+    },
+    {
+      "model.layers.1.mlp.experts.1.gate_proj.weight": {
+        "sha256": "7bb812d53367143f27044e6febd9164dc987a6594e9d8cef63601ffe8f0dd8cd",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.1.gate_proj.weight_scale": {
+        "sha256": "cc5af8d2d67b1c62f100d065d239ed391fe1fd064648ddd60be342d156024013",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "gate_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.1.up_proj.weight": {
+        "sha256": "71926c4b221221f9e0f9cc36aac4671b99fde8e00a5b0035622f378d68b4fe3f",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.1.up_proj.weight_scale": {
+        "sha256": "9e8172a6d8f0f3f36db8f32c7135bd6027e77398f14370ce309cb7ba0b63c434",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "up_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.1.down_proj.weight": {
+        "sha256": "f78ac2db1d653278b911cbe9b3baf374e8cc9b790d3d8838d58bffb89baca1f9",
+        "bytes": 4194304,
+        "shape": [
+          4096,
+          1024
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.1.down_proj.weight_scale": {
+        "sha256": "e657fd346dd6a3971b2a13481feda72974939d06b1a67d131be2ef40d13f04e4",
+        "bytes": 262144,
+        "shape": [
+          4096,
+          64
+        ],
+        "shard": "model_pp0_ep0_shard0.safetensors"
+      },
+      "down_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          4096,
+          2048
+        ]
+      }
+    },
+    {
+      "model.layers.1.mlp.experts.2.gate_proj.weight": {
+        "sha256": "fe50878f8b62608198d553397622cd49c3d07ea817d08e518a4038a021b36095",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.2.gate_proj.weight_scale": {
+        "sha256": "2cce5069eeada888c7afacde6426b94ce679b27ea80404c7d5f2d38edd17f4eb",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "gate_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.2.up_proj.weight": {
+        "sha256": "ddaa4d00d229103872e25f7880de3cf95424c515e81c51c6e1f782725b751581",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.2.up_proj.weight_scale": {
+        "sha256": "a80d3422248df0697cc35df985f12f877b8839be8df9876479fda7e1e78a6fad",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "up_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.2.down_proj.weight": {
+        "sha256": "a0214414d804d7cc5757a2fe5c49f822afada3916c944391f274c2ad1f4ca357",
+        "bytes": 4194304,
+        "shape": [
+          4096,
+          1024
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.2.down_proj.weight_scale": {
+        "sha256": "6b98fe63f35ae8e367ba28aecd8920b4d546ac4e740d7643c24cc92d94c9c7aa",
+        "bytes": 262144,
+        "shape": [
+          4096,
+          64
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "down_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          4096,
+          2048
+        ]
+      }
+    },
+    {
+      "model.layers.1.mlp.experts.3.gate_proj.weight": {
+        "sha256": "de139b4dacdaef653357c6f6620e57fb64ab89ced763c0173d31bfa5809c867e",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.3.gate_proj.weight_scale": {
+        "sha256": "53fb0c51f26a78a414f185fe688b0d0c024f913b6c799e1254ef1446afe9185f",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "gate_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.3.up_proj.weight": {
+        "sha256": "1167911e5f4ede66b4c31d7a559726a470e11a3b66cc216e57e6b6f0125968d0",
+        "bytes": 4194304,
+        "shape": [
+          2048,
+          2048
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.3.up_proj.weight_scale": {
+        "sha256": "6d59d193fbb71f9e49d445ef9eae827f4cbb72d1e259925f1c7f7277bb031ced",
+        "bytes": 262144,
+        "shape": [
+          2048,
+          128
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "up_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          2048,
+          4096
+        ]
+      },
+      "model.layers.1.mlp.experts.3.down_proj.weight": {
+        "sha256": "78e4612b01ef00c5ab5f13af72d53eccb54c92b0795bbffee4abdd7aa70be58b",
+        "bytes": 4194304,
+        "shape": [
+          4096,
+          1024
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "model.layers.1.mlp.experts.3.down_proj.weight_scale": {
+        "sha256": "37c7868159d4fb145890e3ee382ee3510977ef1d3b2303e949bfd9d677eadbc1",
+        "bytes": 262144,
+        "shape": [
+          4096,
+          64
+        ],
+        "shard": "model_pp0_ep1_shard0.safetensors"
+      },
+      "down_fp16": {
+        "bytes": 16777216,
+        "max_abs_conversion_error": 0,
+        "shape": [
+          4096,
+          2048
+        ]
+      }
+    }
+  ],
+  "weight_bytes_fp16_single": 50331648,
+  "weight_bytes_fp16_group4": 201326592,
+  "timing_protocol": "Each model/unit pair:12 synchronous predictions, first2 excluded,10 latency observations. Six pairs,72 uninstrumented predictions total. Fixed arm order CPU_ONLY then CPU_AND_NE. Synthetic microbenchmark only, no full-model speed or output-quality claim.",
+  "results": [
+    {
+      "capacity": 1,
+      "compute_units": "CPU_ONLY",
+      "load_seconds": 0.08404366672039032,
+      "predictions": 12,
+      "timed_predictions": 10,
+      "latency_ms": [
+        1.85075,
+        1.940167,
+        1.851458,
+        1.882667,
+        1.811625,
+        1.746791,
+        1.842208,
+        1.849083,
+        1.918375,
+        1.884208
+      ],
+      "median_ms": 1.8511039999999999,
+      "output_name": "expert_output",
+      "finite": true,
+      "reference_norm": 30.78882598876953,
+      "normalized_l2_error_fp32_reference": 0.005953853018581867,
+      "max_abs_error_fp32_reference": 0.020651578903198242,
+      "placements": [
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "gate_projection"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3331978540074784
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "up_projection"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3331978540074784
+        },
+        {
+          "function": "main",
+          "operation": "ios18.silu",
+          "outputs": [
+            "silu"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.00016257519102584947
+        },
+        {
+          "function": "main",
+          "operation": "ios18.mul",
+          "outputs": [
+            "gated_hidden"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.0002438627865387742
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "expert_output"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3331978540074784
+        }
+      ],
+      "placement_evidence": "CoreML anticipated compute plan with GPU excluded; no hardware execution trace",
+      "group": 1,
+      "capacity_per_expert": 1
+    },
+    {
+      "capacity": 1,
+      "compute_units": "CPU_AND_NE",
+      "load_seconds": 0.1502000419422984,
+      "predictions": 12,
+      "timed_predictions": 10,
+      "latency_ms": [
+        0.596208,
+        0.513208,
+        0.473917,
+        0.464583,
+        0.462292,
+        0.446583,
+        0.445875,
+        0.47075,
+        0.502041,
+        0.466042
+      ],
+      "median_ms": 0.46839600000000003,
+      "output_name": "expert_output",
+      "finite": true,
+      "reference_norm": 30.78882598876953,
+      "normalized_l2_error_fp32_reference": 0.0029192008078098297,
+      "max_abs_error_fp32_reference": 0.006574153900146484,
+      "placements": [
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "gate_projection"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.3242066497030171
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "up_projection"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.3242066497030171
+        },
+        {
+          "function": "main",
+          "operation": "ios18.silu",
+          "outputs": [
+            "silu"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.017921388840551642
+        },
+        {
+          "function": "main",
+          "operation": "ios18.mul",
+          "outputs": [
+            "gated_hidden"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.009458662050396938
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "expert_output"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.3242066497030171
+        }
+      ],
+      "placement_evidence": "CoreML anticipated compute plan with GPU excluded; no hardware execution trace",
+      "group": 1,
+      "capacity_per_expert": 1
+    },
+    {
+      "capacity": 32,
+      "compute_units": "CPU_ONLY",
+      "load_seconds": 0.11634533293545246,
+      "predictions": 12,
+      "timed_predictions": 10,
+      "latency_ms": [
+        0.595792,
+        0.697666,
+        0.78025,
+        0.724417,
+        0.617708,
+        1.068125,
+        0.62225,
+        0.58725,
+        0.567958,
+        0.612625
+      ],
+      "median_ms": 0.6199790000000001,
+      "output_name": "expert_output",
+      "finite": true,
+      "reference_norm": 918.439697265625,
+      "normalized_l2_error_fp32_reference": 0.005857388023287058,
+      "max_abs_error_fp32_reference": 0.31365203857421875,
+      "placements": [
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "gate_projection"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3302384085674134
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "up_projection"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3302384085674134
+        },
+        {
+          "function": "main",
+          "operation": "ios18.silu",
+          "outputs": [
+            "silu"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.0037139097191039817
+        },
+        {
+          "function": "main",
+          "operation": "ios18.mul",
+          "outputs": [
+            "gated_hidden"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.005570864578655973
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "expert_output"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ],
+          "estimated_cost": 0.3302384085674134
+        }
+      ],
+      "placement_evidence": "CoreML anticipated compute plan with GPU excluded; no hardware execution trace",
+      "group": 1,
+      "capacity_per_expert": 32
+    },
+    {
+      "capacity": 32,
+      "compute_units": "CPU_AND_NE",
+      "load_seconds": 0.13210975006222725,
+      "predictions": 12,
+      "timed_predictions": 10,
+      "latency_ms": [
+        0.621916,
+        0.62375,
+        0.585875,
+        0.567875,
+        0.538167,
+        0.517875,
+        0.525333,
+        0.508042,
+        0.499667,
+        0.504625
+      ],
+      "median_ms": 0.53175,
+      "output_name": "expert_output",
+      "finite": true,
+      "reference_norm": 918.439697265625,
+      "normalized_l2_error_fp32_reference": 0.0008696217555552721,
+      "max_abs_error_fp32_reference": 0.0196380615234375,
+      "placements": [
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "gate_projection"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.32420664970301716
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "up_projection"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.32420664970301716
+        },
+        {
+          "function": "main",
+          "operation": "ios18.silu",
+          "outputs": [
+            "silu"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.017921388840551646
+        },
+        {
+          "function": "main",
+          "operation": "ios18.mul",
+          "outputs": [
+            "gated_hidden"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.00945866205039694
+        },
+        {
+          "function": "main",
+          "operation": "ios18.conv",
+          "outputs": [
+            "expert_output"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ],
+          "estimated_cost": 0.32420664970301716
+        }
+      ],
+      "placement_evidence": "CoreML anticipated compute plan with GPU excluded; no hardware execution trace",
+      "group": 1,
+      "capacity_per_expert": 32
+    },
+    {
+      "group": 4,
+      "capacity_per_expert": 32,
+      "compute_units": "CPU_ONLY",
+      "predictions": 12,
+      "timed_predictions": 10,
+      "load_seconds": 0.3499537496827543,
+      "latency_ms": [
+        2.276667,
+        2.128167,
+        2.142,
+        2.587333,
+        2.443666,
+        2.42175,
+        2.586916,
+        2.638625,
+        2.265125,
+        2.121292
+      ],
+      "median_ms": 2.3492085,
+      "finite": true,
+      "normalized_l2_error_fp32_reference": 0.0063076200895011425,
+      "max_abs_error_fp32_reference": 0.31365203857421875,
+      "placement": [
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_gate"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_up"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.silu",
+          "outputs": [
+            "mul_0"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.mul",
+          "outputs": [
+            "mul_1"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_down"
+          ],
+          "preferred": "MLCPUComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice"
+          ]
+        }
+      ],
+      "placement_evidence": "anticipated compute plan with GPU excluded, no hardware execution trace"
+    },
+    {
+      "group": 4,
+      "capacity_per_expert": 32,
+      "compute_units": "CPU_AND_NE",
+      "predictions": 12,
+      "timed_predictions": 10,
+      "load_seconds": 0.33675224985927343,
+      "latency_ms": [
+        1.76725,
+        1.781334,
+        1.780417,
+        1.820958,
+        1.798292,
+        1.780792,
+        1.760375,
+        1.744708,
+        1.751584,
+        1.77775
+      ],
+      "median_ms": 1.7790835,
+      "finite": true,
+      "normalized_l2_error_fp32_reference": 0.0012377232778817415,
+      "max_abs_error_fp32_reference": 0.0196380615234375,
+      "placement": [
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_gate"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_up"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.silu",
+          "outputs": [
+            "mul_0"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.mul",
+          "outputs": [
+            "mul_1"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ]
+        },
+        {
+          "operation": "ios18.conv",
+          "outputs": [
+            "grouped_down"
+          ],
+          "preferred": "MLNeuralEngineComputeDevice",
+          "supported": [
+            "MLCPUComputeDevice",
+            "MLNeuralEngineComputeDevice"
+          ]
+        }
+      ],
+      "placement_evidence": "anticipated compute plan with GPU excluded, no hardware execution trace"
+    }
+  ],
+  "exact_output_parity": false,
+  "numeric_gate_observation": "All outputs finite. Every CPU_ONLY and CPU_AND_NE result differs from the FP32 reference. No token/logit quality gate was exercised.",
+  "physical_trace": {
+    "schema": "ds4-mopd-coreml-physical-trace-v1",
+    "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+    "instrument_template": "Core ML",
+    "trace_model": "mopd_l1_e0to3_g4_c32",
+    "requested_compute_units": "CPU_AND_NE",
+    "group": 4,
+    "capacity_per_expert": 32,
+    "target_pid": 80038,
+    "target_exit_status": 0,
+    "trace_duration_seconds": 4.143163,
+    "ane_schema": "ane-hw-intervals-internal",
+    "ane_all_rows": 1105,
+    "ane_model_rows": 1104,
+    "ane_prediction_rows": 1103,
+    "ane_prediction_channel_counts": {
+      "Apple Neural Engine": 1103
+    },
+    "ane_prediction_duration_ns": {
+      "min": 1256417,
+      "median": 1281333,
+      "max": 1465500,
+      "sum": 1413597653
+    },
+    "ane_prediction_samples": [
+      {
+        "start_ns": 2041981291,
+        "duration_ns": 1465500,
+        "channel": "Apple Neural Engine",
+        "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+      },
+      {
+        "start_ns": 2044504166,
+        "duration_ns": 1281292,
+        "channel": "Apple Neural Engine",
+        "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+      },
+      {
+        "start_ns": 2046648083,
+        "duration_ns": 1282792,
+        "channel": "Apple Neural Engine",
+        "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+      }
+    ],
+    "coreml_model_activity_rows": 0,
+    "target_gpu_interval_rows": 0,
+    "physical_ane_execution_observed": true,
+    "scope": "Physical ANE execution observed for the separately traced four-expert model only. The single-expert latency runs were not hardware-traced. No CoreML operation-level CPU-fallback assertion is made; the CoreML model-activity table contains no rows.",
+    "source_sha256": {
+      "ane-hw-intervals-internal.xml": "87abf72ad00135520dead39e68bdc2aa95f83038be7b2db1f2a1b2b01153bf15",
+      "coreml-os-signpost.xml": "b7ea7ab496fe343c3cad057efd8ff7ab9eb0959216d88adc866b679ca0e78848",
+      "metal-gpu-intervals.xml": "4f03567f7ca80674885f4998915d1f546202284620f5bd34119966350c5cc748",
+      "trace_toc.xml": "5bc4312cfc9cf1543c96c3208308600f019d560aa2e6ac43f090b42087fb1bae",
+      "trace_coreml.py": "d2f14b06bf42c6346df9f3c9e91b470310b35645b5e81a5124825864846db369"
+    },
+    "commands": [
+      "xcrun xctrace record --template 'Core ML' --output /private/tmp/mimo-serving-gates.cFSYJx/coreml_execution.trace --time-limit 15s --launch -- /private/tmp/mimo-serving-gates.cFSYJx/venv/bin/python /private/tmp/mimo-serving-gates.cFSYJx/trace_coreml.py",
+      "xcrun xctrace export --input /private/tmp/mimo-serving-gates.cFSYJx/coreml_execution.trace --toc --output /private/tmp/mimo-serving-gates.cFSYJx/trace_toc.xml",
+      "xcrun xctrace export --input TRACE --xpath /trace-toc/run[@number=\"1\"]/data/table[@schema=\"ane-hw-intervals-internal\"] --output ane-hw-intervals-internal.xml",
+      "Analogous exports for coreml-os-signpost and metal-gpu-intervals"
+    ]
+  },
+  "memory_arithmetic": {
+    "routed_layers": 47,
+    "experts_per_layer": 256,
+    "expert_fp16_bytes": 50331648,
+    "expert_native_mxfp4_bytes": 13369344,
+    "all_expert_fp16_gib": 564,
+    "all_expert_mxfp4_gib": 149.8125,
+    "same_5134_slots_fp16_gib": 240.65625,
+    "group4_fp16_mib": 192,
+    "group8_fp16_mib": 384
+  },
+  "commands": [
+    "venv/bin/python expert_coreml.py build",
+    "xcrun coremlcompiler compile PACKAGE compiled",
+    "venv/bin/python placement.py",
+    "venv/bin/python group_coreml.py build",
+    "venv/bin/python expert_coreml.py run",
+    "venv/bin/python group_coreml.py run"
+  ],
+  "recovered_failure": "Initial prediction command failed before any prediction because coremltools9 uses get_compiled_model_path(), whereas its compute-plan documentation example shows get_compiled_path(). Fixed the temporary script and reran; all72 intended predictions then completed.",
+  "source_sha256": {
+    "expert_coreml.py": "fe003a0b1de3c6c5fcd8a68d2a2564d02f15bca9733eb8a9bf344c10d1c91364",
+    "group_coreml.py": "49ffe8069b1507970ed495a4c0337f4f3e1bf291036814381512e2bd82960298",
+    "coreml_manifest.json": "c33d44f10fa05dcf07c9bf9eff5774d9c3bd978e5d2b159a19475b74d32a0cb1",
+    "group_manifest.json": "d154e3ccf58d5efbc89e8fab9b99b649ab82f0d51c26ed2295c0467d3a0ee3fa",
+    "coreml_results.json": "3eddaed8a43fcf35081e585b0405d6cf5332c24adef7fb4e3d1d9cedcef78dd5",
+    "group_results.json": "73567f588687de51f5e2eb436ee7411f1947f34e958549f6120928c567b89d7a"
+  }
+}

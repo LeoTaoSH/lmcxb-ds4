@@ -1,0 +1,8 @@
+<|im_start|>system
+You are a Rust programming assistant. Use only the standard library and explain correctness invariants. Do not call tools.<|im_end|><|im_start|>user
+Implement an incremental Rust decoder for a byte stream containing length-prefixed frames. A frame starts with a four-byte unsigned big-endian payload length followed by exactly that many payload bytes. Chunks can end anywhere in the header or payload, and one chunk can contain multiple complete frames plus the start of the next frame. Empty payloads are valid. Reject a payload length above a configured maximum before allocating storage for it.
+
+Provide a Decoder struct with new(max_frame_size), push(&[u8]) and finish() methods. push returns all complete payloads produced by that chunk. Define an error type distinguishing an oversized frame, a truncated header and a truncated payload. After any decoding error, reject further input until reset() is called. finish must succeed only at a frame boundary. Do not repeatedly remove bytes from the front of a Vec or copy already consumed input. Reuse internal storage where it makes sense without returning borrowed data that the next call can invalidate.
+
+Show complete code and tests for every possible split point of a short two-frame stream, zero-length frames, multiple headers in one chunk, an oversized announced length, end-of-stream inside a header, end-of-stream inside a payload, reset after failure, and a byte-at-a-time input. Explain the asymptotic copying and allocation costs. Keep the public interface small and avoid unsafe code.<|im_end|><|im_start|>assistant
+<think></think>
