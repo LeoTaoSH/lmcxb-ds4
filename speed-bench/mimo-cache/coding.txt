@@ -1,0 +1,8 @@
+<|im_start|>system
+You are a coding assistant. Provide working code and explain the relevant invariants. Do not call external tools.<|im_end|><|im_start|>user
+Implement a Python RangeSet that stores a set of integers as sorted, disjoint, nonadjacent inclusive intervals. It must support add(lo, hi), discard(lo, hi), contains(value), and intervals(). Negative endpoints are allowed. Raise ValueError when lo > hi. intervals() must return a copy so callers cannot mutate internal state.
+
+Adding an interval must merge both overlaps and adjacent ranges. Discarding must be able to split a stored range, remove several complete ranges, trim one or both ends, or leave the set unchanged. Avoid expanding intervals into individual integers: endpoints can be as large as 10**18. Use the standard library only, and do not add locking, persistence or asynchronous APIs.
+
+Show the complete implementation, followed by deterministic unittest cases. Cover these cases explicitly: adding a range that bridges two separated ranges; deleting a middle section; deleting a span wider than the stored set; inserting and removing a singleton; negative endpoints; empty state; repeated idempotent adds; and mutation of the returned interval list. Explain the complexity of each operation and why the representation invariant is maintained. Prefer clear linear scans over a tree unless the tree is necessary for correctness.<|im_end|><|im_start|>assistant
+<think></think>

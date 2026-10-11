@@ -28,9 +28,9 @@ The prompt is the cleaned public-domain *I Promessi Sposi* text in
 [speed-bench](../speed-bench/README.md).
 
 Prefill defaults are configuration-specific: ordinary DeepSeek uses 4096-token
-chunks, CUDA TP uses 2048, and long PRO prompts may use 8192. GLM chooses its
-own chunks and rejects `--prefill-chunk`. The strict DeepSeek API-vector test
-pins 2048; do not generalize that setting to every benchmark.
+chunks, CUDA TP uses 2048, and long PRO prompts may use 8192. GLM and MiMo choose
+their own chunks and reject explicit chunk overrides. The strict DeepSeek
+API-vector test pins 2048; do not generalize that setting to every benchmark.
 
 ## Recorded Flash Q2 baseline
 
@@ -60,6 +60,9 @@ Historical PRO Q2 measurements on the M3 Ultra are retained in this chart:
 
 - For SSD streaming, record the effective cache and distinguish cold startup
   from a warm cache.
+  For cache-policy experiments, use the
+  [trace replay tool](../speed-bench/README.md#expert-cache-trace-replay), which
+  audits the recorded policy before comparing simulated alternatives.
 - For multiple sessions, report both individual latency and aggregate
   throughput. Ordered fallback is not native batching.
 - For DSpark/MTP, compare plain decode too. A faster drafter path can still be

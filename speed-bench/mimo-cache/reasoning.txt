@@ -1,0 +1,8 @@
+<|im_start|>system
+Solve the problem from the stated data. Show a checkable derivation and distinguish lower bounds from feasible constructions. Do not call external tools.<|im_end|><|im_start|>user
+A workshop must manufacture exactly 180 parts of type A, 140 of type B and 120 of type C. It has three machine configurations. One cycle of X takes 7 minutes and produces 3 A and 1 B. One cycle of Y takes 9 minutes and produces 2 B and 3 C. One cycle of Z takes 11 minutes and produces 2 A, 2 B and 1 C. All cycle counts must be nonnegative integers. Surplus parts may be discarded at no cost, so production must meet or exceed each target. A single machine runs all cycles sequentially.
+
+Switching between different configurations takes 13 minutes. There is no setup charge for the first configuration used. Cycles of the same configuration may be grouped to avoid unnecessary switches. At least one X cycle and at least one Y cycle are required for an independent calibration requirement; Z is optional.
+
+Find a schedule with globally minimum total elapsed time, including switching time. Explain how you reduce the search to a finite range, derive lower bounds that rule out worse regions, and check the integer rounding at the optimum. Show production totals and discarded surplus for your proposed schedule. Also determine whether using all three configurations is strictly better than using X and Y alone. Give enough intermediate arithmetic that the optimum can be verified without trusting an unexplained brute-force result. End with the optimal counts, order and elapsed time.<|im_end|><|im_start|>assistant
+<think></think>

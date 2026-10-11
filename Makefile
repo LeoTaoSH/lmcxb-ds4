@@ -1277,10 +1277,14 @@ test-frontends: ds4_test ds4_agent_test test-web-recovery
 test-web-recovery: tests/test_web_recovery
 	python3 tests/test_web_recovery.py ./tests/test_web_recovery
 
+.PHONY: test-expert-cache-replay
+test-expert-cache-replay:
+	python3 -m unittest discover -s tests -p test_expert_cache_replay.py
+
 tests/test_web_recovery: tests/test_web_recovery.c ds4_web.c ds4_web.h
 	$(CC) $(CFLAGS) -Wno-unused-function -o $@ tests/test_web_recovery.c
 
-test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-engram test-web-recovery \
+test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-engram test-web-recovery test-expert-cache-replay \
 	tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args \
 	tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix $(SAMPLING_TEST) ds4 ds4-server ds4-bench ds4-agent
 	./ds4-eval --validate-cases

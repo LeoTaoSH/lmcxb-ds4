@@ -14391,6 +14391,134 @@ static void ds4_gpu_stream_expert_cache_note_token(uint32_t layer_index) {
     ds4_gpu_stream_expert_cache_maybe_decay_route_hotness();
 }
 
+typedef struct {
+    bool active;
+    uint64_t pread_bytes;
+    double pread_ms;
+    double load_ms;
+} ds4_gpu_stream_expert_cache_trace_scope;
+
+static FILE *g_stream_expert_cache_trace_fp;
+static const void *g_stream_expert_cache_trace_model;
+static uint64_t g_stream_expert_cache_trace_bytes;
+static uint64_t g_stream_expert_cache_trace_routes;
+static uint32_t g_stream_expert_cache_trace_budget;
+static int g_stream_expert_cache_trace_failed;
+
+static const char *ds4_gpu_stream_expert_cache_trace_path(void) {
+    static int checked;
+    static const char *path;
+    if (!checked) {
+        path = getenv("DS4_METAL_STREAMING_EXPERT_CACHE_TRACE");
+        checked = 1;
+    }
+    return path && path[0] ? path : NULL;
+}
+
+static int ds4_gpu_stream_expert_cache_trace_error(const char *message) {
+    g_stream_expert_cache_trace_failed = 1;
+    fprintf(stderr, "ds4: expert cache trace: %s\n", message);
+    return 0;
+}
+
+static void ds4_gpu_stream_expert_cache_trace_close(void) {
+    FILE *fp = g_stream_expert_cache_trace_fp;
+    if (!fp) return;
+    int failed = g_stream_expert_cache_trace_failed || ferror(fp);
+    if (!failed && fprintf(fp, "{\"event\":\"end\",\"routes\":%" PRIu64 "}\n",
+                           g_stream_expert_cache_trace_routes) < 0) failed = 1;
+    if (fclose(fp) != 0) failed = 1;
+    g_stream_expert_cache_trace_fp = NULL;
+    if (failed) {
+        fprintf(stderr, "ds4: failed to complete expert cache trace\n");
+        _Exit(EXIT_FAILURE);
+    }
+    fprintf(stderr, "ds4: recorded %" PRIu64 " expert cache routes to %s\n",
+            g_stream_expert_cache_trace_routes,
+            ds4_gpu_stream_expert_cache_trace_path());
+}
+
+static int ds4_gpu_stream_expert_cache_trace_begin(
+        ds4_gpu_stream_expert_cache_trace_scope *scope,
+        const void *model_map,
+        uint64_t gate_bytes,
+        uint64_t down_bytes) {
+    const char *path = ds4_gpu_stream_expert_cache_trace_path();
+    if (!path) return 1;
+    if (gate_bytes > (UINT64_MAX - down_bytes) / 2u)
+        return ds4_gpu_stream_expert_cache_trace_error("expert size overflow");
+    const uint64_t expert_bytes = gate_bytes * 2u + down_bytes;
+    const uint32_t budget = ds4_gpu_stream_expert_cache_configured_budget();
+    if (!g_stream_expert_cache_trace_fp) {
+        FILE *fp = fopen(path, "wb");
+        if (!fp) return ds4_gpu_stream_expert_cache_trace_error(strerror(errno));
+        g_stream_expert_cache_trace_fp = fp;
+        g_stream_expert_cache_trace_model = model_map;
+        g_stream_expert_cache_trace_bytes = expert_bytes;
+        g_stream_expert_cache_trace_budget = budget;
+        setvbuf(fp, NULL, _IOFBF, 1u << 20);
+        atexit(ds4_gpu_stream_expert_cache_trace_close);
+        fprintf(fp, "{\"event\":\"snapshot\",\"version\":1,\"budget\":%u,"
+                    "\"expert_bytes\":%" PRIu64 ",\"clock\":%" PRIu64 ","
+                    "\"token\":%" PRIu64 ",\"decay_token\":%" PRIu64 ","
+                    "\"decay_interval\":%u,\"resident\":[",
+                budget, expert_bytes, g_stream_expert_cache_clock,
+                g_stream_expert_cache_decode_tokens,
+                g_stream_expert_cache_hotness_decay_token,
+                DS4_METAL_STREAM_EXPERT_HOTNESS_DECAY_TOKENS);
+        const char *sep = "";
+        for (uint32_t layer = 0; layer < DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER; layer++) {
+            for (uint32_t expert = 0; expert < DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT; expert++) {
+                const ds4_gpu_stream_expert_cache_entry *e = &g_stream_expert_cache[layer][expert];
+                if (!e->valid) continue;
+                if (e->model_map != model_map || e->logical_bytes != expert_bytes)
+                    return ds4_gpu_stream_expert_cache_trace_error("requires one model and uniform expert sizes");
+                fprintf(fp, "%s[%u,%u,%" PRIu64 "]", sep, layer, expert, e->last_used);
+                sep = ",";
+            }
+        }
+        fputs("],\"hotness\":[", fp);
+        sep = "";
+        for (uint32_t layer = 0; layer < DS4_METAL_STREAM_EXPERT_CACHE_MAX_LAYER; layer++) {
+            for (uint32_t expert = 0; expert < DS4_METAL_STREAM_EXPERT_CACHE_MAX_EXPERT; expert++) {
+                const uint32_t hotness = g_stream_expert_cache_route_hotness[layer][expert];
+                if (!hotness) continue;
+                fprintf(fp, "%s[%u,%u,%u]", sep, layer, expert, hotness);
+                sep = ",";
+            }
+        }
+        fputs("]}\n", fp);
+    }
+    if (g_stream_expert_cache_trace_model != model_map ||
+        g_stream_expert_cache_trace_bytes != expert_bytes ||
+        g_stream_expert_cache_trace_budget != budget)
+        return ds4_gpu_stream_expert_cache_trace_error("model, expert size or cache budget changed");
+    if (ferror(g_stream_expert_cache_trace_fp))
+        return ds4_gpu_stream_expert_cache_trace_error("snapshot write failed");
+    scope->active = true;
+    scope->pread_bytes = g_stream_expert_cache_pread_bytes;
+    scope->pread_ms = g_stream_expert_cache_pread_ms;
+    return 1;
+}
+
+static int ds4_gpu_stream_expert_cache_trace_end(
+        const ds4_gpu_stream_expert_cache_trace_scope *scope,
+        uint32_t layer, const int32_t *ids, uint32_t count, uint32_t hit_mask) {
+    if (!scope->active) return 1;
+    FILE *fp = g_stream_expert_cache_trace_fp;
+    fprintf(fp, "{\"event\":\"route\",\"token\":%" PRIu64 ",\"layer\":%u,\"ids\":[",
+            g_stream_expert_cache_decode_tokens, layer);
+    for (uint32_t i = 0; i < count; i++) fprintf(fp, "%s%d", i ? "," : "", ids[i]);
+    fprintf(fp, "],\"hit_mask\":%u,\"pread_bytes\":%" PRIu64 ","
+                "\"pread_ms\":%.6f,\"load_ms\":%.6f,\"clock\":%" PRIu64 "}\n",
+            hit_mask, g_stream_expert_cache_pread_bytes - scope->pread_bytes,
+            g_stream_expert_cache_pread_ms - scope->pread_ms, scope->load_ms,
+            g_stream_expert_cache_clock);
+    if (ferror(fp)) return ds4_gpu_stream_expert_cache_trace_error("route write failed");
+    g_stream_expert_cache_trace_routes++;
+    return 1;
+}
+
 static int ds4_gpu_stream_compact_addr_requested(void) {
     return g_ssd_streaming_mode &&
            getenv("DS4_METAL_ENABLE_STREAMING_COMPACT_ADDR") != NULL &&
@@ -41410,6 +41538,7 @@ int ds4_gpu_routed_moe_one_tensor(
                 }
             }
         } else if (use_selected_slots) {
+            ds4_gpu_stream_expert_cache_trace_scope cache_trace = {0};
             const bool selected_timing =
                 selected_profile ||
                 ds4_gpu_stream_expert_timing_summary_enabled();
@@ -41623,6 +41752,9 @@ int ds4_gpu_routed_moe_one_tensor(
                         return 0;
                     }
                 }
+                if (use_stream_expert_cache && use_mxfp4_selected_slots &&
+                    !ds4_gpu_stream_expert_cache_trace_begin(&cache_trace, model_map,
+                                                              gate_expert_bytes, down_expert_bytes)) return 0;
                 ds4_gpu_stream_expert_cache_note_selected_hotness(layer_index,
                                                                   selected_ids,
                                                                   n_expert);
@@ -41799,6 +41931,7 @@ int ds4_gpu_routed_moe_one_tensor(
                 }
                 if (stream_expert_missing_mask != 0 &&
                     !use_stream_expert_split_deferred) {
+                    const double trace_load_t0 = cache_trace.active ? ds4_gpu_now_ms() : 0.0;
                     if (!ds4_gpu_stream_expert_cache_load_selected_missing(
                             model_map,
                             model_size,
@@ -41816,6 +41949,7 @@ int ds4_gpu_routed_moe_one_tensor(
                         if (getenv("DS4_GLM_TP_DEBUG")) fprintf(stderr, "ds4: routed_moe_one silent return at line %d\n", 33175);
                         return 0;
                     }
+                    if (cache_trace.active) cache_trace.load_ms = ds4_gpu_now_ms() - trace_load_t0;
                     for (uint32_t i = 0; i < n_expert; i++) {
                         if ((stream_expert_missing_mask & (1u << i)) == 0) continue;
                         ds4_gpu_stream_expert_cache_entry *entry = stream_slot_entries[i];
@@ -41885,6 +42019,9 @@ int ds4_gpu_routed_moe_one_tensor(
                     }
                 }
             }
+            if (!ds4_gpu_stream_expert_cache_trace_end(&cache_trace, layer_index,
+                                                       selected_ids, n_expert,
+                                                       stream_expert_resident_mask)) return 0;
             if (selected_timing) {
                 selected_wrap_ms = ds4_gpu_now_ms() - selected_t0;
                 if (use_stream_expert_cache) {

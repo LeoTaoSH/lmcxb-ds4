@@ -2382,6 +2382,75 @@ and with cold prefill at the minimum eight-slot cache; each compared 610,304
 floats exactly. MiMo, DFlash and Qwen4 kernel suites passed, along with CPU
 session/transport, server/agent and quality-parser tests.
 
+### Expert-cache replay study, October 2026
+
+The pinned MOPD MXFP4 model ran three fixed synthetic inputs from
+[speed-bench/mimo-cache](speed-bench/mimo-cache/), each for 512 greedy decode
+evaluations at context 4096, without speculation. Coding used 295 prompt
+tokens, reasoning 356, and the serialized tool-result continuation 529. The
+latter is a workload fixture, not a live tool execution or a quality benchmark.
+Every run retained the automatic 5134-slot (63.92 GiB) cache and started with
+5123 actual preloaded experts. Each routed expert is 12.75 MiB.
+
+The new opt-in cache trace captures actual warm state, including ages and
+nonresident route-hotness counters. The replay tool matched every observed
+hit mask, logical read-byte count and cache clock across all 72,192 layer
+routes (577,536 expert selections) before comparing policies. Compressed
+[traces and reports](speed-bench/mimo-cache/20261010/) include a manifest with
+source revision, capture-source hash and input/trace hashes.
+
+| Workload | Current hit rate | Logical MiB/evaluation | Read-ahead ms/evaluation | Blocking pread ms/evaluation | Complete load ms/evaluation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Coding | 89.11% | 522.08 | 123.01 | 57.12 | 184.53 |
+| Reasoning | 90.59% | 450.93 | 76.12 | 44.23 | 123.49 |
+| Tool-result continuation | 88.09% | 570.86 | 129.06 | 59.39 | 192.77 |
+
+Pread bytes include OS-page-cache hits; these are not physical SSD byte
+measurements. Complete load time includes the pread interval plus preparation
+and installation, including read-ahead advice. Do not add the two timings.
+Timing-summary instrumentation was enabled. GPU synchronization and driver
+waits lie outside these load measurements; they do not establish steady-state
+throughput or predict another policy's latency.
+
+| Workload | Layer-FIFO variant: logical read increase | Hindsight oracle: logical read reduction |
+| --- | ---: | ---: |
+| Coding | 191.71% | 60.10% |
+| Reasoning | 210.03% | 59.03% |
+| Tool-result continuation | 164.77% | 61.67% |
+
+The layer-FIFO result is the explicitly named `least_stale_layer_fifo`
+variant described in the [tool documentation](speed-bench/README.md#expert-cache-trace-replay).
+It is demand-only and paper-inspired; the paper does not fully specify its
+warm-state and fallback rules, and this experiment does not reproduce its
+prefetching. This variant is not promoted. The runtime's decayed-hotness policy
+is unchanged. The oracle has the same initial cache and budget, equal-sized
+experts and mandatory admission with the current request protected. Its future
+knowledge minimizes misses on this finite trace, not execution time; the
+remaining headroom motivates prediction research, not a claimed speedup.
+
+Tracing on/off produced identical 512 selected tokens and all dumped top-20
+logits/logprobs on the coding input. The 19 replay tests passed, including
+exhaustive small-state comparisons against an independent optimal oracle,
+protected batched requests, decay, warm state, malformed/truncated input and
+baseline-audit failures. Session/transport, quality-parser, server/agent and
+MiMo/DFlash/Qwen4 kernel suites also passed.
+
+The recorded read-ahead cost motivated an uninstrumented same-engine A/B of
+the existing `DS4_METAL_DISABLE_STREAMING_EXPERT_READAHEAD=1` setting on the coding fixture,
+with a 295-token prefix, context 4096, 16 warmup tokens and 256 measured tokens
+per variant, including greedy selection:
+
+| Read-ahead hints | Measured decode t/s |
+| --- | ---: |
+| Enabled (default) | 7.49 |
+| Disabled | 7.23 |
+
+All 41,653,248 vocabulary floats and 272 selected IDs matched. The
+[A/B rows](speed-bench/mimo-cache/20261010/readahead-ab.csv) retain the timings.
+This is a single paired-session screen with a shared expert cache, not a
+standalone throughput claim. Disabling advice did not win; that default is
+also unchanged. Time inside read-ahead advice cannot be treated as pure
+overhead that disappears without increasing subsequent read costs.
 
 ### Historical RL verification
 

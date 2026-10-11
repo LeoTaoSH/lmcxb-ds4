@@ -137,6 +137,55 @@ from the graph memory plan, keeping MiMo's internal chunk limit intact.
 and wait costs. Set these before process startup, and use them only for
 attribution: their instrumentation changes execution timing.
 
+### Expert-cache trace replay
+
+Capture one uninterrupted ordinary MXFP4 decode span on Metal:
+
+```sh
+MODEL=gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf
+DS4_METAL_STREAMING_EXPERT_CACHE_TRACE=/tmp/mimo-cache.jsonl \
+  ./ds4 -m "$MODEL" --ssd-streaming --ctx 4096 --raw-prompt \
+  --prompt-file speed-bench/mimo-cache/coding.txt \
+  --temp 0 --nothink --tokens 512
+python3 speed-bench/expert_cache_replay.py /tmp/mimo-cache.jsonl \
+  --label coding --output /tmp/mimo-cache-replay.json
+make test-expert-cache-replay
+```
+
+The fixed synthetic inputs in `mimo-cache/` cover coding, integer reasoning,
+and a tool-result continuation. They are workload fixtures, not a model-quality
+suite or evidence of a live tool execution. Run each in a fresh process; retain
+the checkpoint, allocated context and effective cache budget with the results.
+
+The version-1 JSONL trace starts with actual warm-cache residents, their ages,
+and all nonzero route-hotness counts. Each route records selected IDs, the
+observed hit mask, cache clock, logical pread bytes and blocking read/load wall
+times. A footer marks normal completion. This is separate from the legacy
+six-ID `DS4_MOE_RECORD_SELECTED_IDS` format and never overrides routing.
+The trace path is selected at first use. Keep one model and a fixed cache budget;
+MTP/DFlash, further prefill and concurrent execution are outside this replay's
+scope. The producer currently captures the MXFP4 selected-slot path.
+
+Replay accepts plain JSONL or gzip and refuses to report policy comparisons
+unless every recorded hit mask, read-byte count and clock matches the current
+policy. Every policy starts from the same resident set and slot budget:
+
+* `current`: decaying route frequency, then oldest cache use.
+* `least_stale_layer_fifo`: a demand-only interpretation inspired by
+  [SpecMD](https://arxiv.org/abs/2602.03921). Stale residents precede current-pass
+  residents, ordered by ascending layer and FIFO. Initial residents start stale.
+  The paper does not fully specify warm-state, tie and fallback rules; this
+  variant permits stale-right fallback and does not reproduce its prefetching.
+* `oracle`: farthest-next-use over this finite trace, for equal-sized experts
+  and mandatory admission with the complete current request protected.
+
+Reports include aggregates and per-layer results; use `--format csv` for CSV.
+Pread bytes are logical requests and may be served from the OS page cache.
+`pread_ms` measures blocking worker-read batches; `load_ms` includes those
+reads plus cache preparation/install, so do not add them together. Neither
+covers all GPU synchronization or driver waits. Alternative-policy hit rates
+and read-byte reductions are simulations, not measured throughput gains.
+
 ### Concurrency: many requests at once
 
 `session_concurrency_bench` measures the engine without HTTP overhead.
