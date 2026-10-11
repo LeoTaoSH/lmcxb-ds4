@@ -1,0 +1,120 @@
+{
+  "status": "invalidated; historical results must not be used as current quality evidence",
+  "reason": "The probe used ds4_tokenize_rendered_chat while teacher capture --raw-prompt and ds4-bench use ds4_tokenize_text. Prefix token IDs/counts differ, so reference and candidate rows were conditioned on the wrong prefix for the supplied teacher continuation.",
+  "reported_by": "Main",
+  "probability_evidence": {
+    "invalid_probe_prefix_tokens": 268,
+    "baseline_prompt_tokens": 292
+  },
+  "corrected_protocol": {
+    "tokenizer": "ds4_tokenize_text",
+    "prefix_count_matches_baseline_required_on_every_variant": true,
+    "baseline_prompt_counts": {
+      "probability": 292,
+      "rust-parser": 327,
+      "tool-debug": 486
+    }
+  },
+  "old_binary": "/tmp/ds4-serving-experiments.VLO26y/mimo_verify_quality",
+  "old_source_binary_hashes": {
+    "speed-bench/mimo_verify_quality.c": "4c2772eb6ebe1a5cb63a487aa480dba4d0c3500e723d7cb85f5a03c48d15a24e",
+    "ds4.c": "78062164172d365720a1c4b13783342e4f92cbc95b27a2eaaf47169c0fd8ad64",
+    "ds4_metal.m": "7eea472ddff62699f4c1166bc735f6aa1b9b17764a6530ac40eae9568e4059c4",
+    "metal/moe.metal": "cc12b597de5ac9f9b5cfa4f5eaf0625d0014e14e79d4f521690ac90ab230e475",
+    "binary": "46dc9a9b902a7eba516d8b4a71cb607419c19b29355653245fb81b7b956b1edf"
+  },
+  "archived_artifacts": [
+    {
+      "name": "final-build-probability-budget256.json",
+      "sha256": "b9fa1b31907a10840c51061a4dd66b93b998f926ae6ed4cd1d628a85913c995c"
+    },
+    {
+      "name": "artifact-hashes.json",
+      "sha256": "e075cb57a34d176d06e8cb0861a5a097ff80080061387829023eaa685ca2e63b"
+    },
+    {
+      "name": "commands.json",
+      "sha256": "522b7567fdb5ff8024404dd693665f24ff1db00a0ca148aa41731de4eaebdee3"
+    },
+    {
+      "name": "summary.json",
+      "sha256": "950faf5c40f8bb1734040fc579fbe6ab5757188b67b9ac2042a5c76d4507acb9"
+    },
+    {
+      "name": "tool-debug-budget32.json",
+      "sha256": "275f58aef57c35fbd696c3d02f46c2478556ae2a960cffd4c427a4afe77f4abb"
+    },
+    {
+      "name": "tool-debug-budget16.json",
+      "sha256": "684c05796db55502a98f50d101ca3f13dae6ebeba8d536faa10d28a2f8a1814d"
+    },
+    {
+      "name": "tool-debug-budget8.json",
+      "sha256": "32c23c39542ed1534504998d681ff6fa354bfc780afa1e9b9298e3be8a6365b2"
+    },
+    {
+      "name": "tool-debug-budget256.json",
+      "sha256": "369af8a4cafa83183846d2ba6e7c33faeaf1576bb195b6c8df4c568c59884d37"
+    },
+    {
+      "name": "tool-debug-unmasked.json",
+      "sha256": "40bf1d66c87ae7962325ee8e2ce2abc23e8ed33043af957b14e6b64d85340bf5"
+    },
+    {
+      "name": "tool-debug-reference.json",
+      "sha256": "cacf99f99c4ae6faec067c19e5d285568a083e028748fa7bee21be38e145683d"
+    },
+    {
+      "name": "rust-parser-budget32.json",
+      "sha256": "b5e97af6a412248f2d89f4dc72f5db254cb940cc51afe3bb10975939241128e4"
+    },
+    {
+      "name": "rust-parser-budget16.json",
+      "sha256": "cd30e13375bcbb86be25de494c884916fff450112a68bcffef97a21eadb63069"
+    },
+    {
+      "name": "rust-parser-budget8.json",
+      "sha256": "ca1fe70f40c7d1a79a62dc92ebd73924616a3495868ef861205b94a33e54dc7e"
+    },
+    {
+      "name": "rust-parser-budget256.json",
+      "sha256": "c5eaac0122520e62b5bc5e17c83ae9642c4fa95a0d72963b8cba7532f3d7328a"
+    },
+    {
+      "name": "rust-parser-unmasked.json",
+      "sha256": "564cffc213391dfec4d859d9d2bfaaebde29c506370285873907a11e2f168700"
+    },
+    {
+      "name": "rust-parser-reference.json",
+      "sha256": "467898e4b2e494a57fef7b46c2474b8cfc510e0109403797d32559392fcfd6cc"
+    },
+    {
+      "name": "probability-budget32.json",
+      "sha256": "d54550a291cd24f6eaad373e6885153ef4d47cf2ff1f1934adc42edc55b6a7e6"
+    },
+    {
+      "name": "probability-budget16.json",
+      "sha256": "24093d6e4ab27c6b16c215d760917d12fc1f843a25dbbff4a7e11a0328c3a898"
+    },
+    {
+      "name": "probability-budget8.json",
+      "sha256": "514ecefb5856e2f4e0c75958cde19173c3eb8a267d412391e7b8c545fec8b64e"
+    },
+    {
+      "name": "probability-budget256.json",
+      "sha256": "b9fa1b31907a10840c51061a4dd66b93b998f926ae6ed4cd1d628a85913c995c"
+    },
+    {
+      "name": "probability-unmasked.json",
+      "sha256": "409749cabb8c1e28ddced0056ee58b25bf2f95ab7aaeff051f60027008130f42"
+    },
+    {
+      "name": "probability-reference-r2.json",
+      "sha256": "045abb5d75733a94958407284cef7e5d5103dc6a0e5845890f49c1a5668699f6"
+    }
+  ],
+  "large_old_artifacts_remain_in": "/tmp/ds4-serving-experiments.VLO26y",
+  "gates_file": "../gates.json",
+  "gates_unchanged": true,
+  "invalidated_at": "2026-10-11T07:23:02.604Z"
+}

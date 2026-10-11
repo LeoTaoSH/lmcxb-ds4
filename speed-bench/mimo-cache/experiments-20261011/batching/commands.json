@@ -1,0 +1,16 @@
+{
+  "model": "/Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+  "binary": "/tmp/ds4-serving-experiments.VLO26y/native-session-bench",
+  "binary_sha256": "6902e4f2033dd04c1d77104fc1936b0383f24e9a6eb6b600b476132d95ac4533",
+  "build_command": "make session-concurrency-bench && cp speed-bench/session_concurrency_bench /tmp/ds4-serving-experiments.VLO26y/native-session-bench",
+  "paired_command": "env -u DS4_MIMO2_SESSION_BATCH -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX /tmp/ds4-serving-experiments.VLO26y/native-session-bench -m /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --concurrency 2,4 --ctx 256 --gen 64 --warmup 8 --budget-gib 8 --candidate-env DS4_MIMO2_SESSION_BATCH --candidate-value require --repeat 2 --csv speed-bench/mimo-cache/experiments-20261011/batching/paired.csv",
+  "paired_scope": "One engine and shared expert cache. A/B/B/A blocks advance existing sessions. Initial CSV latency metrics describe the unflagged 64-step measurement, not the later paired blocks. Paired throughput is printed at one-decimal precision in paired.log.",
+  "paired_four_retry_command": "env -u DS4_MIMO2_SESSION_BATCH -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX /tmp/ds4-serving-experiments.VLO26y/native-session-bench -m /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --concurrency 4 --ctx 256 --gen 64 --warmup 8 --budget-gib 8 --candidate-env DS4_MIMO2_SESSION_BATCH --candidate-value require --repeat 2 --csv speed-bench/mimo-cache/experiments-20261011/batching/paired-four.csv",
+  "attempts": [
+    {"job": "bg_60", "status": "tool_timeout_300_seconds", "usable_cell": 2, "log": "paired.log", "csv_written": false},
+    {"job": "bg_61", "status": "cancelled_after_main_requested_retry_only_interrupted_cell", "usable_cell": null, "log": "paired-complete.log"},
+    {"job": "bg_62", "status": "completed", "usable_cell": 4, "log": "paired-four.log", "csv": "paired-four.csv", "wall_seconds": 390.353}
+  ],
+  "profiling": "disabled",
+  "gpu_lease": "Main granted performance-only hardware lease; no concurrent GPU or ANE jobs authorized."
+}

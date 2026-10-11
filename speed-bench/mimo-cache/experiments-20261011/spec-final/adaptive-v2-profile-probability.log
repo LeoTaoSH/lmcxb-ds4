@@ -1,0 +1,75 @@
+ds4: DFlash drafter loaded: /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-DFlash-Q8.gguf (5 layers, block 8, up to 7 drafts, p-min 0.40)
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 107.52 GiB working set
+ds4:   using 66% total for model + cached experts: 70.96 GiB
+ds4:   non-routed weights: 7.03 GiB
+ds4:   routed expert size: 12.75 MiB
+ds4:   expert budget before prefill reserve: 5134 (63.92 GiB)
+ds4: metal SSD streaming cache target 63.92 GiB; effective 63.92 GiB = 0.00 GiB prefill headroom + 63.92 GiB dynamic cache (5134 experts, 12.75 MiB each)
+ds4: Metal SSD static weights locked 7.03 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (1 spans, 0.62 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.11 GiB (raw 0.11 + compressed 0.00) + buffers 1.14 GiB + resident model 7.03 GiB + expert cache 63.92 GiB = 72.21 GiB planned
+ds4: memory detail: ctx=4096 prefill_cap=2048 raw_kv_rows=4096 compressed_kv_rows=3 backend=metal
+ds4-bench: context buffers 1281.11 MiB (ctx=4096, backend=metal, prefill_chunk=2048, raw_kv_rows=4096, compressed_kv_rows=3)
+ds4-bench: DFlash enabled with draft width 8; frontier restoration uses prefix replay to restore draft context
+ds4: mimo_dflash_cost cap=0 drafted=0 committed=1 ms=4285.093000 read_bytes=561512448 pread_ms=202.670000 adaptive=1
+ds4: mimo_dflash_cost cap=1 drafted=1 committed=1 ms=2080.881000 read_bytes=1524105216 pread_ms=104.098000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=1 committed=2 ms=460.456000 read_bytes=1323565056 pread_ms=85.581000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=0 committed=1 ms=170.945000 read_bytes=869007360 pread_ms=57.691000 adaptive=1
+ds4: mimo_dflash_cost cap=0 drafted=0 committed=1 ms=251.957000 read_bytes=1443889152 pread_ms=93.686000 adaptive=1
+ds4: mimo_dflash_cost cap=1 drafted=1 committed=1 ms=319.885000 read_bytes=1671168000 pread_ms=115.247000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=2 committed=2 ms=399.315000 read_bytes=1377042432 pread_ms=71.171000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=0 committed=1 ms=141.102000 read_bytes=347602944 pread_ms=18.787000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=5 committed=4 ms=702.174000 read_bytes=3489398784 pread_ms=282.590000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=4 committed=5 ms=444.876000 read_bytes=2620391424 pread_ms=168.978000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=277.941000 read_bytes=1697906688 pread_ms=94.869000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=2 ms=218.381000 read_bytes=1136394240 pread_ms=73.747000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=2 ms=245.146000 read_bytes=1657798656 pread_ms=79.238000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=7 committed=8 ms=986.888000 read_bytes=4799594496 pread_ms=324.034000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=0 committed=1 ms=322.692000 read_bytes=1256718336 pread_ms=97.959000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=518.033000 read_bytes=1203240960 pread_ms=127.889000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=0 committed=1 ms=173.456000 read_bytes=347602944 pread_ms=59.263000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=2 ms=756.564000 read_bytes=2246049792 pread_ms=229.798000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=3 ms=874.655000 read_bytes=2994733056 pread_ms=255.327000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=3 ms=489.489000 read_bytes=1697906688 pread_ms=155.447000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=178.708000 read_bytes=842268672 pread_ms=54.476000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=2 ms=272.450000 read_bytes=1336934400 pread_ms=89.650000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=158.968000 read_bytes=614989824 pread_ms=47.546000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=158.904000 read_bytes=601620480 pread_ms=52.932000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=2 ms=264.243000 read_bytes=1256718336 pread_ms=103.177000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=4 committed=2 ms=710.983000 read_bytes=3810263040 pread_ms=297.633000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=4 committed=3 ms=388.612000 read_bytes=1577582592 pread_ms=140.066000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=3 committed=1 ms=514.539000 read_bytes=2459959296 pread_ms=175.927000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=3 committed=3 ms=271.325000 read_bytes=855638016 pread_ms=70.948000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=3 ms=351.581000 read_bytes=2032140288 pread_ms=116.141000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=342.083000 read_bytes=1096286208 pread_ms=87.427000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=2 ms=367.261000 read_bytes=1243348992 pread_ms=139.957000 adaptive=1
+ds4: mimo_dflash_cost cap=1 drafted=1 committed=2 ms=308.683000 read_bytes=949223424 pread_ms=73.586000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=2 ms=187.361000 read_bytes=628359168 pread_ms=57.691000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=3 committed=2 ms=663.808000 read_bytes=2593652736 pread_ms=215.070000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=3 committed=4 ms=429.870000 read_bytes=1497366528 pread_ms=153.054000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=5 committed=5 ms=865.613000 read_bytes=3061579776 pread_ms=406.548000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=2 ms=214.579000 read_bytes=762052608 pread_ms=72.210000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=4 committed=2 ms=445.263000 read_bytes=1778122752 pread_ms=158.693000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=1 ms=101.930000 read_bytes=147062784 pread_ms=11.399000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=2 ms=161.284000 read_bytes=427819008 pread_ms=40.129000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=2 committed=2 ms=519.784000 read_bytes=2018770944 pread_ms=172.613000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=6 committed=5 ms=1056.051000 read_bytes=3048210432 pread_ms=314.455000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=4 committed=4 ms=546.751000 read_bytes=1604321280 pread_ms=190.826000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=1 committed=1 ms=235.986000 read_bytes=655097856 pread_ms=59.921000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=5 committed=3 ms=725.226000 read_bytes=1871708160 pread_ms=269.091000 adaptive=1
+ds4: mimo_dflash_cost cap=7 drafted=7 committed=2 ms=844.300000 read_bytes=3115057152 pread_ms=269.735000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=4 ms=340.442000 read_bytes=641728512 pread_ms=63.671000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=4 ms=507.898000 read_bytes=1443889152 pread_ms=130.246000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=4 ms=271.486000 read_bytes=869007360 pread_ms=75.327000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=4 ms=295.624000 read_bytes=935854080 pread_ms=81.300000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=2 ms=1449.219000 read_bytes=3930587136 pread_ms=463.378000 adaptive=1
+ds4: mimo_dflash_cost cap=3 drafted=3 committed=4 ms=497.265000 read_bytes=2112356352 pread_ms=176.512000 adaptive=1
+ds4: mimo_dflash_cost cap=1 drafted=1 committed=1 ms=795.858000 read_bytes=2660499456 pread_ms=242.430000 adaptive=1
+ds4: mimo_dflash_cost cap=0 drafted=0 committed=1 ms=225.490000 read_bytes=815529984 pread_ms=56.993000 adaptive=1
+ds4: MiMo dflash: 48 verify cycles, 123 drafts, 73 accepted (59.3%), 2.52 committed tokens per verify

@@ -1,0 +1,13 @@
+workload,run,variant,ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,gen_steady_tokens,gen_steady_tps,kvcache_bytes
+probability,1,stock,292,292,10.42,256,6.74,1775.447,255,7.05,0
+probability,2,learned,292,292,9.98,256,5.55,2144.025,255,5.80,0
+probability,3,learned,292,292,9.47,256,6.28,2454.589,255,6.66,0
+probability,4,stock,292,292,9.19,256,6.54,1821.256,255,6.83,0
+rust-parser,1,stock,327,327,11.58,256,5.47,2531.999,255,5.77,0
+rust-parser,2,learned,327,327,11.26,256,5.41,2757.191,255,5.73,0
+rust-parser,3,learned,327,327,9.95,256,5.53,2146.005,255,5.78,0
+rust-parser,4,stock,327,327,10.21,256,4.37,2732.821,255,4.57,0
+tool-debug,1,stock,486,486,16.52,256,6.09,3365.315,255,6.59,0
+tool-debug,2,learned,486,486,16.44,256,5.93,4390.378,255,6.58,0
+tool-debug,3,learned,486,486,14.24,256,5.79,2642.909,255,6.14,0
+tool-debug,4,stock,486,486,14.17,256,5.36,1948.650,255,5.57,0

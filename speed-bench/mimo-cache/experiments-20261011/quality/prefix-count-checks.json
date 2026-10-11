@@ -1,0 +1,188 @@
+{
+  "status": "all18 corrected grid reports match the raw teacher capture prefix counts",
+  "protocol_tokenizer": "ds4_tokenize_text",
+  "baseline_count_field": "prompt_tokens",
+  "probe_count_field": "prefix_tokens",
+  "checks_performed_before_result_acceptance": true,
+  "baseline_counts": {
+    "probability": 292,
+    "rust-parser": 327,
+    "tool-debug": 486
+  },
+  "checks": [
+    {
+      "case": "probability",
+      "variant": "reference",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-reference.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "unmasked",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-unmasked.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget256",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget256.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget8",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget8.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget16",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget16.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "probability",
+      "variant": "budget32",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-budget32.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/probability.logprobs.json",
+      "baseline_prompt_tokens": 292,
+      "probe_prefix_tokens": 292,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "reference",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-reference.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "unmasked",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-unmasked.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget256",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget256.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget8",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget8.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget16",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget16.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "rust-parser",
+      "variant": "budget32",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/rust-parser-raw-budget32.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.logprobs.json",
+      "baseline_prompt_tokens": 327,
+      "probe_prefix_tokens": 327,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "reference",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-reference.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "unmasked",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-unmasked.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget256",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget256.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget8",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget8.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget16",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget16.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    },
+    {
+      "case": "tool-debug",
+      "variant": "budget32",
+      "json": "speed-bench/mimo-cache/experiments-20261011/quality/tool-debug-raw-budget32.json",
+      "baseline_file": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.logprobs.json",
+      "baseline_prompt_tokens": 486,
+      "probe_prefix_tokens": 486,
+      "passed": true
+    }
+  ],
+  "all_passed": true,
+  "teacher_label_checks_all_passed": true,
+  "old_reference_smoke": {
+    "json": "speed-bench/mimo-cache/experiments-20261011/quality/probability-raw-old-reference-rejection.json",
+    "old_reference": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref",
+    "raw_prefix_tokens": 292,
+    "baseline_prompt_tokens": 292,
+    "success_false": true,
+    "error": "incompatible reference: format/model/vocab/block/rows/context/counts differ",
+    "evaluated_rows": 0,
+    "passed": true
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "routes": 24064,
+  "logical_misses": 16804,
+  "all_hit_masks_bytes_and_clocks_match_frozen_policy": true,
+  "selected_tokens_and_top20_logits_logprobs_match": 512,
+  "trace_sha256": "f6515cd073c4bc97605392263fef1d51ce86b65ccb5f6c1be09d22515a3f7490",
+  "native_logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34",
+  "baseline_logprobs_sha256": "e7be222afad1a6c3f204ce134275745aebbb4e41d823e271e86b33c2d11dde34",
+  "ranking_abba_binary_sha256": "19ae29f7e004438b18f8e3cb0a8b7a67edf0c6b744f9b717c66bb8b7263e00ea",
+  "scope": "Native ranked capture audit uses CausalCache, not the stock-policy trace audit."
+}

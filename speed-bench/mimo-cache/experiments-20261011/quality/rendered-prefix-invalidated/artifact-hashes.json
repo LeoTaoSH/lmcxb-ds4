@@ -1,0 +1,42 @@
+{
+  "algorithm": "SHA-256",
+  "hash_command": "shasum -a 256 speed-bench/mimo-cache/holdout-20261011/probability.txt speed-bench/mimo-cache/holdout-20261011/rust-parser.txt speed-bench/mimo-cache/holdout-20261011/tool-debug.txt /tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens /tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens /tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens /tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref /tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref /tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref",
+  "artifacts": [
+    {
+      "path": "speed-bench/mimo-cache/holdout-20261011/probability.txt",
+      "sha256": "98eb2f722625eb377097830ff48114f5979eb70f65f8d8aefc28cd42be12e358"
+    },
+    {
+      "path": "speed-bench/mimo-cache/holdout-20261011/rust-parser.txt",
+      "sha256": "5d4e00a9e4e684ec838798aa6fcbba666aba3be3467b325a3a2aff34a2eab5f3"
+    },
+    {
+      "path": "speed-bench/mimo-cache/holdout-20261011/tool-debug.txt",
+      "sha256": "15f423c1612805e0f448187ad0d259f1e622fcf4d53bc07a85d54d4f22816f0b"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/probability.teacher.tokens",
+      "sha256": "e16a9dcee156b6ed4f8cbce0bb9ee33259d103de3e567a9aec48dc7452c7633f"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/rust-parser.teacher.tokens",
+      "sha256": "85b5b7fb6347d77f8c4ea79b4d927d5f2e5c01a07cb93bcd1f7ed160dfd6864c"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/tool-debug.teacher.tokens",
+      "sha256": "51c32964e9f853eb3d00a2961e7413e9c818a0d075b67f5d0619b4039862c81b"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/quality-probability-r2.ref",
+      "sha256": "73dd30e1354e4902d188411b6c8dc0a16150821e15c9a6d431e72bc1c735eb2f"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/quality-rust-parser.ref",
+      "sha256": "871f0446e0bbd77b20e6de80c9506d8f3d16c12fbc0c1c09d9b596b67efa8d60"
+    },
+    {
+      "path": "/tmp/ds4-serving-experiments.VLO26y/quality-tool-debug.ref",
+      "sha256": "fbb4c738267ab59508c90406adf0fbe082a63cc4f4a61112a37b84f21cbf618d"
+    }
+  ]
+}

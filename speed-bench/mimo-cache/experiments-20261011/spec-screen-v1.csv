@@ -1,0 +1,16 @@
+workload,mode,tokens,tps,first_ms,reference_equal,first_mismatch
+probability,plain,128,4.63,1894.073,True,
+probability,legacy7,128,4.14,2039.316,True,
+probability,shared7,128,4.73,2343.788,True,
+probability,shared3,128,4.61,3105.265,True,
+probability,adaptive,128,4.09,4242.735,True,
+rust-parser,plain,128,4.35,2685.616,True,
+rust-parser,legacy7,128,4.43,5148.647,True,
+rust-parser,shared7,128,4.61,4989.216,True,
+rust-parser,shared3,128,5.25,3116.336,True,
+rust-parser,adaptive,128,5.16,2778.463,True,
+tool-debug,plain,128,5.62,2202.694,True,
+tool-debug,legacy7,128,4.06,5753.630,False,5
+tool-debug,shared7,128,4.08,4599.831,False,5
+tool-debug,shared3,128,4.04,5024.245,False,5
+tool-debug,adaptive,128,5.45,2563.265,True,

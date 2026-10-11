@@ -122,6 +122,25 @@ they do not promise the same gain in decode or on another SSD. See
 [streamed MiMo tuning](../speed-bench/README.md#streamed-mimo-tuning) for the
 exact-logit A/B tools and profiler controls.
 
+### MiMo cache-policy experiments
+
+The default replacement policy remains decayed route frequency with an LRU
+tie-break. To try the frozen causal ranker on streamed MiMo, set
+
+```sh
+DS4_MIMO2_CACHE_RANK_MODEL=speed-bench/mimo-cache/learned/frozen-linear-v1.json \
+  ./ds4 -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 4096
+```
+
+The ranker changes eviction priority only. It retains the real router, expert
+weights and cache budget. Held-out replay reduced logical requested bytes,
+but standalone ABBA throughput was mixed. It is opt-in; unset the variable
+to use the default. Results and limitations are in
+[MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
+The route-history and activation-based staging studies increased total
+logical reads even with optimistic readiness, so neither enables runtime
+prefetching. See the [experiment tools](../speed-bench/README.md#learned-replacement-and-predictive-staging).
+
 Full GLM 5.3 IQ2_XXS (196.58 GiB) also benefits from caching short tool-result
 prompts. With an 8K context and a 61.35 GiB effective expert cache, a 16-token
 append fell from 30.8 to 2.9 seconds; generation afterward rose from 4.09 to

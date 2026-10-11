@@ -1,0 +1,22 @@
+{
+  "workload": "tool-debug",
+  "mode": "shared7",
+  "label": "shared-abba-tool-debug-3-shared7",
+  "profiled": false,
+  "generated_tokens": 128,
+  "metrics": {
+    "ctx_tokens": "486",
+    "prefill_tokens": "486",
+    "prefill_tps": "16.41",
+    "gen_tokens": "128",
+    "gen_tps": "4.61",
+    "gen_first_ms": "6016.834",
+    "gen_steady_tokens": "125",
+    "gen_steady_tps": "5.74",
+    "kvcache_bytes": "0"
+  },
+  "equals_ordinary": false,
+  "first_ordinary_mismatch": 5,
+  "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/shared-abba-tool-debug-3-shared7.receipt.json",
+  "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+}

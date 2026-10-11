@@ -1,0 +1,63 @@
+{
+  "baseline_script_sha256": "9c5c3c7458f5ef4fa3d9c8254b0f1bd21ca34b53ac4a977b7890bfef147ed927",
+  "fit": {
+    "fit_cpu_seconds": 0.36273599999999995,
+    "fit_wall_seconds": 0.4188373750075698,
+    "predictor_prepare_cpu_seconds": 0.36373500000000014,
+    "training_pairs": 72186
+  },
+  "freeze_order": "model and input hashes written before evaluation; no fresh holdout read",
+  "hf_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "model": "MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf",
+  "model_sha256": "ac9bf10a62929602bae70a5b88de7147024d002b8bfb1d99fd96105e6893afca",
+  "predictor_script_sha256": "341bcb3cb94383d14790dbe835f89d44d646a5c45d709d2f2375272a8748615d",
+  "settings": {
+    "expert_domain": 256,
+    "expiry": "after target event; early demand may promote; footer wastes pending loads",
+    "layer_sequence": "training-frozen cyclic order; no cross-trace training pairs",
+    "lookahead_layer_events": 2,
+    "prefetch_hotness": "none; only demand advances hotness and cache clock",
+    "prior_pseudoroutes": 32,
+    "ready_model": "all staging loads ready immediately after source event",
+    "reservation": "dynamic occupied staging slots inside the original total, not extra slots",
+    "score": "mean over current IDs of (coactivation_count + 32 * target_prior) / (source_count + 32)",
+    "staging_capacity": "min(total_cache_slots, lookahead_layer_events * width)",
+    "tie_break": "ascending expert ID",
+    "total_cache_slots": 5134,
+    "widths": [
+      1,
+      2,
+      4
+    ]
+  },
+  "training_inputs": [
+    {
+      "expert_bytes": 13369344,
+      "file_bytes": 680705,
+      "routes": 24064,
+      "sha256": "2a304275f9c189dd85bb69d52691bce01b07ae38b520682d40ba81e63504465a",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/coding.jsonl.gz",
+      "tokens": 512,
+      "total_slots": 5134
+    },
+    {
+      "expert_bytes": 13369344,
+      "file_bytes": 661032,
+      "routes": 24064,
+      "sha256": "0b787445292f5e407bc36d9b4990db74df329ac7e37533e96fb6b9cf88e354da",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/reasoning.jsonl.gz",
+      "tokens": 512,
+      "total_slots": 5134
+    },
+    {
+      "expert_bytes": 13369344,
+      "file_bytes": 688163,
+      "routes": 24064,
+      "sha256": "86166889598bdce648d2d78b1c0538f861bbaf6e10324918316fd6e5e07ac8d5",
+      "source": "/Users/mvid/Development/personal/ds4/speed-bench/mimo-cache/20261010/tool-result.jsonl.gz",
+      "tokens": 512,
+      "total_slots": 5134
+    }
+  ],
+  "version": 1
+}

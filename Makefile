@@ -149,13 +149,25 @@ speed-bench/metal_prefill_variant_bench: speed-bench/metal_prefill_variant_bench
 
 metal-prefill-variant-bench: speed-bench/metal_prefill_variant_bench
 
-speed-bench/session_concurrency_bench.o: speed-bench/session_concurrency_bench.c ds4.h
+speed-bench/session_concurrency_bench.o: speed-bench/session_concurrency_bench.c ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
 
 speed-bench/session_concurrency_bench: speed-bench/session_concurrency_bench.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
 
 session-concurrency-bench: speed-bench/session_concurrency_bench
+
+.PHONY: mimo-verify-quality test-mimo-verify-quality
+speed-bench/mimo_verify_quality.o: speed-bench/mimo_verify_quality.c ds4.c ds4.h ds4_gpu.h ds4_ssd.h ds4_engram.h ds4_dflash_policy.h
+	$(CC) $(QUALITY_CFLAGS) -Wno-unused-function -I. -c -o $@ $<
+
+speed-bench/mimo_verify_quality: speed-bench/mimo_verify_quality.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(CC) $(QUALITY_CFLAGS) -o $@ $^ $(METAL_LDLIBS)
+
+mimo-verify-quality: speed-bench/mimo_verify_quality
+
+test-mimo-verify-quality: speed-bench/mimo_verify_quality
+	./speed-bench/mimo_verify_quality --self-test
 
 tests/test_mxfp4_metal.o: tests/test_mxfp4_metal.c ds4_gpu.h
 	$(CC) $(CFLAGS) -I. -c -o $@ $<
@@ -724,7 +736,7 @@ test-qwen4-cuda: tests/test_qwen4_cuda
 	./tests/test_qwen4_cuda
 endif
 
-ds4.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_copy.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_linux_memory.h ds4_engram.h
+ds4.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_copy.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_linux_memory.h ds4_engram.h ds4_dflash_policy.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 ds4_image.o: ds4_image.c ds4_image.h third_party/iris/jpeg.h third_party/iris/png.h
@@ -790,7 +802,7 @@ rax.o: rax.c rax.h rax_malloc.h
 linenoise.o: linenoise.c linenoise.h
 	$(CC) $(CFLAGS) -c -o $@ linenoise.c
 
-ds4_cpu.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_tp.h
+ds4_cpu.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_tp.h ds4_dflash_policy.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -c -o $@ ds4.c
 
 ds4_cli_cpu.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h linenoise.h
@@ -811,7 +823,7 @@ ds4_eval_cpu.o: ds4_eval.c ds4_eval_cases.h ds4.h ds4_ssd.h ds4_distributed.h ds
 ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_agent.c
 
-ds4_metal.o: ds4_metal.m ds4.h ds4_gpu.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_image.h $(METAL_SRCS)
+ds4_metal.o: ds4_metal.m ds4.h ds4_gpu.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_image.h ds4_cache_rank.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
 tests/test_glm53_kda.o: tests/test_glm53_kda.c ds4_gpu.h
@@ -1281,10 +1293,33 @@ test-web-recovery: tests/test_web_recovery
 test-expert-cache-replay:
 	python3 -m unittest discover -s tests -p test_expert_cache_replay.py
 
+.PHONY: test-cache-rank test-expert-cache-learned test-expert-prefetch-replay test-expert-activation-prefetch
+tests/test_cache_rank: tests/test_cache_rank.c ds4_cache_rank.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/test_cache_rank.c -lm
+
+test-cache-rank: tests/test_cache_rank
+	./tests/test_cache_rank
+
+.PHONY: test-dflash-policy
+tests/test_dflash_policy: tests/test_dflash_policy.c ds4_dflash_policy.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/test_dflash_policy.c
+
+test-dflash-policy: tests/test_dflash_policy
+	./tests/test_dflash_policy
+
+test-expert-cache-learned:
+	OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 python3 -m unittest discover -s tests -p test_expert_cache_learned.py
+
+test-expert-prefetch-replay:
+	OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 python3 -m unittest discover -s tests -p test_expert_prefetch_replay.py
+
+test-expert-activation-prefetch:
+	OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 python3 -m unittest discover -s tests -p test_expert_activation_prefetch.py
+
 tests/test_web_recovery: tests/test_web_recovery.c ds4_web.c ds4_web.h
 	$(CC) $(CFLAGS) -Wno-unused-function -o $@ tests/test_web_recovery.c
 
-test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-engram test-web-recovery test-expert-cache-replay \
+test: ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test test-session-state test-linux-memory test-engram test-web-recovery test-expert-cache-replay test-cache-rank test-dflash-policy \
 	tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args \
 	tests/test_deepseek4_vision_image tests/test_image_decode tests/test_prompt_prefix $(SAMPLING_TEST) ds4 ds4-server ds4-bench ds4-agent
 	./ds4-eval --validate-cases
@@ -1350,6 +1385,7 @@ ds4_cpu_test_hooks.o ds4_cuda_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
 
 clean:
+	rm -f tests/test_cache_rank tests/test_dflash_policy speed-bench/mimo_verify_quality
 	rm -f tests/test_mmvq_cuda tests/test_mmvq_rocm
 	rm -f tests/test_qwen4_ngrams
 	rm -f tests/test_qwen4_ngram_state

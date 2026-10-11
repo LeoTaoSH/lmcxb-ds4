@@ -1,0 +1,19 @@
+{
+  "scope": "Numerical screen before any approximate-verifier throughput trial; not a task-accuracy or deployment acceptance gate.",
+  "set_before_main_inspected_candidate_results": true,
+  "workloads": ["probability", "rust-parser", "tool-debug"],
+  "rows_per_workload": 128,
+  "verification_block": 8,
+  "full_union_control": {
+    "maximum_absolute_logit_drift": 0,
+    "argmax_agreement": 1,
+    "teacher_nll_delta": 0
+  },
+  "candidate_requirements_each_workload": {
+    "all_logits_finite": true,
+    "maximum_mean_teacher_nll_increase_nats": 0.02,
+    "maximum_mean_reference_to_candidate_kl_nats": 0.02,
+    "minimum_argmax_agreement": 0.99
+  },
+  "promotion": "No default change. Passing this screen permits an isolated throughput trial only; task accuracy, executable code, and live tool-call validity remain separate requirements."
+}

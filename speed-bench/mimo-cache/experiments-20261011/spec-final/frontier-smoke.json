@@ -1,0 +1,11 @@
+{
+  "frontiers": [
+    128,
+    129
+  ],
+  "probe_tokens_each": 3,
+  "complete_frontier_logit_files_equal_to_no_generation_control": [
+    "frontier_000128.logits.json",
+    "frontier_000129.logits.json"
+  ]
+}

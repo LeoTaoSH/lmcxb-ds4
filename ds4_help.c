@@ -199,6 +199,9 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
         } else if (tool == DS4_HELP_BENCH) {
             opt(fp, c, "--dspark", "Benchmark greedy DSpark using the support GGUF passed with --mtp-model.");
             opt(fp, c, "--dspark-confidence F", "DSpark confidence pruning threshold 0..1.");
+            opt(fp, c, "--dflash FILE", "Benchmark MiMo DFlash with a matching sidecar GGUF (Metal).");
+            opt(fp, c, "--dflash-draft N", "Maximum DFlash drafts per block, 1..7. Default: 7");
+            opt(fp, c, "--dflash-p-min P", "DFlash joint-confidence cutoff, 0..1. Default: 0.4");
         }
         opt(fp, c, "--quality", "Prefer exact kernels where faster approximate paths exist.");
         opt(fp, c, "--warm-weights", "Touch resident weights at startup to reduce first-use stalls.");
@@ -401,6 +404,7 @@ static void print_bench_specific(FILE *fp, const help_colors *c) {
     opt(fp, c, "--teacher-forced-decode", "Decode the following prompt tokens instead of each predicted argmax.");
     opt(fp, c, "--csv FILE", "Write CSV there instead of stdout.");
     opt(fp, c, "--dump-frontier-logits-dir DIR", "Write one full-logit JSON file per frontier.");
+    opt(fp, c, "--dump-generated-tokens FILE", "Write generated token IDs as JSONL, one record per frontier.");
     fputc('\n', fp);
 }
 

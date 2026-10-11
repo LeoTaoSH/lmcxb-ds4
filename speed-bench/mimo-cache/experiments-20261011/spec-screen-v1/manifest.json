@@ -1,0 +1,298 @@
+{
+  "binary_sha256": "6511bc9a487aa5883446e82be4fd5c0ab62eb0e07eac8fc3978d049b768ba0e7",
+  "generation_tokens": 128,
+  "context": 4096,
+  "cache_slots": 5134,
+  "draft_probability_floor": 0.4,
+  "profiling": false,
+  "run_order": "Workload order probability, rust-parser, tool-debug; mode order plain, legacy7, shared7, shared3, adaptive. One fresh process per cell.",
+  "adaptive_version": "v1, before filtering exploration arms against configured cap and remaining token budget",
+  "limits": "Single-run screen; not an alternating-order speedup claim. Ordinary and legacy DFlash already differ at token index5 on tool-debug. Shared7 exactly matches legacy7 on all three complete128-token streams.",
+  "results": [
+    {
+      "workload": "probability",
+      "mode": "plain",
+      "metrics": {
+        "ctx_tokens": "292",
+        "prefill_tokens": "292",
+        "prefill_tps": "9.10",
+        "gen_tokens": "128",
+        "gen_tps": "4.63",
+        "gen_first_ms": "1894.073",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "4.93",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "probability",
+      "mode": "legacy7",
+      "metrics": {
+        "ctx_tokens": "292",
+        "prefill_tokens": "292",
+        "prefill_tps": "9.03",
+        "gen_tokens": "128",
+        "gen_tps": "4.14",
+        "gen_first_ms": "2039.316",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "4.40",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "probability",
+      "mode": "shared7",
+      "metrics": {
+        "ctx_tokens": "292",
+        "prefill_tokens": "292",
+        "prefill_tps": "8.79",
+        "gen_tokens": "128",
+        "gen_tps": "4.73",
+        "gen_first_ms": "2343.788",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "5.14",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "probability",
+      "mode": "shared3",
+      "metrics": {
+        "ctx_tokens": "292",
+        "prefill_tokens": "292",
+        "prefill_tps": "9.67",
+        "gen_tokens": "128",
+        "gen_tps": "4.61",
+        "gen_first_ms": "3105.265",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "5.15",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "probability",
+      "mode": "adaptive",
+      "metrics": {
+        "ctx_tokens": "292",
+        "prefill_tokens": "292",
+        "prefill_tps": "8.46",
+        "gen_tokens": "128",
+        "gen_tps": "4.09",
+        "gen_first_ms": "4242.735",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "4.69",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "rust-parser",
+      "mode": "plain",
+      "metrics": {
+        "ctx_tokens": "327",
+        "prefill_tokens": "327",
+        "prefill_tps": "9.85",
+        "gen_tokens": "128",
+        "gen_tps": "4.35",
+        "gen_first_ms": "2685.616",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "4.75",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "rust-parser",
+      "mode": "legacy7",
+      "metrics": {
+        "ctx_tokens": "327",
+        "prefill_tokens": "327",
+        "prefill_tps": "10.60",
+        "gen_tokens": "128",
+        "gen_tps": "4.43",
+        "gen_first_ms": "5148.647",
+        "gen_steady_tokens": "123",
+        "gen_steady_tps": "5.19",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "rust-parser",
+      "mode": "shared7",
+      "metrics": {
+        "ctx_tokens": "327",
+        "prefill_tokens": "327",
+        "prefill_tps": "10.87",
+        "gen_tokens": "128",
+        "gen_tps": "4.61",
+        "gen_first_ms": "4989.216",
+        "gen_steady_tokens": "123",
+        "gen_steady_tps": "5.41",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "rust-parser",
+      "mode": "shared3",
+      "metrics": {
+        "ctx_tokens": "327",
+        "prefill_tokens": "327",
+        "prefill_tps": "10.14",
+        "gen_tokens": "128",
+        "gen_tps": "5.25",
+        "gen_first_ms": "3116.336",
+        "gen_steady_tokens": "124",
+        "gen_steady_tps": "5.84",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "rust-parser",
+      "mode": "adaptive",
+      "metrics": {
+        "ctx_tokens": "327",
+        "prefill_tokens": "327",
+        "prefill_tps": "10.13",
+        "gen_tokens": "128",
+        "gen_tps": "5.16",
+        "gen_first_ms": "2778.463",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "5.77",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "tool-debug",
+      "mode": "plain",
+      "metrics": {
+        "ctx_tokens": "486",
+        "prefill_tokens": "486",
+        "prefill_tps": "16.74",
+        "gen_tokens": "128",
+        "gen_tps": "5.62",
+        "gen_first_ms": "2202.694",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "6.18",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": false,
+      "first_ordinary_mismatch": null
+    },
+    {
+      "workload": "tool-debug",
+      "mode": "legacy7",
+      "metrics": {
+        "ctx_tokens": "486",
+        "prefill_tokens": "486",
+        "prefill_tps": "16.30",
+        "gen_tokens": "128",
+        "gen_tps": "4.06",
+        "gen_first_ms": "5753.630",
+        "gen_steady_tokens": "125",
+        "gen_steady_tps": "4.85",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": false,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": 5
+    },
+    {
+      "workload": "tool-debug",
+      "mode": "shared7",
+      "metrics": {
+        "ctx_tokens": "486",
+        "prefill_tokens": "486",
+        "prefill_tps": "13.97",
+        "gen_tokens": "128",
+        "gen_tps": "4.08",
+        "gen_first_ms": "4599.831",
+        "gen_steady_tokens": "125",
+        "gen_steady_tps": "4.67",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": false,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": 5
+    },
+    {
+      "workload": "tool-debug",
+      "mode": "shared3",
+      "metrics": {
+        "ctx_tokens": "486",
+        "prefill_tokens": "486",
+        "prefill_tps": "15.18",
+        "gen_tokens": "128",
+        "gen_tps": "4.04",
+        "gen_first_ms": "5024.245",
+        "gen_steady_tokens": "125",
+        "gen_steady_tps": "4.69",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": false,
+      "equal_legacy7": true,
+      "first_ordinary_mismatch": 5
+    },
+    {
+      "workload": "tool-debug",
+      "mode": "adaptive",
+      "metrics": {
+        "ctx_tokens": "486",
+        "prefill_tokens": "486",
+        "prefill_tps": "15.57",
+        "gen_tokens": "128",
+        "gen_tps": "5.45",
+        "gen_first_ms": "2563.265",
+        "gen_steady_tokens": "127",
+        "gen_steady_tps": "6.06",
+        "kvcache_bytes": "0"
+      },
+      "tokens": 128,
+      "equal_ordinary": true,
+      "equal_legacy7": false,
+      "first_ordinary_mismatch": null
+    }
+  ]
+}

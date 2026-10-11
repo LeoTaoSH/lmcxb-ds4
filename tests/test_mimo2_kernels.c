@@ -2,8 +2,10 @@
  * rotate-half RoPE + value scale into f16 ring caches, then GQA attention with
  * K/V head dims 192/128 (release) and 64/32 (mini), sliding window, sinks,
  * split-key merge, chunked prefill through the ring, and the refusal paths.
- * Everything is checked against a double-precision reference.
- * Build and run: make test-mimo2-kernels */
+ * Attention is checked against a double-precision reference. Streamed expert
+ * rows are checked bit-for-bit against the existing top-eight decode loop.
+ * Build and run: make test-mimo2-kernels
+ * Focused expert schedule: DS4_TEST_MIMO2_EXPERT_ROWS_ONLY=1 ./tests/test_mimo2_kernels */
 
 #include <math.h>
 #include <stdbool.h>
@@ -645,8 +647,370 @@ static void test_cached_mxfp4_prefill(void) {
 }
 
 
+static void test_shared_mxfp4_rows(void) {
+    enum { E = 256, FF = 256, NE = 128, NU = 8, TMAX = DS4_MIMO2_MOE_MAX_ROWS };
+    const uint64_t row_bytes = (uint64_t)E / 32u * 17u;
+    const uint64_t expert_bytes = row_bytes * FF;
+    const uint64_t slab = expert_bytes * NE;
+    uint8_t *map = g_mx_test_map;
+    ds4_gpu_set_ssd_streaming(false);
+    /* Signed, nonuniform scales exercise cancellation in the unchanged row
+     * dots and the ordered eight-expert sum. */
+    for (uint64_t b = 0; b < g_mx_test_bytes / 17u; b++) {
+        map[b * 17u] = 117u + (uint8_t)(b % 7u);
+        for (uint32_t i = 1; i < 17u; i++)
+            map[b * 17u + i] ^= (uint8_t)((b + i) % 3u ? 0x80u : 0x08u);
+    }
+    require(msync(map, g_mx_test_bytes, MS_SYNC) == 0, "shared rows fixture flush");
+    const uint64_t sizes[8] = {
+        E * sizeof(float), NU * sizeof(int32_t), NU * sizeof(float), E * sizeof(float),
+        NU * FF * sizeof(float), NU * FF * sizeof(float),
+        NU * FF * sizeof(float), NU * E * sizeof(float),
+    };
+    ds4_gpu_tensor *owners[TMAX][8], *views[TMAX][8];
+    ds4_gpu_mimo2_moe_row rows[TMAX], shared[TMAX];
+    ds4_gpu_tensor *source_ids = ds4_gpu_tensor_alloc(TMAX * NU * sizeof(int32_t));
+    ds4_gpu_tensor *small = ds4_gpu_tensor_alloc(sizeof(int32_t));
+    require(source_ids && small, "shared rows auxiliary tensors");
+    float input[E], route[NU], want_out[TMAX][E], want_mid[TMAX][NU * FF];
+    float got[NU * FF], poison[NU * FF];
+    int32_t selected[TMAX][NU], invalid[NU];
+    memset(poison, 0xff, sizeof(poison));
+    for (uint32_t i = 0; i < NU; i++) invalid[i] = -1;
+    for (uint32_t t = 0; t < TMAX; t++) {
+        for (uint32_t i = 0; i < 8u; i++) {
+            owners[t][i] = ds4_gpu_tensor_alloc(sizes[i] + 64u);
+            require(owners[t][i] != NULL, "shared rows tensor allocation");
+            views[t][i] = ds4_gpu_tensor_view(owners[t][i], 64u, sizes[i]);
+            require(views[t][i] != NULL, "shared rows offset tensor view");
+        }
+        rows[t] = (ds4_gpu_mimo2_moe_row){
+            .out = views[t][3], .gate = views[t][4], .up = views[t][5],
+            .mid = views[t][6], .experts = views[t][7],
+            .x = views[t][0], .selected = views[t][1], .weights = views[t][2], .add_in = NULL,
+        };
+        shared[t] = rows[t];
+        shared[t].gate = rows[0].gate;
+        shared[t].up = rows[0].up;
+        shared[t].mid = rows[0].mid;
+        shared[t].experts = rows[0].experts;
+        for (uint32_t i = 0; i < E; i++) input[i] = frand() * (0.03f + t * 0.01f);
+        for (uint32_t i = 0; i < NU; i++) route[i] = (float)(i + t + 1u) / (36.0f + 8.0f * t);
+        require(ds4_gpu_tensor_write(views[t][0], 0, input, sizeof(input)) &&
+                ds4_gpu_tensor_write(views[t][2], 0, route, sizeof(route)), "shared rows inputs");
+    }
+    const uint32_t counts[] = {1, 2, 4, 8}, budgets[] = {8, 64};
+    for (uint32_t pattern = 0; pattern < 2u; pattern++) {
+        for (uint32_t t = 0; t < TMAX; t++) {
+            for (uint32_t i = 0; i < NU; i++) {
+                /* Distinct row sets force eviction at budget8; permutations
+                 * of one set stay fully warm even at that minimum budget. */
+                selected[t][i] = pattern ? (int32_t)(3u + ((i + t) % NU) * 7u) :
+                                          (int32_t)((t * 13u + i * 7u) % NE);
+            }
+            require(ds4_gpu_tensor_write(views[t][1], 0, selected[t], sizeof(selected[t])), "row picks upload");
+        }
+        require(ds4_gpu_tensor_write(source_ids, 0, selected, sizeof(selected)), "router source IDs upload");
+        for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++) {
+            const uint32_t T = counts[c];
+            for (size_t b = 0; b < sizeof(budgets) / sizeof(budgets[0]); b++) {
+                ds4_gpu_set_ssd_streaming(true);
+                ds4_gpu_set_streaming_expert_cache_budget(budgets[b]);
+                ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+                require(ds4_gpu_mimo2_moe_rows_supported(T, NE, E, FF), "shared rows supported shape");
+                require(ds4_gpu_begin_commands(), "old row loop begin");
+                for (uint32_t t = 0; t < T; t++) {
+                    const ds4_gpu_mimo2_moe_row *r = &rows[t];
+                    require(ds4_gpu_routed_moe_one_tensor(r->out, r->gate, r->up, r->mid, r->experts,
+                            map, g_mx_test_bytes, 0, slab, 2u * slab, 39u, 39u,
+                            expert_bytes, row_bytes, expert_bytes, row_bytes, E, FF, E,
+                            r->selected, r->weights, NE, NU, 0.0f, r->x, NULL, 1u, false), "old row dispatch");
+                }
+                require(ds4_gpu_end_commands(), "old row loop finish");
+                for (uint32_t t = 0; t < T; t++) {
+                    require(ds4_gpu_tensor_read(rows[t].out, 0, want_out[t], sizeof(want_out[t])) &&
+                            ds4_gpu_tensor_read(rows[t].mid, 0, want_mid[t], sizeof(want_mid[t])), "old row results");
+                }
+                ds4_gpu_set_streaming_expert_cache_budget(budgets[b]);
+                ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+                for (uint32_t pass = 0; pass < 3u; pass++) {
+                    for (uint32_t t = 0; t < T; t++) {
+                        require(ds4_gpu_tensor_write(rows[t].out, 0, poison, sizes[3]) &&
+                                ds4_gpu_tensor_write(rows[t].mid, 0, poison, sizes[6]) &&
+                                ds4_gpu_tensor_write(views[t][1], 0, invalid, sizeof(invalid)), "poison row outputs and IDs");
+                    }
+                    require(ds4_gpu_begin_commands(), "shared row schedule begin");
+                    for (uint32_t t = 0; t < T; t++)
+                        require(ds4_gpu_tensor_copy(views[t][1], 0, source_ids, t * sizeof(selected[t]),
+                                                    sizeof(selected[t])), "queued router ID write");
+                    require(ds4_gpu_mimo2_moe_rows_tensor(pass == 2u ? shared : rows, T,
+                            map, g_mx_test_bytes, 0, slab, 2u * slab, 1u, NE, E, FF), "shared row schedule");
+                    require(ds4_gpu_commands_active(), "shared row schedule keeps caller batch active");
+                    require(ds4_gpu_end_commands(), "shared row schedule finish");
+                    for (uint32_t t = 0; t < T; t++) {
+                        require(ds4_gpu_tensor_read(rows[t].out, 0, got, sizes[3]), "shared row output read");
+                        check_exact_floats(got, want_out[t], E, "shared row output exact");
+                        if (pass != 2u || t == T - 1u) {
+                            require(ds4_gpu_tensor_read(pass == 2u ? shared[t].mid : rows[t].mid,
+                                                       0, got, sizes[6]), "shared row mid read");
+                            check_exact_floats(got, want_mid[t], NU * FF, "shared row mid exact");
+                        }
+                    }
+                }
+                printf("  shared MXFP4 rows=%u budget=%u pattern=%s: cold/warm/shared-scratch exact\n",
+                       T, budgets[b], pattern ? "permuted" : "distinct");
+            }
+        }
+    }
+    require(!ds4_gpu_commands_active(), "shared rows tests finish their batches");
+    require(ds4_gpu_mimo2_moe_rows_tensor(rows, 2u, map, g_mx_test_bytes,
+            0, slab, 2u * slab, 1u, NE, E, FF), "shared rows without caller batch");
+    require(!ds4_gpu_commands_active(), "owned shared schedule finishes its batch");
+    require(ds4_gpu_tensor_read(rows[1].out, 0, got, sizes[3]), "owned shared output read");
+    check_exact_floats(got, want_out[1], E, "owned shared output exact");
+
+    require(!ds4_gpu_mimo2_moe_rows_supported(0u, NE, E, FF) &&
+            !ds4_gpu_mimo2_moe_rows_supported(TMAX + 1u, NE, E, FF) &&
+            !ds4_gpu_mimo2_moe_rows_supported(2u, NE, E - 1u, FF) &&
+            !ds4_gpu_mimo2_moe_rows_supported(2u, 127u, E, FF), "shared shape refusals");
+    ds4_gpu_set_streaming_expert_cache_budget(7u);
+    require(!ds4_gpu_mimo2_moe_rows_supported(2u, NE, E, FF), "short cache budget refused");
+    ds4_gpu_set_streaming_expert_cache_budget(8u);
+    ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes + 1u);
+    require(!ds4_gpu_mimo2_moe_rows_supported(2u, NE, E, FF), "off-size cache refused");
+    ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+    setenv("DS4_METAL_DISABLE_MXFP4_SELECTED_EXPERT_VIEWS", "1", 1);
+    require(!ds4_gpu_mimo2_moe_rows_supported(2u, NE, E, FF), "disabled slots path refused");
+    unsetenv("DS4_METAL_DISABLE_MXFP4_SELECTED_EXPERT_VIEWS");
+    shared[1].selected = small;
+    require(!ds4_gpu_mimo2_moe_rows_tensor(shared, 2u, map, g_mx_test_bytes,
+            0, slab, 2u * slab, 1u, NE, E, FF), "short row IDs refused");
+    shared[1] = rows[1];
+    shared[1].add_in = rows[0].x;
+    require(!ds4_gpu_mimo2_moe_rows_tensor(shared, 2u, map, g_mx_test_bytes,
+            0, slab, 2u * slab, 1u, NE, E, FF), "unsupported row addend refused");
+    require(!ds4_gpu_mimo2_moe_rows_tensor(rows, 2u, map, slab,
+            0, slab, 2u * slab, 1u, NE, E, FF), "short model mapping refused");
+    for (uint32_t i = 0; i < E; i++) got[i] = 123.25f;
+    require(ds4_gpu_tensor_write(rows[0].out, 0, got, sizes[3]), "refusal sentinel upload");
+    selected[1][0] = NE;
+    require(ds4_gpu_tensor_write(views[1][1], 0, selected[1], sizeof(selected[1])), "invalid later row ID");
+    require(ds4_gpu_begin_commands(), "refusal caller batch begin");
+    require(!ds4_gpu_mimo2_moe_rows_tensor(rows, 2u, map, g_mx_test_bytes,
+            0, slab, 2u * slab, 1u, NE, E, FF), "invalid later row refused");
+    require(ds4_gpu_commands_active() && ds4_gpu_end_commands(), "refusal caller batch restored");
+    require(ds4_gpu_tensor_read(rows[0].out, 0, input, sizeof(input)), "refusal sentinel read");
+    check_exact_floats(input, got, E, "later-row validation precedes all expert dispatch");
+    ds4_gpu_set_ssd_streaming(false);
+    require(!ds4_gpu_mimo2_moe_rows_supported(2u, NE, E, FF), "resident path is explicitly unsupported");
+    for (uint32_t t = 0; t < TMAX; t++) {
+        for (uint32_t i = 0; i < 8u; i++) {
+            ds4_gpu_tensor_free(views[t][i]);
+            ds4_gpu_tensor_free(owners[t][i]);
+        }
+    }
+    ds4_gpu_tensor_free(source_ids);
+    ds4_gpu_tensor_free(small);
+}
+
+
+static void test_verify_expert_budget(void) {
+    enum { E = 256, FF = 256, NE = 128, NU = 8, T = DS4_MIMO2_MOE_MAX_ROWS };
+    const uint64_t row_bytes = (uint64_t)E / 32u * 17u;
+    const uint64_t expert_bytes = row_bytes * FF, slab = expert_bytes * NE;
+    const uint64_t sizes[] = { E * sizeof(float), NU * sizeof(int32_t), NU * sizeof(float),
+        E * sizeof(float), NU * FF * sizeof(float), NU * FF * sizeof(float),
+        NU * FF * sizeof(float), NU * E * sizeof(float) };
+    ds4_gpu_tensor *storage[T][8], *reference_weights[T];
+    ds4_gpu_mimo2_moe_row rows[T];
+    ds4_gpu_tensor *snapshot = ds4_gpu_tensor_alloc((uint64_t)T * E * sizeof(float));
+    require(snapshot != NULL, "pilot snapshot allocation");
+    float input[E], route[T][NU], masked[T][NU], want[T][E], got[E];
+    int32_t selected[T][NU], read_ids[NU];
+    float read_weights[NU];
+    for (uint32_t t = 0; t < T; t++) {
+        for (uint32_t i = 0; i < 8u; i++) {
+            storage[t][i] = ds4_gpu_tensor_alloc(sizes[i] + 64u);
+            require(storage[t][i] != NULL, "budget tensor allocation");
+        }
+        reference_weights[t] = ds4_gpu_tensor_alloc(NU * sizeof(float));
+        require(reference_weights[t] != NULL, "budget reference weights");
+        rows[t] = (ds4_gpu_mimo2_moe_row){
+            .out = storage[t][3], .gate = storage[0][4], .up = storage[0][5],
+            .mid = storage[0][6], .experts = storage[0][7],
+            .x = storage[t][0], .selected = storage[t][1], .weights = storage[t][2],
+        };
+        for (uint32_t i = 0; i < E; i++) input[i] = frand() * 0.02f;
+        require(ds4_gpu_tensor_write(storage[t][0], 0, input, sizeof(input)), "budget input upload");
+    }
+    const uint32_t budgets[] = {1u, 8u, 16u, 32u, 64u, NE};
+    for (uint32_t pattern = 0; pattern < 3u; pattern++) {
+        for (uint32_t t = 0; t < T; t++) {
+            for (uint32_t i = 0; i < NU; i++) {
+                /* Distinct ties test ID ordering and rows with no retained
+                 * expert. Overlap makes global sums differ from row ranks. */
+                selected[t][i] = pattern == 2u ? (int32_t)((t * 3u + i * 5u) % 37u) :
+                                                     (int32_t)(t * NU + i);
+                route[t][i] = pattern == 0u ? 0.125f : (float)((i + t) % NU + 1u) / 36.0f;
+            }
+            require(ds4_gpu_tensor_write(storage[t][1], 0, selected[t], sizeof(selected[t])) &&
+                    ds4_gpu_tensor_write(storage[t][2], 0, route[t], sizeof(route[t])), "natural budget routes");
+        }
+        for (size_t b = 0; b < sizeof(budgets) / sizeof(budgets[0]); b++) {
+            const uint32_t budget = budgets[b];
+            double mass[NE] = {0};
+            bool present[NE] = {0}, retained[NE] = {0};
+            ds4_gpu_mimo2_verify_budget_stats expected = {0}, measured;
+            for (uint32_t t = 0; t < T; t++) {
+                for (uint32_t i = 0; i < NU; i++) {
+                    const uint32_t id = (uint32_t)selected[t][i];
+                    mass[id] += (double)route[t][i];
+                    present[id] = true;
+                }
+            }
+            /* Independent pairwise rank, rather than the implementation's
+             * repeated maximum selection. Keep original IDs in the reference. */
+            for (uint32_t id = 0; id < NE; id++) {
+                if (!present[id]) continue;
+                expected.natural_unique++;
+                uint32_t rank = 0;
+                for (uint32_t other = 0; other < NE; other++) {
+                    if (present[other] && (mass[other] > mass[id] ||
+                        (mass[other] == mass[id] && other < id))) rank++;
+                }
+                retained[id] = rank < budget;
+                expected.kept_unique += retained[id];
+            }
+            expected.truncated_unique = expected.natural_unique - expected.kept_unique;
+            for (uint32_t t = 0; t < T; t++) {
+                for (uint32_t i = 0; i < NU; i++) {
+                    const bool keep = retained[selected[t][i]];
+                    masked[t][i] = keep ? route[t][i] : 0.0f;
+                    expected.truncated_slots += !keep;
+                }
+                require(ds4_gpu_tensor_write(reference_weights[t], 0, masked[t], sizeof(masked[t])), "masked reference upload");
+            }
+            ds4_gpu_set_ssd_streaming(true);
+            ds4_gpu_set_streaming_expert_cache_budget(64u);
+            ds4_gpu_set_streaming_expert_cache_expert_bytes(3u * expert_bytes);
+            require(ds4_gpu_begin_commands(), "masked reference begin");
+            for (uint32_t t = 0; t < T; t++) {
+                const ds4_gpu_mimo2_moe_row *r = &rows[t];
+                require(ds4_gpu_routed_moe_one_tensor(r->out, r->gate, r->up, r->mid, r->experts,
+                        g_mx_test_map, g_mx_test_bytes, 0, slab, 2u * slab, 39u, 39u,
+                        expert_bytes, row_bytes, expert_bytes, row_bytes, E, FF, E,
+                        r->selected, reference_weights[t], NE, NU, 0.0f, r->x, NULL, 1u, false), "independent masked old row");
+            }
+            require(ds4_gpu_end_commands(), "masked reference finish");
+            for (uint32_t t = 0; t < T; t++)
+                require(ds4_gpu_tensor_read(rows[t].out, 0, want[t], sizeof(want[t])), "masked reference output");
+            ds4_gpu_set_ssd_streaming(true);
+            require(ds4_gpu_begin_commands(), "budget caller batch begin");
+            require(ds4_gpu_mimo2_moe_verify_budget_tensor(rows, T, budget,
+                    g_mx_test_map, g_mx_test_bytes, 0, slab, 2u * slab,
+                    1u, NE, E, FF, &measured), "budget shared row dispatch");
+            require(!memcmp(&measured, &expected, sizeof(measured)), "budget actual exclusions match independent rank");
+            require(ds4_gpu_commands_active(), "budget preserves caller batch");
+            for (uint32_t t = 0; t < T; t++)
+                require(ds4_gpu_tensor_copy(snapshot, t * E * sizeof(float), rows[t].out, 0,
+                                            E * sizeof(float)), "queue pilot snapshot");
+            /* Change the mask while the first dispatch and copies are queued.
+             * A scratch rewrite without a fence would corrupt the snapshot. */
+            ds4_gpu_mimo2_verify_budget_stats narrowed;
+            require(ds4_gpu_mimo2_moe_verify_budget_tensor(rows, T, 1u,
+                    g_mx_test_map, g_mx_test_bytes, 0, slab, 2u * slab,
+                    1u, NE, E, FF, &narrowed), "reuse scratch with a different mask");
+            require(narrowed.kept_unique == 1u && narrowed.truncated_slots > 0u,
+                    "narrow pilot has actual truncation");
+            require(ds4_gpu_end_commands(), "budget caller batch finish");
+            require(ds4_gpu_stream_expert_cache_current_count() == expected.kept_unique,
+                    "cold pilot loaded only the in-budget union");
+            for (uint32_t t = 0; t < T; t++) {
+                require(ds4_gpu_tensor_read(snapshot, t * E * sizeof(float), got, sizeof(got)), "budget snapshot read");
+                check_exact_floats(got, want[t], E, "budget output equals independently masked old loop");
+                require(ds4_gpu_tensor_read(rows[t].selected, 0, read_ids, sizeof(read_ids)) &&
+                        ds4_gpu_tensor_read(rows[t].weights, 0, read_weights, sizeof(read_weights)), "natural routes preserved read");
+                require(!memcmp(read_ids, selected[t], sizeof(read_ids)) &&
+                        !memcmp(read_weights, route[t], sizeof(read_weights)), "pilot never mutates caller routes");
+            }
+            printf("  verifier budget=%u pattern=%u unique=%u kept=%u truncated_slots=%u: masked reference exact\n",
+                   budget, pattern, measured.natural_unique, measured.kept_unique, measured.truncated_slots);
+        }
+    }
+    ds4_gpu_mimo2_verify_budget_stats measured = {1u, 2u, 3u, 4u}, zero = {0};
+#define BUDGET_CALL(R, NR, B, BYTES, N, IN, MID) \
+    ds4_gpu_mimo2_moe_verify_budget_tensor(R, NR, B, g_mx_test_map, BYTES, \
+        0, slab, 2u * slab, 1u, N, IN, MID, &measured)
+    require(!BUDGET_CALL(rows, 0u, 8u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, 1u, 8u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, T + 1u, 8u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, 2u, 0u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, 2u, 257u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, 2u, NE + 1u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(NULL, 2u, 8u, g_mx_test_bytes, NE, E, FF) &&
+            !BUDGET_CALL(rows, 2u, 8u, slab, NE, E, FF) &&
+            !BUDGET_CALL(rows, 2u, 8u, g_mx_test_bytes, NE, E - 1u, FF) &&
+            !BUDGET_CALL(rows, 2u, 8u, g_mx_test_bytes, 127u, E, FF), "budget shape and range refusals");
+    require(!memcmp(&measured, &zero, sizeof(measured)), "failed budget calls clear stats");
+    ds4_gpu_mimo2_moe_row bad[T];
+    memcpy(bad, rows, sizeof(bad));
+    bad[1].add_in = rows[0].x;
+    require(!BUDGET_CALL(bad, 2u, 8u, g_mx_test_bytes, NE, E, FF), "budget addend refused");
+    ds4_gpu_tensor *small = ds4_gpu_tensor_alloc(sizeof(float));
+    require(small != NULL, "budget short tensor");
+    bad[1] = rows[1]; bad[1].weights = small;
+    require(!BUDGET_CALL(bad, 2u, 8u, g_mx_test_bytes, NE, E, FF), "budget short weights refused");
+    bad[1] = rows[1]; bad[1].selected = small;
+    require(!BUDGET_CALL(bad, 2u, 8u, g_mx_test_bytes, NE, E, FF), "budget short IDs refused");
+    const uint32_t bad_bits[] = {0xbe000000u, 0x7fc00000u, 0x7f800000u, 0xff800000u};
+    for (uint32_t i = 0; i < E; i++) got[i] = 123.25f;
+    require(ds4_gpu_tensor_write(rows[0].out, 0, got, sizeof(got)), "budget refusal sentinel");
+    for (size_t b = 0; b < sizeof(bad_bits) / sizeof(bad_bits[0]) + 3u; b++) {
+        float invalid_weights[NU];
+        int32_t invalid_ids[NU];
+        memcpy(invalid_weights, route[1], sizeof(invalid_weights));
+        memcpy(invalid_ids, selected[1], sizeof(invalid_ids));
+        if (b < 4u) memcpy(&invalid_weights[0], &bad_bits[b], sizeof(float));
+        else if (b == 4u) memset(invalid_weights, 0, sizeof(invalid_weights));
+        else if (b == 5u) invalid_ids[0] = NE;
+        else invalid_ids[0] = invalid_ids[1];
+        require(ds4_gpu_tensor_write(storage[1][2], 0, invalid_weights, sizeof(invalid_weights)) &&
+                ds4_gpu_tensor_write(storage[1][1], 0, invalid_ids, sizeof(invalid_ids)), "bad natural router upload");
+        require(ds4_gpu_begin_commands(), "budget refusal batch begin");
+        require(!BUDGET_CALL(rows, 2u, 8u, g_mx_test_bytes, NE, E, FF), "invalid later natural router refused");
+        require(ds4_gpu_commands_active() && ds4_gpu_end_commands(), "budget refusal batch restored");
+        require(ds4_gpu_tensor_read(rows[0].out, 0, input, sizeof(input)), "budget refusal sentinel read");
+        check_exact_floats(input, got, E, "budget validates every natural route before dispatch");
+        require(!memcmp(&measured, &zero, sizeof(measured)), "invalid routes leave no success stats");
+    }
+    require(ds4_gpu_tensor_write(storage[1][2], 0, route[1], sizeof(route[1])) &&
+            ds4_gpu_tensor_write(storage[1][1], 0, selected[1], sizeof(selected[1])), "restore natural routes");
+    require(BUDGET_CALL(rows, 2u, NE, g_mx_test_bytes, NE, E, FF), "budget owns batch when caller has none");
+    require(!ds4_gpu_commands_active() && measured.truncated_slots == 0u, "owned full-union pilot finishes batch");
+    for (uint32_t t = 0; t < 2u; t++) {
+        require(ds4_gpu_tensor_read(rows[t].out, 0, input, sizeof(input)), "owned full-union output read");
+        check_exact_floats(input, want[t], E, "owned full-union equals old verifier");
+    }
+    ds4_gpu_set_ssd_streaming(false);
+    require(!BUDGET_CALL(rows, 2u, 8u, g_mx_test_bytes, NE, E, FF), "resident budget pilot refused");
+#undef BUDGET_CALL
+    ds4_gpu_tensor_free(small);
+    ds4_gpu_tensor_free(snapshot);
+    for (uint32_t t = 0; t < T; t++) {
+        ds4_gpu_tensor_free(reference_weights[t]);
+        for (uint32_t i = 0; i < 8u; i++) ds4_gpu_tensor_free(storage[t][i]);
+    }
+}
+
+
 int main(void) {
     require(ds4_gpu_init(), "GPU initialization");
+    if (getenv("DS4_TEST_MIMO2_EXPERT_ROWS_ONLY")) {
+        test_streamed_mxfp4_top8();
+        test_shared_mxfp4_rows();
+        test_verify_expert_budget();
+        goto cleanup;
+    }
     const double b_global = 1e7, b_swa = 1e4;
     const float vs = 0.707f;
 
@@ -757,7 +1121,10 @@ int main(void) {
     test_refusals();
 
     test_streamed_mxfp4_top8();
+    test_shared_mxfp4_rows();
+    test_verify_expert_budget();
     test_cached_mxfp4_prefill();
+cleanup:
     ds4_gpu_cleanup();
     if (g_mx_test_map) munmap(g_mx_test_map, g_mx_test_bytes);
     if (g_mx_test_fd >= 0) close(g_mx_test_fd);

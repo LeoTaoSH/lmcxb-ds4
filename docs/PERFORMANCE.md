@@ -19,13 +19,21 @@ run is not a speed result.
 
 Each prefill number measures the newly added interval. Generation uses a fixed
 greedy, non-EOS probe. The benchmark normally restores a memory snapshot after
-each probe; network TP/pipeline runs and snapshots beyond its memory limit use
-prefix replay instead. Do not interpret replay time as continued-prefill speed.
+each probe; network TP/pipeline runs, DFlash runs and snapshots beyond its memory
+limit use prefix replay instead. Replay is outside the prefill interval timer.
+Do not interpret replay time as continued-prefill speed.
 
 Use `--step-mul F` for exponential context spacing. Output is CSV, including
 prefill throughput, generation throughput, and snapshot size when available.
 The prompt is the cleaned public-domain *I Promessi Sposi* text in
 [speed-bench](../speed-bench/README.md).
+
+MiMo `--dflash FILE` accepts the same `--dflash-draft` and
+`--dflash-p-min` controls as the CLI. Use `--dump-generated-tokens FILE`
+to retain exact token IDs per frontier when comparing speculation. The CSV
+separates the first committed block from steady generation. Compare plain
+decode too, and distinguish equality to ordinary decode from equality to the
+existing batched verifier's floating-point behavior.
 
 Prefill defaults are configuration-specific: ordinary DeepSeek uses 4096-token
 chunks, CUDA TP uses 2048, and long PRO prompts may use 8192. GLM and MiMo choose

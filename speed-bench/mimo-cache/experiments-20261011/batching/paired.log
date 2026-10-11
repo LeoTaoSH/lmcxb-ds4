@@ -1,0 +1,28 @@
+ds4: Metal device Apple M5 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: SSD streaming auto cache budget
+ds4:   metal recommends 107.52 GiB working set
+ds4:   using 66% total for model + cached experts: 70.96 GiB
+ds4:   non-routed weights: 7.03 GiB
+ds4:   routed expert size: 12.75 MiB
+ds4:   expert budget before prefill reserve: 5134 (63.92 GiB)
+ds4: metal SSD streaming cache target 63.92 GiB; effective 63.92 GiB = 0.00 GiB prefill headroom + 63.92 GiB dynamic cache (5134 experts, 12.75 MiB each)
+ds4: Metal SSD static weights locked 7.03 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (1 spans, 0.62 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.04 GiB (raw 0.04 + compressed 0.00) + buffers 0.33 GiB + resident model 7.03 GiB + expert cache 63.92 GiB = 71.33 GiB planned
+ds4: memory detail: ctx=600 prefill_cap=600 raw_kv_rows=600 compressed_kv_rows=3 backend=metal
+session-concurrency-bench: MiMo V2.6 Flash, corpus 432877 tokens, 8.00 GiB free for sessions after loading the weights
+
+== concurrency 2, context 256 ==
+  sessions 2 x 600 tokens, 0.41 GiB each, 0.82 GiB against a 8.00 GiB budget
+  prefill       5.9 tok/s aggregate, last stream ready after 87.23 s
+  decode        5.5 tok/s aggregate,    2.76 tok/s per stream
+  step     mean 362.28 ms, p50 340.71 ms, p95 618.42 ms, max 778.22 ms
+  DS4_MIMO2_SESSION_BATCH: control 8.8 tok/s, candidate 8.0 tok/s, 0.90x
+  0.82 GiB of session state
+
+== concurrency 4, context 256 ==
+  sessions 4 x 600 tokens, 0.41 GiB each, 1.63 GiB against a 8.00 GiB budget

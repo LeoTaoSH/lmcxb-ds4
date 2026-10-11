@@ -1,0 +1,62 @@
+{
+  "schema": "ds4-mopd-coreml-physical-trace-v1",
+  "source_revision": "b12f5573350bb1704513fcf119fca48e498b0423",
+  "instrument_template": "Core ML",
+  "trace_model": "mopd_l1_e0to3_g4_c32",
+  "requested_compute_units": "CPU_AND_NE",
+  "group": 4,
+  "capacity_per_expert": 32,
+  "target_pid": 80038,
+  "target_exit_status": 0,
+  "trace_duration_seconds": 4.143163,
+  "ane_schema": "ane-hw-intervals-internal",
+  "ane_all_rows": 1105,
+  "ane_model_rows": 1104,
+  "ane_prediction_rows": 1103,
+  "ane_prediction_channel_counts": {
+    "Apple Neural Engine": 1103
+  },
+  "ane_prediction_duration_ns": {
+    "min": 1256417,
+    "median": 1281333,
+    "max": 1465500,
+    "sum": 1413597653
+  },
+  "ane_prediction_samples": [
+    {
+      "start_ns": 2041981291,
+      "duration_ns": 1465500,
+      "channel": "Apple Neural Engine",
+      "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+    },
+    {
+      "start_ns": 2044504166,
+      "duration_ns": 1281292,
+      "channel": "Apple Neural Engine",
+      "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+    },
+    {
+      "start_ns": 2046648083,
+      "duration_ns": 1282792,
+      "channel": "Apple Neural Engine",
+      "label": "mopd_l1_e0to3_g4_c32_main__Op0_AneInference  Prediction"
+    }
+  ],
+  "coreml_model_activity_rows": 0,
+  "target_gpu_interval_rows": 0,
+  "physical_ane_execution_observed": true,
+  "scope": "Physical ANE execution observed for the separately traced four-expert model only. The single-expert latency runs were not hardware-traced. No CoreML operation-level CPU-fallback assertion is made; the CoreML model-activity table contains no rows.",
+  "source_sha256": {
+    "ane-hw-intervals-internal.xml": "87abf72ad00135520dead39e68bdc2aa95f83038be7b2db1f2a1b2b01153bf15",
+    "coreml-os-signpost.xml": "b7ea7ab496fe343c3cad057efd8ff7ab9eb0959216d88adc866b679ca0e78848",
+    "metal-gpu-intervals.xml": "4f03567f7ca80674885f4998915d1f546202284620f5bd34119966350c5cc748",
+    "trace_toc.xml": "5bc4312cfc9cf1543c96c3208308600f019d560aa2e6ac43f090b42087fb1bae",
+    "trace_coreml.py": "d2f14b06bf42c6346df9f3c9e91b470310b35645b5e81a5124825864846db369"
+  },
+  "commands": [
+    "xcrun xctrace record --template 'Core ML' --output /private/tmp/mimo-serving-gates.cFSYJx/coreml_execution.trace --time-limit 15s --launch -- /private/tmp/mimo-serving-gates.cFSYJx/venv/bin/python /private/tmp/mimo-serving-gates.cFSYJx/trace_coreml.py",
+    "xcrun xctrace export --input /private/tmp/mimo-serving-gates.cFSYJx/coreml_execution.trace --toc --output /private/tmp/mimo-serving-gates.cFSYJx/trace_toc.xml",
+    "xcrun xctrace export --input TRACE --xpath /trace-toc/run[@number=\"1\"]/data/table[@schema=\"ane-hw-intervals-internal\"] --output ane-hw-intervals-internal.xml",
+    "Analogous exports for coreml-os-signpost and metal-gpu-intervals"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "workload": "rust-parser",
+  "mode": "shared3",
+  "label": "adaptive-abba-rust-parser-1-shared3",
+  "profiled": false,
+  "generated_tokens": 256,
+  "metrics": {
+    "ctx_tokens": "327",
+    "prefill_tokens": "327",
+    "prefill_tps": "10.30",
+    "gen_tokens": "256",
+    "gen_tps": "5.95",
+    "gen_first_ms": "4152.319",
+    "gen_steady_tokens": "252",
+    "gen_steady_tps": "6.49",
+    "kvcache_bytes": "0"
+  },
+  "equals_ordinary": false,
+  "first_ordinary_mismatch": 219,
+  "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/adaptive-abba-rust-parser-1-shared3.receipt.json",
+  "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+}

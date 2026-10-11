@@ -149,8 +149,8 @@ Every verified row costs its own routed experts and output head, so short
 blocks are cheaper when the drafter is unsure. Sampling at non-zero
 temperature uses the same exact p/q rule as MiMo MTP. `--dflash` and
 `--mtp` are alternatives. Metal only. After a disk KV-cache restore the
-drafter context starts empty and refills as tokens are committed, which
-lowers acceptance but never changes output.
+drafter context starts empty and refills as tokens are committed, which can
+lower acceptance. Batched and one-token rounding can still diverge near ties.
 On the historical RL Q2 Olympiad prompt, plain decode was 39.63 t/s, the
 default seven-draft setting 32.22 t/s, and `--dflash-draft 3` 41.69 t/s.
 The shorter setting had only one matched run. Recheck these settings on MOPD;
@@ -163,6 +163,37 @@ applies the 2.0-logit oracle to three prompts. It also fails unless some
 block commits three or more tokens and calls average more than 1.5 committed
 tokens. `make test-dflash-kernels` checks the drafter kernels against a
 double-precision reference without a model.
+
+Three streamed-MiMo experiments are disabled by default:
+
+| Control | Behavior |
+| --- | --- |
+| `DS4_MIMO2_EXPERT_ROWS=1` | Shares router readback and expert scheduling across up to eight verifier rows; preserves each row's existing expert arithmetic. |
+| `DS4_MIMO2_DFLASH_ADAPTIVE=1` | Chooses depths 0, 1, 3 or the configured maximum using committed tokens per measured full-cycle millisecond, including I/O waits. |
+| `DS4_MIMO2_VERIFY_EXPERT_BUDGET=N` | Quality-changing experiment: bounds the unique expert union per layer across multiple verifier rows. |
+
+The adaptive policy samples each eligible depth twice, then uses an EWMA with
+periodic probes and a 5% improvement margin before choosing a larger depth.
+It respects the user cap and remaining token budget. Depth0 evaluates an
+ordinary target step while retaining DFlash context. Set
+`DS4_MIMO2_DFLASH_COST_PROFILE=1` for cycle time and logical-read attribution;
+leave profiling off for throughput comparisons. Changing verifier depth can
+change a near-tie continuation through the existing batch-rounding difference.
+
+The expert budget ranks the real routed union by summed normalized unbiased
+router weights. It zeros excluded contributions without renormalizing the
+retained weights. It changes the verifier distribution even with exact-sampling
+flags enabled. It applies only to streamed multirow verification, not ordinary
+decode or native session batching. Budget256 is the full-union control for this
+checkpoint. Do not use smaller budgets as an output-preserving optimization.
+The [quality probe](../speed-bench/README.md#mimo-verifier-quality-probe) measures
+the resulting target-logit distortion; task-quality qualification is separate.
+
+For performance comparisons, `ds4-bench --dflash FILE` accepts the normal
+draft controls and `--dump-generated-tokens FILE`. Its DFlash context
+sweeps restore prefixes by replay, outside the measured interval. Keep the
+same checkpoint, cache and prompt; compare against ordinary decode as well
+as the legacy verifier. Recorded results are in [MiMo QA](../QA_BEFORE_RELEASES.md#20-mimo-v26-flash).
 
 ## Sampling and reproducibility
 

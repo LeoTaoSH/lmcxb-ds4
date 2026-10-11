@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_ssd.h"
 
 /* Session-concurrency benchmark.
  *
@@ -75,6 +76,10 @@ typedef struct {
     int mixed_steps;
     int mixed_quantum;
     uint32_t prefill_chunk;
+    bool ssd_streaming;
+    bool ssd_streaming_cold;
+    uint32_t cache_experts;
+    uint64_t cache_bytes;
     double budget_gib;
     double reserve_gib;
     uint64_t budget_bytes;
@@ -184,6 +189,9 @@ static void usage(FILE *fp, const char *argv0) {
             "  --gen N               measured decode steps per stream (default: %d)\n"
             "  --warmup N            untimed decode steps (default: %d)\n"
             "  --prefill-chunk N     engine prefill chunk\n"
+            "  --ssd-streaming       stream experts; requires --budget-gib for sessions\n"
+            "  --ssd-streaming-cold  skip expert preloading\n"
+            "  --ssd-streaming-cache-experts N|NGB  explicit expert-cache budget\n"
             "  --warm-weights        touch the weights before the first cell\n"
             "  --mixed               also measure decode while one stream prefills\n"
             "  --mixed-steps N       timed mixed steps (default: %d)\n"
@@ -658,8 +666,8 @@ static void run_cell(const bench_config *cfg,
     const int total_sessions = cfg->verify ? session_count * 2 : session_count;
 
     const ds4_context_memory mem =
-        ds4_context_memory_estimate_with_prefill(DS4_BACKEND_METAL, ctx_alloc,
-                                                 cfg->prefill_chunk);
+        ds4_context_memory_estimate_with_prefill_mode(DS4_BACKEND_METAL, ctx_alloc,
+                                                      cfg->prefill_chunk, cfg->ssd_streaming);
     out->estimate_gib = bytes_to_gib(mem.total_bytes) * (double)total_sessions;
 
     const uint64_t budget_bytes = cfg->budget_bytes;
@@ -1003,9 +1011,19 @@ int main(int argc, char **argv) {
             cfg.gen = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
         } else if (!strcmp(arg, "--warmup")) {
             cfg.warmup = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 0);
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            cfg.ssd_streaming = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cold")) {
+            cfg.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
+            const char *value = need_arg(&i, argc, argv, arg);
+            if (!ds4_parse_streaming_cache_experts_arg(value, &cfg.cache_experts, &cfg.cache_bytes)) {
+                fprintf(stderr, BENCH ": invalid expert-cache budget %s\n", value);
+                return 2;
+            }
         } else if (!strcmp(arg, "--prefill-chunk")) {
             cfg.prefill_chunk =
-                (uint32_t)parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
+                (uint32_t)parse_int_arg(need_arg(&i, argc, argv, arg), arg, 0);
         } else if (!strcmp(arg, "--mixed")) {
             cfg.mixed = true;
         } else if (!strcmp(arg, "--mixed-steps")) {
@@ -1042,6 +1060,10 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    if (cfg.ssd_streaming && !(cfg.budget_gib > 0.0)) {
+        fprintf(stderr, BENCH ": SSD mode requires --budget-gib for session memory, in addition to the expert cache\n");
+        return 2;
+    }
 
     int max_conc = 0, max_ctx = 0;
     for (int i = 0; i < cfg.n_concurrency; i++) {
@@ -1070,6 +1092,10 @@ int main(int argc, char **argv) {
         .backend = DS4_BACKEND_METAL,
         .context_size = max_alloc,
         .prefill_chunk = cfg.prefill_chunk,
+        .ssd_streaming = cfg.ssd_streaming,
+        .ssd_streaming_cold = cfg.ssd_streaming_cold,
+        .ssd_streaming_cache_experts = cfg.cache_experts,
+        .ssd_streaming_cache_bytes = cfg.cache_bytes,
         .warm_weights = cfg.warm_weights,
         /* Mirror the server's batched startup so placement pricing and any
          * shared prefill scratch match what serving actually does. */
@@ -1082,6 +1108,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, BENCH ": failed to open %s\n", cfg.model_path);
         return 1;
     }
+    if (ds4_engine_is_mimo2(engine)) cfg.private_transients = true;
 
     char *text = read_file(cfg.prompt_path);
     if (!text) {

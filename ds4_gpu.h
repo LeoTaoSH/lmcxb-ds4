@@ -396,6 +396,14 @@ int ds4_gpu_qwen4_batch_mm_q8_tensor(
 uint64_t ds4_gpu_recommended_working_set_size(void);
 uint32_t ds4_gpu_stream_expert_cache_configured_count(void);
 uint32_t ds4_gpu_stream_expert_cache_current_count(void);
+#ifdef __APPLE__
+typedef struct {
+    uint64_t read_bytes;
+    double read_ms;
+} ds4_gpu_stream_expert_io;
+ds4_gpu_stream_expert_io ds4_gpu_stream_expert_cache_io(void);
+int ds4_gpu_stream_expert_cache_set_rank_model(const char *path);
+#endif
 typedef struct ds4_gpu_stream_expert_table {
     const void *model_map;
     uint64_t    model_size;
@@ -3667,6 +3675,52 @@ int ds4_gpu_qwen4_mtp_stage_tensor(
         uint32_t n_embd, uint32_t n_hc, float eps);
 int ds4_gpu_qwen4_mtp_combine_tensor(
         ds4_gpu_tensor *R_out, const ds4_gpu_tensor *proj, uint32_t n_embd, uint32_t n_hc);
+
+/* Exact top-eight MXFP4 streamed decode rows. Each row has its own tensor
+ * views; gate/up/mid/experts scratch may be shared because dispatch is serial.
+ * x/out are in_dim floats, selected/weights are eight IDs/floats, gate/up/mid
+ * are 8*ff_dim floats and experts is 8*in_dim floats. add_in must be NULL.
+ * Supported only with the ordinary fused decode policy, single-device Metal,
+ * 256-aligned dimensions, 128..384 experts and a cache budget of at least 8.
+ * The predicate checks current backend policy without initializing Metal.
+ * The call performs one router synchronization, then reuses the unchanged
+ * slots8 row kernels and cache loader. Cache pressure tiles at safe in-flight
+ * boundaries, including an eight-slot budget. No row arithmetic is regrouped.
+ * Return 1 only for this shared schedule, 0 for unsupported input or an error;
+ * there is no resident or generic fallback. An existing command batch remains
+ * active on success; without one, the call waits for its output before return.
+ * Callers choose the opt-in and retain their existing loop for unsupported
+ * shapes. A failed call must not be retried as a generic fallback. */
+#define DS4_MIMO2_MOE_MAX_ROWS 8u
+typedef struct {
+    ds4_gpu_tensor *out, *gate, *up, *mid, *experts;
+    const ds4_gpu_tensor *x, *selected, *weights, *add_in;
+} ds4_gpu_mimo2_moe_row;
+int ds4_gpu_mimo2_moe_rows_supported(uint32_t n_rows, uint32_t n_total_expert,
+                                      uint32_t in_dim, uint32_t ff_dim);
+int ds4_gpu_mimo2_moe_rows_tensor(
+        const ds4_gpu_mimo2_moe_row *rows, uint32_t n_rows,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t in_dim, uint32_t ff_dim);
+
+/* Quality-changing verification pilot. Budget is 1..256 and <= n_total_expert,
+ * rows are 2..DS4_MIMO2_MOE_MAX_ROWS, and the streamed slots8 policy is required.
+ * Rank the natural top-eight union by summed unbiased route weights (ID breaks
+ * ties), then zero excluded weights without renormalizing. Inputs stay intact.
+ * Stats are cleared on entry and populated only on success; NULL is allowed.
+ * Successful calls print actual exclusions, including zero for a full union. */
+#define DS4_MIMO2_VERIFY_EXPERT_BUDGET_MAX 256u
+typedef struct {
+    uint32_t natural_unique, kept_unique, truncated_unique, truncated_slots;
+} ds4_gpu_mimo2_verify_budget_stats;
+int ds4_gpu_mimo2_moe_verify_budget_tensor(
+        const ds4_gpu_mimo2_moe_row *rows, uint32_t n_rows, uint32_t expert_budget,
+        const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t layer, uint32_t n_total_expert, uint32_t in_dim, uint32_t ff_dim,
+        ds4_gpu_mimo2_verify_budget_stats *stats);
+
 
 #define DS4_MIMO2_CACHED_PREFILL_MAX_ROWS 64u
 int ds4_gpu_mimo2_moe_cached_prefill_tensor(

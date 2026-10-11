@@ -1,0 +1,22 @@
+{
+  "workload": "probability",
+  "mode": "shared7",
+  "label": "shared-abba-probability-3-shared7",
+  "profiled": false,
+  "generated_tokens": 128,
+  "metrics": {
+    "ctx_tokens": "292",
+    "prefill_tokens": "292",
+    "prefill_tps": "8.23",
+    "gen_tokens": "128",
+    "gen_tps": "4.09",
+    "gen_first_ms": "2220.915",
+    "gen_steady_tokens": "127",
+    "gen_steady_tps": "4.37",
+    "kvcache_bytes": "0"
+  },
+  "equals_ordinary": true,
+  "first_ordinary_mismatch": null,
+  "receipt": "speed-bench/mimo-cache/experiments-20261011/spec-final/shared-abba-probability-3-shared7.receipt.json",
+  "binary_sha256": "8405632ed48bd82c5e2109b7c6dd059ef662ee6636e804906e8d9dc6bb74115f"
+}

@@ -186,6 +186,79 @@ reads plus cache preparation/install, so do not add them together. Neither
 covers all GPU synchronization or driver waits. Alternative-policy hit rates
 and read-byte reductions are simulations, not measured throughput gains.
 
+### Learned replacement and predictive staging
+
+These CPU tools require NumPy. The frozen ranker and its leave-one-workload-out
+report are in `mimo-cache/learned/`; fresh held-out traces and native
+measurements are in `mimo-cache/experiments-20261011/`.
+
+```sh
+python3 speed-bench/expert_cache_learned.py evaluate \
+  speed-bench/mimo-cache/experiments-20261011/heldout/*.jsonl.gz \
+  --model speed-bench/mimo-cache/learned/frozen-linear-v1.json \
+  --output /tmp/learned-heldout.json
+python3 speed-bench/expert_prefetch_replay.py evaluate \
+  speed-bench/mimo-cache/experiments-20261011/heldout/*.jsonl.gz \
+  --freeze speed-bench/mimo-cache/predictive/freeze.json \
+  --output /tmp/staging-heldout.json
+make test-expert-cache-learned test-expert-prefetch-replay test-expert-activation-prefetch
+```
+
+Both predictors are frozen before held-out evaluation. Future accesses are
+training labels only. Staging reserves slots inside the original cache budget,
+charges every issued read, and assumes data is ready immediately. Wasted reads
+and evictions count against it. This optimistic replay is not a speed benchmark.
+
+For activation-based training, `expert_activation_prefetch.py capture-commands`
+prints the pinned training and held-out capture commands. The recorder needs
+both `DS4_MIMO2_ACTIVATION_TRACE=FILE` and the ordinary cache trace. Its
+DS4ACT01 sidecar binds each 4096-element FP32 normalized activation to the
+current token, layer and real top-eight IDs. It writes only completed ordinary
+decode inputs; it does not substitute experts or introduce GPU synchronization.
+Train before capturing held-out inputs, then use the script's `evaluate`
+command with the frozen model. Source and model hashes are checked on load.
+
+The recorded activation model and six raw captures are retained locally under
+`speed-bench/local-runs/mimo-serving-20261011/activation/`, outside Git.
+Compact hashes, settings and replay results are tracked. The model's
+`settings.staging` embeds the route-history harness defaults for accounting;
+its actual scores come from the activation ridge heads described by
+`settings.head`, without coactivation priors.
+
+The optional native ranker uses `DS4_MIMO2_CACHE_RANK_MODEL=FILE` at engine
+startup. Its captures need an audit against `expert_cache_learned.CausalCache`;
+the stock replay's current-policy audit must reject them when masks differ.
+The retained native audit checks every hit mask, byte count and clock, plus
+512 selected-token and top-20-logit steps against ordinary decoding.
+
+### MiMo verifier quality probe
+
+`make mimo-verify-quality` builds the strict-floating-point
+`speed-bench/mimo_verify_quality` tool; `make test-mimo-verify-quality`
+checks its numerical metrics and reference-file validation. Supply a raw
+prompt and a file of decimal teacher token IDs, one per line. A 128-row run
+requires 129 IDs: row `i` evaluates teacher token `i` and scores
+teacher token `i+1`. The default pinned MOPD model is streamed on Metal.
+
+```sh
+env -u DS4_MIMO2_VERIFY_EXPERT_BUDGET ./speed-bench/mimo_verify_quality \
+  --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt \
+  --tokens /tmp/teacher.ids --limit 128 --block 8 --ctx 4096 \
+  --write-reference /tmp/full.ref --json /tmp/full.json
+DS4_MIMO2_VERIFY_EXPERT_BUDGET=32 ./speed-bench/mimo_verify_quality \
+  --prompt-file speed-bench/mimo-cache/holdout-20261011/probability.txt \
+  --tokens /tmp/teacher.ids --limit 128 --block 8 --ctx 4096 \
+  --reference /tmp/full.ref --json /tmp/budget32.json
+```
+
+First compare an unmasked run and budget256 against the saved reference.
+Both must match exactly. References bind model revision/size, prompt and teacher
+IDs, context, vocabulary and row dimensions; truncated or nonfinite data fail.
+Smaller budgets report teacher-NLL drift, KL and argmax agreement across the
+actual multirow verifier path. These are continuation-distortion measurements,
+not task accuracy, DFlash acceptance or throughput. See `experiments-20261011/quality/gates.json`
+under `mimo-cache/` for the numerical screen used in this study.
+
 ### Concurrency: many requests at once
 
 `session_concurrency_bench` measures the engine without HTTP overhead.
@@ -216,6 +289,22 @@ The control unsets the variable; the candidate sets it in alternating ABBA
 blocks. Use only controls read at dispatch time. Keep prompts, context, memory
 pressure and thermal conditions comparable, and retain generated text when
 measuring speculation. `concurrency_sweep.sh` runs each cell in a fresh process.
+
+For streamed MiMo, pass `--ssd-streaming` and an explicit `--budget-gib`
+for session allocations in addition to the expert cache. The benchmark prices
+MiMo's private transients and does not mistake an unallocated expert cache for
+free session memory. A matched native-batching comparison is:
+
+```sh
+./speed-bench/session_concurrency_bench \
+  -m gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming \
+  --concurrency 2,4 --ctx 256 --gen 64 --warmup 8 --budget-gib 8 \
+  --candidate-env DS4_MIMO2_SESSION_BATCH --candidate-value require --repeat 2
+```
+
+`require` rejects serialized fallback. Do not combine native MiMo session
+batching with DFlash/MTP. Report per-stream latency with aggregate throughput;
+the recorded study did not establish a consistent gain.
 
 `serve_concurrency_bench.py` measures the HTTP server, including queueing,
 prompt rendering, prefix reuse and streaming:

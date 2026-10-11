@@ -59,6 +59,7 @@
 #endif
 #if !defined(DS4_NO_GPU) && defined(__APPLE__)
 #define DS4_HAS_MIMO2_METAL 1
+#include "ds4_dflash_policy.h"
 #endif
 #if defined(DS4_ROCM_BUILD) || (!defined(__APPLE__) && !defined(DS4_NO_GPU))
 #include "ds4_linux_memory.h"
@@ -58961,6 +58962,7 @@ typedef struct {
     /* Draft block scratch: block_size rows. */
     ds4_gpu_tensor *mask_rows, *x, *x_attn, *h, *q, *bk, *bv, *bk16, *bv16, *heads, *o;
     ds4_gpu_tensor *gate, *up, *mid, *ffn, *head_in, *logits, *index, *prob;
+    ds4_dflash_policy cost_policy;
 } ds4_mimo2_dflash;
 
 typedef struct {
@@ -59421,6 +59423,20 @@ static bool mimo2_graph_seed_stream_experts(ds4_mimo2_gpu_graph *g,
     return glm_graph_begin_commands_if_needed();
 }
 
+static bool mimo2_graph_route(ds4_mimo2_gpu_graph *g, const ds4_model *m,
+                              const ds4_layer_weights *l, uint32_t T) {
+    const uint32_t E = DS4_N_EMBD, NE = DS4_N_EXPERT, NU = DS4_N_EXPERT_USED;
+    return ds4_gpu_matmul_f32_tensor(g->router_logits, m->map, m->size,
+               l->ffn_gate_inp->abs_offset, E, NE, g->ffn_norm, T) &&
+           (T == 1u ?
+            ds4_gpu_glm_router_select_tensor(g->router_selected, g->router_weights,
+                g->router_probs, m->map, m->size, l->ffn_exp_probs_b->abs_offset,
+                g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE) :
+            ds4_gpu_glm_router_select_batch_tensor(g->router_selected, g->router_weights,
+                g->router_probs, m->map, m->size, l->ffn_exp_probs_b->abs_offset,
+                g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE, T)) != 0;
+}
+
 static bool mimo2_graph_cached_prefill(const ds4_mimo2_gpu_graph *g, uint32_t T) {
     return g->streaming && g->pos > 0 && T > 1u &&
            T <= DS4_MIMO2_CACHED_PREFILL_MAX_ROWS;
@@ -59458,23 +59474,55 @@ static bool mimo2_graph_moe(ds4_mimo2_gpu_graph *g, const ds4_model *m,
         }
         return true;
     }
-    bool ok = ds4_gpu_matmul_f32_tensor(g->router_logits, m->map, m->size, l->ffn_gate_inp->abs_offset,
-                                        E, NE, g->ffn_norm, T) != 0;
-    if (ok) {
-        ok = (T == 1u ?
-              ds4_gpu_glm_router_select_tensor(g->router_selected, g->router_weights, g->router_probs,
-                                               m->map, m->size, l->ffn_exp_probs_b->abs_offset,
-                                               g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE) :
-              ds4_gpu_glm_router_select_batch_tensor(g->router_selected, g->router_weights, g->router_probs,
-                                                     m->map, m->size, l->ffn_exp_probs_b->abs_offset,
-                                                     g->router_logits, NE, NU, DS4_EXPERT_WEIGHT_SCALE,
-                                                     T)) != 0;
-    }
+    bool ok = mimo2_graph_route(g, m, l, T);
     const ds4_tensor *gate = l->ffn_gate_exps, *up = l->ffn_up_exps, *down = l->ffn_down_exps;
     const bool stream_one = g->streaming &&
         gate->type == DS4_TENSOR_MXFP4 && down->type == DS4_TENSOR_MXFP4 &&
         (E % 256u) == 0 && (FF % 256u) == 0 && NU == 8u && NE >= 128u;
+    uint32_t verify_budget = 0u;
+    const char *budget_env = g->streaming && row_experts && T > 1u ?
+        getenv("DS4_MIMO2_VERIFY_EXPERT_BUDGET") : NULL;
+    if (budget_env) {
+        const char *p = budget_env;
+        for (; *p >= '0' && *p <= '9'; p++) {
+            verify_budget = verify_budget * 10u + (uint32_t)(*p - '0');
+            if (verify_budget > DS4_MIMO2_VERIFY_EXPERT_BUDGET_MAX) break;
+        }
+        if (!*budget_env || *p || !verify_budget || verify_budget > NE ||
+            verify_budget > DS4_MIMO2_VERIFY_EXPERT_BUDGET_MAX) {
+            fprintf(stderr, "ds4: DS4_MIMO2_VERIFY_EXPERT_BUDGET must be a decimal integer in 1..%u (<= expert count)\n",
+                    DS4_MIMO2_VERIFY_EXPERT_BUDGET_MAX);
+            return false;
+        }
+        if (T > DS4_MIMO2_MOE_MAX_ROWS || !stream_one) {
+            fprintf(stderr, "ds4: MiMo expert budget requires streamed MXFP4 top-eight verification with 2..%u rows\n",
+                    DS4_MIMO2_MOE_MAX_ROWS);
+            return false;
+        }
+    }
     if (ok && stream_one && (T == 1u || row_experts)) {
+        if (T > 1u && row_experts &&
+            (verify_budget || (metal_graph_tp_env_flag("DS4_MIMO2_EXPERT_ROWS", false) &&
+             ds4_gpu_mimo2_moe_rows_supported(T, NE, E, FF)))) {
+            ds4_gpu_mimo2_moe_row expert_rows[DS4_MIMO2_MOE_MAX_ROWS];
+            for (uint32_t t = 0; t < T; t++) {
+                expert_rows[t] = (ds4_gpu_mimo2_moe_row){
+                    .out = g->verify_ffn_out_row[t],
+                    .gate = g->ffn_gate, .up = g->ffn_up,
+                    .mid = g->ffn_mid, .experts = g->moe_part,
+                    .x = g->verify_ffn_norm_row[t],
+                    .selected = g->verify_selected_row[t],
+                    .weights = g->verify_weights_row[t],
+                };
+            }
+            if (verify_budget) {
+                return ds4_gpu_mimo2_moe_verify_budget_tensor(expert_rows, T, verify_budget,
+                    m->map, m->size, gate->abs_offset, up->abs_offset, down->abs_offset,
+                    il, NE, E, FF, NULL) != 0;
+            }
+            return ds4_gpu_mimo2_moe_rows_tensor(expert_rows, T, m->map, m->size,
+                gate->abs_offset, up->abs_offset, down->abs_offset, il, NE, E, FF) != 0;
+        }
         for (uint32_t t = 0; ok && t < T; t++) {
             const bool one = T == 1u;
             if (!one && t >= MIMO2_SPEC_MAX_ROWS) return false;
@@ -74770,6 +74818,15 @@ static int ds4_engine_open_internal(ds4_engine **out,
         ds4_gpu_set_quality(e->quality);
         ds4_gpu_set_glm_model(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA);
         ds4_gpu_set_ssd_streaming(e->ssd_streaming);
+#ifdef DS4_HAS_MIMO2_METAL
+        if (!ds4_gpu_stream_expert_cache_set_rank_model(
+                ds4_model_is_mimo2() && e->ssd_streaming ?
+                    getenv("DS4_MIMO2_CACHE_RANK_MODEL") : NULL)) {
+            ds4_engine_close(e);
+            *out = NULL;
+            return 1;
+        }
+#endif
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
         /* Device selection must precede the Spark-specific default. Keep
          * unmeasured layouts and checkpoints on their existing policy. */
@@ -83011,6 +83068,92 @@ static bool qwen4_graph_native_session_batch_supported(ds4_decode_item *items, i
 
 #endif /* DS4_HAS_QWEN4_METAL */
 
+#ifdef DS4_HAS_MIMO2_METAL
+/* Opt-in only. Unsupported graphs retain the serialized session evaluator;
+ * "require" rejects that fallback so model tests can prove native dispatch. */
+static bool mimo2_graph_session_batch_requested(void) {
+    return metal_graph_tp_env_flag("DS4_MIMO2_SESSION_BATCH", false);
+}
+
+static bool mimo2_graph_native_session_batch_supported(ds4_decode_item *items,
+                                                       int count, const ds4_engine *e) {
+    if (!mimo2_graph_session_batch_requested() || !items || !e ||
+        count < 2 || count > (int)DS4_MIMO2_MOE_MAX_ROWS || e->tp.active ||
+        e->mimo2_mtp_depth || e->dflash_ready ||
+        !ds4_gpu_mimo2_moe_rows_supported((uint32_t)count, DS4_N_EXPERT,
+                                         DS4_N_EMBD, DS4_N_FF_EXP)) return false;
+    for (int i = 0; i < count; i++) {
+        const ds4_session *s = items[i].session;
+        if (!s || s->engine != e || s->distributed || ds4_session_is_cpu(s) ||
+            !s->checkpoint_valid || !s->mimo2_graph_ready) return false;
+        const ds4_mimo2_gpu_graph *g = &s->mimo2_graph;
+        if (!g->streaming || g->dflash || g->imatrix ||
+            g->n_trunk_layers != mimo2_graph_trunk_layers() ||
+            g->pos != (uint32_t)s->checkpoint.len || g->pos >= g->ctx_size ||
+            g->directional_steering_attn_scale != 0.0f ||
+            g->directional_steering_ffn_scale != 0.0f) return false;
+    }
+    return true;
+}
+
+/* Layer-major scheduling keeps each session's one-row arithmetic and private
+ * KV ring. The routed helper shares one routing readback and selected cache
+ * preparation across the layer's rows, including rows at different positions. */
+static bool mimo2_graph_encode_native_session_batch(ds4_decode_item *items, int count,
+                                                    const ds4_model *m,
+                                                    const ds4_weights *w) {
+    const uint32_t E = DS4_N_EMBD;
+    ds4_gpu_mimo2_moe_row rows[DS4_MIMO2_MOE_MAX_ROWS];
+    bool ok = true;
+    for (int i = 0; ok && i < count; i++) {
+        ds4_mimo2_gpu_graph *g = &items[i].session->mimo2_graph;
+        rows[i] = (ds4_gpu_mimo2_moe_row){
+            .out = g->ffn_out, .gate = g->ffn_gate, .up = g->ffn_up,
+            .mid = g->ffn_mid, .experts = g->moe_part, .x = g->ffn_norm,
+            .selected = g->router_selected, .weights = g->router_weights,
+        };
+        ok = ds4_gpu_tensor_write(g->tokens, 0, &items[i].token, sizeof(int32_t)) &&
+             ds4_gpu_embed_tokens_quant_tensor(g->cur, g->tokens, m->map, m->size,
+                w->token_embd->abs_offset, w->token_embd->type, DS4_N_VOCAB, 1u, E);
+    }
+    for (uint32_t il = 0; ok && il < mimo2_graph_trunk_layers(); il++) {
+        const ds4_layer_weights *l = &w->layer[il];
+        const bool routed = il >= DS4_N_LEADING_DENSE;
+        for (int i = 0; ok && i < count; i++) {
+            ds4_mimo2_gpu_graph *g = &items[i].session->mimo2_graph;
+            ok = ds4_gpu_rms_norm_weight_rows_tensor(g->attn_norm, g->cur, m->map, m->size,
+                     l->attn_norm->abs_offset, E, 1u, DS4_RMS_EPS) &&
+                 mimo2_graph_attention(g, m, l, il, g->pos, 1u) &&
+                 ds4_gpu_add_tensor(g->after_attn, g->cur, g->attn_out, E) &&
+                 ds4_gpu_rms_norm_weight_rows_tensor(g->ffn_norm, g->after_attn, m->map, m->size,
+                     l->ffn_norm->abs_offset, E, 1u, DS4_RMS_EPS) &&
+                 (routed ? mimo2_graph_route(g, m, l, 1u) :
+                           mimo2_graph_dense_ffn(g, m, l, 1u));
+        }
+        if (ok && routed) {
+            ok = ds4_gpu_mimo2_moe_rows_tensor(rows, (uint32_t)count, m->map, m->size,
+                l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+                l->ffn_down_exps->abs_offset, il, DS4_N_EXPERT, E, DS4_N_FF_EXP) != 0;
+        }
+        for (int i = 0; ok && i < count; i++) {
+            ds4_mimo2_gpu_graph *g = &items[i].session->mimo2_graph;
+            ok = ds4_gpu_add_tensor(g->next, g->after_attn, g->ffn_out, E) != 0;
+            if (ok) {
+                ds4_gpu_tensor *tmp = g->cur;
+                g->cur = g->next;
+                g->next = tmp;
+            }
+        }
+    }
+    for (int i = 0; ok && i < count; i++) {
+        ds4_mimo2_gpu_graph *g = &items[i].session->mimo2_graph;
+        ok = ds4_gpu_rms_norm_weight_tensor(g->output_norm, g->cur, m->map, m->size,
+                 w->output_norm->abs_offset, E, DS4_RMS_EPS) &&
+             mimo2_graph_matmul(g->logits, m, w->output, g->output_norm, 1u);
+    }
+    return ok;
+}
+#endif
 static bool ds4_sessions_eval_batch_metal_supported(
         ds4_decode_item *items,
         int count,
@@ -83027,8 +83170,12 @@ static bool ds4_sessions_eval_batch_metal_supported(
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41)
         return ds41_sessions_batch_supported(items, count, e);
 #endif
-    /* MiMo batches run one session at a time through ds4_session_eval. */
+#ifdef DS4_HAS_MIMO2_METAL
+    if (ds4_model_is_mimo2())
+        return mimo2_graph_native_session_batch_supported(items, count, e);
+#else
     if (ds4_model_is_mimo2()) return false;
+#endif
 #ifdef DS4_HAS_QWEN4_METAL
     if (items[0].session && ds4_session_is_qwen4(items[0].session))
         return qwen4_graph_native_session_batch_supported(items, count, e);
@@ -83442,11 +83589,18 @@ static int ds4_sessions_eval_batch_native(
 #if defined(__APPLE__)
     if (e->tp.active) ds4_gpu_tp_set_session_batch_mode(1);
 #endif
-    bool ok = ds4_gpu_begin_commands() != 0;
+#ifdef DS4_HAS_MIMO2_METAL
+    const bool native_mimo2 = !prefill && ds4_session_is_mimo2(items[0].session);
+    bool ok = !native_mimo2 || metal_graph_stream_map_decode_static_all(&e->model, &e->weights);
+#else
+    const bool native_mimo2 = false;
+    bool ok = true;
+#endif
+    ok = ok && ds4_gpu_begin_commands() != 0;
     const bool native_ds41 = ds4_session_is_ds41(items[0].session);
     const uint32_t prefill_rows = prefill ?
         (uint32_t)(prefill_prompt->len - prefill->checkpoint.len) : 0u;
-    const bool native_glm53 = ok &&
+    const bool native_glm53 = ok && !native_mimo2 &&
         glm53_graph_native_session_batch_supported(items, count);
 #ifdef DS4_HAS_QWEN4_METAL
     const bool native_qwen4 = ok && !prefill &&
@@ -83454,10 +83608,15 @@ static int ds4_sessions_eval_batch_native(
 #else
     const bool native_qwen4 = false;
 #endif
-    const bool native_shared = ok && !native_ds41 && !native_glm53 && !native_qwen4 &&
+    const bool native_shared = ok && !native_mimo2 && !native_ds41 && !native_glm53 && !native_qwen4 &&
         metal_graph_native_session_batch_shared_supported(items, count, e);
     const bool native_qkv = native_shared &&
         metal_graph_native_session_batch_qkv_supported(items, count, e);
+#ifdef DS4_HAS_MIMO2_METAL
+    if (native_mimo2) {
+        ok = ok && mimo2_graph_encode_native_session_batch(items, count, &e->model, &e->weights);
+    } else
+#endif
     if (native_ds41) {
 #ifdef DS4_HAS_DEEPSEEK41_GPU
         ds41_gpu_graph *graphs[DS4_TP_BATCH_MAX_ROWS];
@@ -83547,6 +83706,9 @@ static int ds4_sessions_eval_batch_native(
 #endif
         ds4_gpu_tensor *logits = ds4_session_is_glm(s)
             ? s->glm_graph.logits : metal_graph_logits(&s->graph);
+#ifdef DS4_HAS_MIMO2_METAL
+        if (native_mimo2) logits = s->mimo2_graph.logits;
+#endif
 #ifdef DS4_HAS_DEEPSEEK41_GPU
         if (native_ds41) logits = s->ds41_graph.logits;
 #endif
@@ -83584,6 +83746,12 @@ static int ds4_sessions_eval_batch_native(
             glm_graph_decode_updates_dense_cache(&s->glm_graph,
                                                  pos,
                                                  s->logits);
+#ifdef DS4_HAS_MIMO2_METAL
+        if (native_mimo2) {
+            s->mimo2_graph.pos = pos + 1u;
+            mimo2_session_capture_hidden(s, 1u);
+        }
+#endif
         token_vec_push(&s->checkpoint, items[i].token);
         s->checkpoint_valid = true;
         s->mtp_draft_valid = false;
@@ -83604,15 +83772,16 @@ static int ds4_sessions_eval_batch_native(
     if (getenv("DS4_METAL_SESSION_BATCH_LOG") != NULL) {
         fprintf(stderr,
                 "ds4: %s session batch rows=%d prefill_rows=%u family=%s "
-                "native_ds41=%d native_glm53=%d native_qwen4=%d native_shared=%d native_qkv=%d\n",
+                "native_ds41=%d native_glm53=%d native_qwen4=%d native_shared=%d native_qkv=%d native_mimo2=%d\n",
                 ds4_backend_name(e->backend), count, prefill_rows,
                 ds4_session_is_glm(items[0].session) ? "glm" :
-                ds4_session_is_qwen4(items[0].session) ? "qwen" : "deepseek",
+                ds4_session_is_qwen4(items[0].session) ? "qwen" :
+                native_mimo2 ? "mimo2" : "deepseek",
                 native_ds41 ? 1 : 0,
                 native_glm53 ? 1 : 0,
                 native_qwen4 ? 1 : 0,
                 native_shared ? 1 : 0,
-                native_qkv ? 1 : 0);
+                native_qkv ? 1 : 0, native_mimo2 ? 1 : 0);
     }
     return 0;
 }
@@ -84146,6 +84315,13 @@ int ds4_sessions_eval_batch(ds4_decode_item *items, int count,
     if (ds4_sessions_eval_batch_metal_supported(items, count, e)) {
         return ds4_sessions_eval_batch_native(items, count, e, NULL, NULL, err, errlen);
     }
+#ifdef DS4_HAS_MIMO2_METAL
+    const char *mimo2_batch = getenv("DS4_MIMO2_SESSION_BATCH");
+    if (ds4_session_is_mimo2(first) && mimo2_batch && strcmp(mimo2_batch, "require") == 0) {
+        if (err && errlen) snprintf(err, errlen, "MiMo native session batch is unsupported for this configuration");
+        return 1;
+    }
+#endif
 #endif
 
     /* Preserve logical all-or-nothing behavior even on the serialized path.
@@ -88310,6 +88486,22 @@ static int ds4_sessions_eval_batch_with_prefill_cuda(
 }
 
 #ifdef DS4_HAS_MIMO2_METAL
+
+static void mimo2_dflash_cost_note(ds4_mimo2_dflash *d, uint32_t cap,
+                                   uint32_t drafted, uint32_t committed,
+                                   double started, ds4_gpu_stream_expert_io before,
+                                   bool adaptive, bool profile) {
+    const double ms = (now_sec() - started) * 1000.0;
+    if (adaptive) ds4_dflash_policy_observe(&d->cost_policy, cap, committed, ms);
+    if (profile) {
+        const ds4_gpu_stream_expert_io after = ds4_gpu_stream_expert_cache_io();
+        fprintf(stderr,
+            "ds4: mimo_dflash_cost cap=%u drafted=%u committed=%u ms=%.6f read_bytes=%" PRIu64
+            " pread_ms=%.6f adaptive=%d\n", cap, drafted, committed, ms,
+            after.read_bytes - before.read_bytes, after.read_ms - before.read_ms, adaptive);
+    }
+}
+
 /* One MiMo speculative cycle, drafting with DFlash when the session has a
  * drafter and with the native MTP stack otherwise.
  *
@@ -88358,6 +88550,14 @@ static int ds4_session_mimo2_spec_cycle(
     const uint32_t room = g->pos < g->ctx_size ? g->ctx_size - g->pos : 0u;
     if (room <= depth) depth = room ? room - 1u : 0u;
     if (depth > MIMO2_SPEC_MAX_ROWS - 1u) depth = MIMO2_SPEC_MAX_ROWS - 1u;
+    const bool adaptive = dflash && metal_graph_tp_env_flag("DS4_MIMO2_DFLASH_ADAPTIVE", false);
+    const bool cost_profile = dflash && metal_graph_tp_env_flag("DS4_MIMO2_DFLASH_COST_PROFILE", false);
+    const bool measure_cost = adaptive || cost_profile;
+    const double cycle_start = measure_cost ? now_sec() : 0.0;
+    const ds4_gpu_stream_expert_io io_start = cost_profile ?
+        ds4_gpu_stream_expert_cache_io() : (ds4_gpu_stream_expert_io){0};
+    if (adaptive) depth = ds4_dflash_policy_choose(&g->dflash->cost_policy,
+                                                  e->dflash_draft_tokens, depth);
 
     int toks[MIMO2_SPEC_MAX_ROWS];
     toks[0] = first_token;
@@ -88402,6 +88602,8 @@ static int ds4_session_mimo2_spec_cycle(
     if (n_draft == 0) {
         if (ds4_session_eval(s, first_token, err, errlen) != 0) return -1;
         accepted[0] = first_token;
+        if (measure_cost) mimo2_dflash_cost_note(g->dflash, depth, 0u, 1u,
+                                                cycle_start, io_start, adaptive, cost_profile);
         return 1;
     }
 
@@ -88489,6 +88691,8 @@ static int ds4_session_mimo2_spec_cycle(
     s->mimo2_spec_cycles++;
     s->mimo2_spec_drafted += n_draft;
     s->mimo2_spec_accepted += n_acc;
+    if (measure_cost) mimo2_dflash_cost_note(g->dflash, depth, n_draft, (uint32_t)n_out,
+                                            cycle_start, io_start, adaptive, cost_profile);
     return n_out;
 }
 

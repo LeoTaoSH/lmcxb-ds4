@@ -1,0 +1,14 @@
+{
+  "binary": "/tmp/ds4-serving-experiments.VLO26y/native-session-bench",
+  "binary_sha256": "6902e4f2033dd04c1d77104fc1936b0383f24e9a6eb6b600b476132d95ac4533",
+  "protocol": "Fresh process per variant and concurrency, stock then native. Concurrency 2 and 4; no paired blocks. No positive paired count at displayed precision, so these runs provide separate latency diagnostics, not ABBA confirmation or a promotion gate.",
+  "common_arguments": "-m /Users/mvid/Development/personal/ds4/gguf/MiMo-V2.6-Flash-MOPD-MXFP4-Q8Attn.gguf --ssd-streaming --ctx 256 --gen 64 --warmup 8 --budget-gib 8",
+  "stock_environment": "env -u DS4_MIMO2_SESSION_BATCH -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX",
+  "native_environment": "env -u DS4_METAL_SESSION_BATCH_LOG -u DS4_METAL_DECODE_STAGE_PROFILE -u DS4_METAL_GRAPH_DUMP_PREFIX DS4_MIMO2_SESSION_BATCH=1",
+  "execution_order": ["stock-2", "native-2", "stock-4", "native-4"],
+  "outputs": ["latency-stock-2.csv", "latency-native-2.csv", "latency-stock-4.csv", "latency-native-4.csv"],
+  "csv_argument": "--csv speed-bench/mimo-cache/experiments-20261011/batching/latency-{variant}-{concurrency}.csv",
+  "stderr_and_stdout": "speed-bench/mimo-cache/experiments-20261011/batching/latency-{variant}-{concurrency}.log",
+  "cache_budget": "Auto, observed 5134 expert slots (63.92 GiB) in paired logs; expert cache initialized afresh per process. Operating-system page cache is shared across processes.",
+  "latency_semantics": "Each measured batch step advances every stream by one token. The reported step mean/p95 is the per-stream inter-token round duration, not step latency divided by concurrency."
+}
