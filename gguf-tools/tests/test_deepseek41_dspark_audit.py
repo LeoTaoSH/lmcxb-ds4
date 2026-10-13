@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import deepseek41_validate_gguf as audit
 from deepseek41_metadata import GGUF_ALIGNMENT
 from deepseek41_quantize import dspark_metadata
-from glm53_quantize import (GGUF_ARRAY, GGUF_UINT64, QTYPE_F32, TensorPlan, align, kv_u32,
+from glm53_quantize import (GGUF_ARRAY, GGUF_UINT64, QTYPE_F32, TensorPlan, align, kv_string, kv_u32,
                             kv_u32_array, kv_u64, pack_string, tensor_header)
 
 
@@ -86,6 +86,9 @@ class DsparkAuditTest(unittest.TestCase):
 
     def test_each_runtime_field_must_match_source(self):
         replacements = {
+            "dspark.target_architecture": kv_string("dspark.target_architecture", "deepseek4"),
+            "dspark.n_routed_experts": kv_u32("dspark.n_routed_experts", 3),
+            "dspark.num_experts_per_tok": kv_u32("dspark.num_experts_per_tok", 2),
             "dspark.block_size": kv_u32("dspark.block_size", 3),
             "dspark.markov_rank": kv_u32("dspark.markov_rank", 3),
             "dspark.noise_token_id": kv_u32("dspark.noise_token_id", 6),

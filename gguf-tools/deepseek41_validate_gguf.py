@@ -81,6 +81,9 @@ def validate(args):
             expected = {"general.architecture": "deepseek41-dspark"}
             c = config["text_config"]
             expected.update({
+                "dspark.target_architecture": "deepseek41",
+                "dspark.n_routed_experts": c["dspark_n_routed_experts"],
+                "dspark.num_experts_per_tok": c["dspark_num_experts_per_tok"],
                 "dspark.block_size": c["dspark_block_size"],
                 "dspark.markov_rank": c["dspark_markov_rank"],
                 "dspark.noise_token_id": c["dspark_noise_token_id"],
@@ -107,7 +110,7 @@ def validate(args):
                 if key in expected or key in {"deepseek41.calibration", "deepseek41.quantization"}:
                     if key in metadata:
                         raise ValueError(f"duplicate metadata: {key}")
-                    if key.startswith("dspark."):
+                    if key.startswith("dspark.") and key != "dspark.target_architecture":
                         if key == "dspark.target_layer_ids":
                             if kind != GGUF_ARRAY or read_u32(fp, f"{key} element type") != GGUF_UINT32:
                                 raise ValueError(f"{key}: expected uint32 array")
