@@ -673,6 +673,7 @@ typedef enum {
     SERVER_MODEL_SYNTAX_GLM,
     SERVER_MODEL_SYNTAX_DEEPSEEK41,
     SERVER_MODEL_SYNTAX_QWEN,
+    SERVER_MODEL_SYNTAX_MUSE,
 } server_model_syntax;
 
 #define DS41_TOOL_CALLS_START "<｜DSML｜ calls>"
@@ -1213,6 +1214,7 @@ static bool model_alias_enables_thinking(const char *model) {
 }
 
 static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
+    if (ds4_engine_is_muse_spark(engine)) return SERVER_MODEL_SYNTAX_MUSE;
     if (ds4_engine_is_qwen4(engine)) return SERVER_MODEL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ?
            SERVER_MODEL_SYNTAX_GLM : ds4_engine_is_deepseek41(engine) ?
@@ -1220,6 +1222,7 @@ static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
 }
 
 static const char *server_model_id_from_engine(ds4_engine *engine) {
+    if (ds4_engine_is_muse_spark(engine)) return "muse-spark-open";
     if (ds4_engine_is_deepseek41(engine)) return "deepseek-v4.1-flash";
     if (ds4_engine_is_qwen4(engine)) return "qwen3.8-flash-next";
     if (ds4_engine_is_glm53(engine)) return "glm-5.3-flash";
@@ -1230,7 +1233,9 @@ static const char *server_model_id_from_engine(ds4_engine *engine) {
 
 static bool server_model_alias_known(const char *id) {
     return id &&
-           (!strcmp(id, "deepseek-v4-flash") ||
+           (!strcmp(id, "muse-spark-open") ||
+            !strcmp(id, "meta-models/Muse-Spark-Open-816B-A42B") ||
+            !strcmp(id, "deepseek-v4-flash") ||
             !strcmp(id, "deepseek-v4.1-flash") ||
             !strcmp(id, "qwen3.8-flash-next") ||
             !strcmp(id, "qwen3.8-flash-next-chat") ||
@@ -3613,6 +3618,63 @@ static char *render_qwen_chat_prompt_text(const chat_msgs *msgs,
     return buf_take(&out);
 }
 
+static char *render_muse_chat_prompt_text(const chat_msgs *msgs,
+                                          const char *tool_schemas,
+                                          ds4_think_mode think_mode) {
+    const char *strength = "512";
+    switch (think_mode) {
+    case DS4_THINK_NONE: strength = "32"; break;
+    case DS4_THINK_LOW: strength = "8"; break;
+    case DS4_THINK_MEDIUM: strength = "32"; break;
+    case DS4_THINK_HIGH: strength = "256"; break;
+    case DS4_THINK_MAX: strength = "512"; break;
+    default: break;
+    }
+    buf out = {0};
+    buf_puts(&out, "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\n");
+    for (int i = 0; msgs && i < msgs->len; i++) {
+        const chat_msg *m = &msgs->v[i];
+        if (!role_is_system(m->role)) continue;
+        buf_puts(&out, m->content ? m->content : "");
+        buf_puts(&out, "\n\n");
+    }
+    if (tool_schemas && tool_schemas[0]) {
+        buf_puts(&out, "Available tools (JSON schema):\n");
+        buf_puts(&out, tool_schemas);
+        buf_puts(&out, "\n\nUse ATEM function calls addressed to the exact tool name.\n\n");
+    }
+    buf_puts(&out, "Reasoning strength: ");
+    buf_puts(&out, strength);
+    buf_puts(&out, ".\n\nUse the appropriate recipient for each message: self for reasoning, user for the final answer.");
+    buf_puts(&out, "<|eot|>");
+    for (int i = 0; msgs && i < msgs->len; i++) {
+        const chat_msg *m = &msgs->v[i];
+        if (role_is_system(m->role)) continue;
+        if (!strcmp(m->role, "assistant")) {
+            if (m->reasoning && m->reasoning[0]) {
+                buf_puts(&out, "<|start|>assistant to=self<|message|>");
+                buf_puts(&out, m->reasoning);
+                buf_puts(&out, "<|eom|>");
+            }
+            if (m->content && m->content[0]) {
+                buf_puts(&out, "<|start|>assistant to=user<|message|>");
+                buf_puts(&out, m->content);
+                buf_puts(&out, "<|eot|>");
+            }
+        } else if (!strcmp(m->role, "tool") || !strcmp(m->role, "function")) {
+            buf_puts(&out, "<|start|>tool tool<|message|><tool_output name=\"tool\">");
+            append_tool_result_text(&out, m->content);
+            buf_puts(&out, "</tool_output><|eot|>");
+        } else {
+            buf_puts(&out, "<|start|>user<|message|>");
+            buf_puts(&out, m->content ? m->content : "");
+            buf_puts(&out, "<|eot|>");
+        }
+    }
+    buf_puts(&out, "<|start|>assistant");
+    return buf_take(&out);
+}
+
 static char *render_chat_prompt_text_for_syntax(server_model_syntax syntax,
                                                 const chat_msgs *msgs,
                                                 const char *tool_schemas,
@@ -3627,6 +3689,8 @@ static char *render_chat_prompt_text_for_syntax(server_model_syntax syntax,
     if (syntax == SERVER_MODEL_SYNTAX_QWEN) {
         return render_qwen_chat_prompt_text(msgs, tool_schemas, tool_orders, think_mode);
     }
+    if (syntax == SERVER_MODEL_SYNTAX_MUSE)
+        return render_muse_chat_prompt_text(msgs, tool_schemas, think_mode);
     return render_deepseek_chat_prompt_text(msgs, tool_schemas,
                                             tool_orders, think_mode);
 }
@@ -6670,6 +6734,32 @@ static bool parse_qwen_generated_message_ex(const char *text,
     return true;
 }
 
+static bool parse_muse_generated_message(const char *text,
+                                        char **content_out,
+                                        char **reasoning_out) {
+    static const char self_marker[] = "to=self<|message|>";
+    static const char user_marker[] = "to=user<|message|>";
+    text = text ? text : "";
+    const char *self = strstr(text, self_marker);
+    const char *user = strstr(text, user_marker);
+    const char *reason_start = self ? self + sizeof(self_marker) - 1u : NULL;
+    const char *reason_end = reason_start ? strstr(reason_start, "<|eom|>") : NULL;
+    if (reason_start && !reason_end) reason_end = user && user > reason_start ? user : text + strlen(text);
+    if (user) {
+        const char *start = user + sizeof(user_marker) - 1u;
+        const char *end = strstr(start, "<|eot|>");
+        if (!end) end = start + strlen(start);
+        *content_out = xstrndup(start, (size_t)(end - start));
+    } else if (!self) {
+        *content_out = xstrdup(text);
+    } else {
+        *content_out = xstrdup("");
+    }
+    *reasoning_out = reason_start && reason_end ?
+        xstrndup(reason_start, (size_t)(reason_end - reason_start)) : xstrdup("");
+    return true;
+}
+
 static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
                                                   const char *text,
                                                   bool require_thinking_closed,
@@ -6684,6 +6774,11 @@ static bool parse_generated_message_ex_for_syntax(server_model_syntax syntax,
     if (syntax == SERVER_MODEL_SYNTAX_QWEN) {
         return parse_qwen_generated_message_ex(text, require_thinking_closed,
                                                content_out, reasoning_out, calls, NULL);
+    }
+    if (syntax == SERVER_MODEL_SYNTAX_MUSE) {
+        (void)require_thinking_closed;
+        (void)calls;
+        return parse_muse_generated_message(text, content_out, reasoning_out);
     }
     return parse_deepseek_generated_message_ex(text, require_thinking_closed,
                                                content_out, reasoning_out,

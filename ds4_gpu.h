@@ -3587,6 +3587,35 @@ int ds4_gpu_qwen4_attn_decode_tensor(
         const ds4_gpu_tensor *sel_tokens, const ds4_gpu_tensor *n_sel, ds4_gpu_tensor *part,
         uint32_t n_tokens, uint32_t n_head, uint32_t n_head_kv, uint32_t head_dim,
         uint32_t pos0, bool use_sel, uint32_t sel_stride, float scale);
+int ds4_gpu_muse_attn_prep_tensor(
+        ds4_gpu_tensor *q_out, ds4_gpu_tensor *gate_out,
+        ds4_gpu_tensor *k_cache, ds4_gpu_tensor *v_cache,
+        const ds4_gpu_tensor *qproj, const ds4_gpu_tensor *kproj,
+        const ds4_gpu_tensor *vproj, const ds4_gpu_tensor *gateproj,
+        const void *model_map, uint64_t model_size,
+        uint64_t q_norm_offset, uint64_t k_norm_offset,
+        uint32_t n_tokens, uint32_t n_head, uint32_t n_head_kv,
+        uint32_t head_dim, uint32_t n_rot, uint32_t pos0,
+        uint32_t cache_cap, bool use_rope, float rope_base, float eps);
+int ds4_gpu_muse_sigmoid_mul_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x, const ds4_gpu_tensor *gate,
+        uint32_t n_tokens, uint32_t dim);
+int ds4_gpu_muse_residual_blend_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *a, const ds4_gpu_tensor *b,
+        const void *model_map, uint64_t model_size, uint64_t alpha_offset, uint64_t beta_offset,
+        uint32_t n_tokens, uint32_t dim);
+int ds4_gpu_muse_weight_mul_tensor(
+        ds4_gpu_tensor *out, const ds4_gpu_tensor *x,
+        const void *model_map, uint64_t model_size, uint64_t weight_offset,
+        uint32_t n_tokens, uint32_t dim);
+int ds4_gpu_muse_router_topk_tensor(
+        ds4_gpu_tensor *selected, ds4_gpu_tensor *weights, const ds4_gpu_tensor *logits,
+        const void *model_map, uint64_t model_size, uint64_t bias_offset,
+        uint32_t n_tokens, uint32_t n_expert, uint32_t n_used);
+int ds4_gpu_muse_swa_indices_tensor(
+        ds4_gpu_tensor *selected, ds4_gpu_tensor *counts,
+        uint32_t n_tokens, uint32_t pos0, uint32_t window, uint32_t stride);
+int ds4_gpu_muse_logits_tensor(ds4_gpu_tensor *logits, uint32_t count, float scale, float softcap);
 /* Routed experts; shared_type == UINT32_MAX disables the shared-expert slot,
  * otherwise mid/part carry n_slots+1 entries and the reduce weights the last
  * one by sigmoid(shared_gate). */

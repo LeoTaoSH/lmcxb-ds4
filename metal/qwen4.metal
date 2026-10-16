@@ -2367,6 +2367,7 @@ kernel void kernel_qwen4_attn_merge_wide<NPT_>(constant ds4_metal_args_qwen4_att
         device const float *, device float *, uint3, ushort);
 QWEN4_ATTN_MERGE_WIDE_INSTANCE(8)
 QWEN4_ATTN_MERGE_WIDE_INSTANCE(4)
+QWEN4_ATTN_MERGE_WIDE_INSTANCE(2)
 
 #define QWEN4_ATTN_ROWS_INSTANCE(NPT_) \
 template [[host_name("kernel_qwen4_attn_decode_rows_npt" #NPT_)]] \
@@ -2378,6 +2379,7 @@ kernel void kernel_qwen4_attn_merge_rows<NPT_>(constant ds4_metal_args_qwen4_att
         device const float *, device float *, device const ds4_metal_qwen4_attn_row *, uint3, ushort);
 QWEN4_ATTN_ROWS_INSTANCE(8)
 QWEN4_ATTN_ROWS_INSTANCE(4)
+QWEN4_ATTN_ROWS_INSTANCE(2)
 
 #define QWEN4_ATTN_INSTANCE(NPT_) \
 template [[host_name("kernel_qwen4_attn_decode_npt" #NPT_)]] \
@@ -2389,6 +2391,7 @@ kernel void kernel_qwen4_attn_merge<NPT_>(constant ds4_metal_args_qwen4_attn_dec
         device const float *, device float *, uint3, ushort);
 QWEN4_ATTN_INSTANCE(8)
 QWEN4_ATTN_INSTANCE(4)
+QWEN4_ATTN_INSTANCE(2)
 QWEN4_ATTN_INSTANCE(1)
 
 #define QWEN4_AMM_KT 16
