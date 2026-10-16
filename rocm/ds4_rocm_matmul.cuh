@@ -1068,6 +1068,8 @@ extern "C" int ds4_gpu_matmul_f16_tensor(ds4_gpu_tensor *out, const void *model_
             g_rocblas_f16_solution_set != DS4_ROCBLAS_F16_SOLUTIONS_NONE &&
             !__atomic_load_n(&g_rocblas_f16_solutions_disabled, __ATOMIC_RELAXED) &&
             ds4_rocm_gfx1151_flag("DS4_ROCM_F16_Q4_SOLUTIONS")) {
+            /* 5.7.0.39d8d603: -340 and -339 are 1.5-2.6x faster than the
+             * default for widths 2-6 on gfx1151, with matching accuracy. */
             int32_t solution = 0;
             if (in_dim == 4096u &&
                 (out_dim == 64u || out_dim == 256u ||
@@ -1076,11 +1078,15 @@ extern "C" int ds4_gpu_matmul_f16_tensor(ds4_gpu_tensor *out, const void *model_
                     DS4_ROCBLAS_F16_SOLUTIONS_5_5_CD957402) solution = -217;
                 if (g_rocblas_f16_solution_set ==
                     DS4_ROCBLAS_F16_SOLUTIONS_5_6_8D1AE90E) solution = -50;
+                if (g_rocblas_f16_solution_set ==
+                    DS4_ROCBLAS_F16_SOLUTIONS_5_7_39D8D603) solution = -340;
             } else if (in_dim == 1024u && out_dim == 8192u) {
                 if (g_rocblas_f16_solution_set ==
                     DS4_ROCBLAS_F16_SOLUTIONS_5_5_CD957402) solution = -216;
                 if (g_rocblas_f16_solution_set ==
                     DS4_ROCBLAS_F16_SOLUTIONS_5_6_8D1AE90E) solution = -49;
+                if (g_rocblas_f16_solution_set ==
+                    DS4_ROCBLAS_F16_SOLUTIONS_5_7_39D8D603) solution = -339;
             }
             if (solution != 0) {
                 const rocblas_status rst = rocblas_gemm_ex(

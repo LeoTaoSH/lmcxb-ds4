@@ -239,7 +239,10 @@ static int hipblaslt_gemm_tn_f16_out_f32_prefill(
 }
 
 /* Experimental DSpark attention A: five fixed-width plans, independent of
- * the prefill cache and its failure state. C/D contain eight interleaved groups. */
+ * the prefill cache and its failure state. C/D contain eight interleaved groups.
+ * The state is zero unchecked, the matched DS4_HIPBLASLT_* build, or minus one
+ * disabled until cleanup. 2379 is measured on 8d1ae90e; on 39d8d603, 2432 is
+ * about 2.6x faster than the rocBLAS strided-batched fallback for widths 2-6. */
 static int g_hipblaslt_dspark_a_state;
 static cuda_hipblaslt_gemm_plan g_hipblaslt_dspark_a_plans[5];
 
@@ -262,19 +265,20 @@ static int hipblaslt_dspark_attention_a(
         __half *out, const __half *w, const __half *x, uint32_t n_tok) {
     if (n_tok < 2u || n_tok > 6u || !out || !w || !x ||
         !g_hipblaslt_ready || !g_cublas_ready ||
-        g_rocblas_f16_solution_set != DS4_ROCBLAS_F16_SOLUTIONS_5_6_8D1AE90E ||
         __atomic_load_n(&g_hipblaslt_dspark_a_state, __ATOMIC_RELAXED) < 0) return 0;
     if (__atomic_load_n(&g_hipblaslt_dspark_a_state, __ATOMIC_RELAXED) == 0) {
-        int version = 0;
-        char revision[128] = {0};
-        if (!hipblaslt_ok(hipblasLtGetVersion(g_hipblaslt, &version), "DSpark A version") ||
-            !hipblaslt_ok(hipblasLtGetGitRevision(g_hipblaslt, revision), "DSpark A revision") ||
-            version != 100401 || strcmp(revision, "8d1ae90e") != 0) {
-            __atomic_store_n(&g_hipblaslt_dspark_a_state, -1, __ATOMIC_RELAXED);
-            return 0;
-        }
-        __atomic_store_n(&g_hipblaslt_dspark_a_state, 1, __ATOMIC_RELAXED);
+        /* rocBLAS and hipBLASLt must come from the same ROCm release. */
+        const int build = hipblaslt_build();
+        const int matched =
+            (build == DS4_HIPBLASLT_8D1AE90E &&
+             g_rocblas_f16_solution_set == DS4_ROCBLAS_F16_SOLUTIONS_5_6_8D1AE90E) ||
+            (build == DS4_HIPBLASLT_39D8D603 &&
+             g_rocblas_f16_solution_set == DS4_ROCBLAS_F16_SOLUTIONS_5_7_39D8D603);
+        __atomic_store_n(&g_hipblaslt_dspark_a_state, matched ? build : -1, __ATOMIC_RELAXED);
+        if (!matched) return 0;
     }
+    const int solution_index =
+        __atomic_load_n(&g_hipblaslt_dspark_a_state, __ATOMIC_RELAXED) == DS4_HIPBLASLT_39D8D603 ? 2432 : 2379;
     cuda_hipblaslt_gemm_plan &p = g_hipblaslt_dspark_a_plans[n_tok - 2u];
     const float alpha = 1.0f, beta = 0.0f;
     if (!p.desc) {
@@ -307,12 +311,12 @@ static int hipblaslt_dspark_attention_a(
                         "DSpark A stride");
             }
             if (!layouts_ok) break;
-            std::vector<int> indices{2379};
+            std::vector<int> indices{solution_index};
             std::vector<hipblasLtMatmulHeuristicResult_t> algorithms;
             if (!hipblaslt_ok(hipblaslt_ext::getAlgosFromIndex(g_hipblaslt, indices, algorithms),
                               "DSpark A fixed index")) break;
             if (algorithms.size() != 1 || algorithms[0].state != HIPBLAS_STATUS_SUCCESS ||
-                hipblaslt_ext::getIndexFromAlgo(algorithms[0].algo) != 2379) break;
+                hipblaslt_ext::getIndexFromAlgo(algorithms[0].algo) != solution_index) break;
             size_t workspace = 0;
             if (!hipblaslt_ok(hipblaslt_ext::matmulIsAlgoSupported(g_hipblaslt, p.desc,
                     &alpha, p.a_desc, p.b_desc, &beta, p.c_desc, p.d_desc,
