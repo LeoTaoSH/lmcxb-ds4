@@ -312,6 +312,23 @@ extern "C" size_t ds4_mmq_q81_scratch_bytes(void) {
     return g_q81_scratch_bytes;
 }
 
+// Test hook (tests/test_iq2_signs_rocm.c through ds4_gpu_test_iq2_xxs_signs):
+// iq2_grid_signed4 for every (grid index, sign index) pair, written as
+// words[2 * (grid_idx * 128 + sign_idx) + {0, 1}] (device pointer).
+static __global__ void ds4_mmq_iq2_grid_signed4_test_kernel(int32_t * words) {
+    const int gi = blockIdx.x;
+    const int si = threadIdx.x;
+    const uint2 grid_pos = ((const uint2 *) iq2xxs_grid)[gi];
+    const uint32_t signs = unpack_ksigns((uint8_t) si);
+    words[2 * (gi * 128 + si) + 0] = iq2_grid_signed4(grid_pos.x, signs & 0x08040201);
+    words[2 * (gi * 128 + si) + 1] = iq2_grid_signed4(grid_pos.y, signs & 0x80402010);
+}
+
+extern "C" int ds4_mmq_test_iq2_grid_signed4(int32_t * words) {
+    ds4_mmq_iq2_grid_signed4_test_kernel<<<256, 128>>>(words);
+    return cudaGetLastError() == cudaSuccess ? 0 : 1;
+}
+
 extern "C" int ds4_mmq_init(int device) {
     if (device < 0) {
         fprintf(stderr, "ds4_mmq_init: invalid device %d\n", device);
