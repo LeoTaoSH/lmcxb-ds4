@@ -22,6 +22,7 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37382,6 +37383,252 @@ static void imatrix_collector_free(ds4_imatrix_collector *c) {
     memset(c, 0, sizeof(*c));
 }
 
+/* Checkpoints keep the unnormalized sums and per-expert counts. The public
+ * llama.cpp .dat contains averages only and cannot be resumed exactly. */
+enum {
+    IMCK_VERSION,
+    IMCK_DATASET_BYTES, IMCK_DATASET_HASH,
+    IMCK_MODEL_DEV, IMCK_MODEL_INO, IMCK_MODEL_BYTES,
+    IMCK_MODEL_MTIME_SEC, IMCK_MODEL_MTIME_NSEC,
+    IMCK_FAMILY, IMCK_LAYERS, IMCK_EXPERTS, IMCK_EMBD, IMCK_FF_EXP,
+    IMCK_EXPERT_USED, IMCK_CTX, IMCK_PREFILL_CAP,
+    IMCK_CURSOR, IMCK_PROMPTS, IMCK_TOKENS, IMCK_OBSERVED_TOKENS,
+    IMCK_OBSERVED_ROUTES, IMCK_CHUNKS,
+    IMCK_GATE_BYTES, IMCK_DOWN_BYTES, IMCK_COUNTS_BYTES,
+    IMCK_N_FIELDS
+};
+
+typedef struct {
+    const char *path;
+    uint64_t expected[IMCK_N_FIELDS];
+} ds4_imatrix_checkpoint;
+
+static volatile sig_atomic_t g_imatrix_stop_signal;
+
+static void imatrix_stop_handler(int signal_number) {
+    g_imatrix_stop_signal = signal_number;
+}
+
+static uint64_t imatrix_checkpoint_hash(uint64_t hash, const void *ptr, size_t n) {
+    const uint8_t *p = ptr;
+    for (size_t i = 0; i < n; i++) {
+        hash ^= p[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static bool imatrix_checkpoint_io(FILE *fp, void *ptr, size_t n,
+                                  bool writing, uint64_t *hash) {
+    if (n && (writing ? fwrite(ptr, 1, n, fp) : fread(ptr, 1, n, fp)) != n)
+        return false;
+    *hash = imatrix_checkpoint_hash(*hash, ptr, n);
+    return true;
+}
+
+static bool imatrix_checkpoint_same_file(const char *a, const char *b) {
+    if (!a || !b) return false;
+    if (strcmp(a, b) == 0) return true;
+    struct stat sa, sb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
+           sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+
+static bool imatrix_checkpoint_prepare(ds4_imatrix_checkpoint *ck,
+        const char *path, bool resume, const char *model_path,
+        const char *dataset_path, const char *output_path,
+        const char *dataset, size_t dataset_len,
+        const ds4_imatrix_collector *c, uint32_t layers, int ctx_size) {
+    memset(ck, 0, sizeof(*ck));
+    if (!path) return true;
+    if (!path[0]) {
+        fprintf(stderr, "ds4: imatrix checkpoint path must not be empty\n");
+        return false;
+    }
+    if (imatrix_checkpoint_same_file(path, model_path) ||
+        imatrix_checkpoint_same_file(path, dataset_path) ||
+        imatrix_checkpoint_same_file(path, output_path)) {
+        fprintf(stderr, "ds4: imatrix checkpoint must differ from model, dataset and output\n");
+        return false;
+    }
+    struct stat model_st, checkpoint_st;
+    if (stat(model_path, &model_st) != 0) {
+        fprintf(stderr, "ds4: cannot stat imatrix model %s: %s\n", model_path, strerror(errno));
+        return false;
+    }
+    const bool exists = stat(path, &checkpoint_st) == 0;
+    if (!exists && errno != ENOENT) {
+        fprintf(stderr, "ds4: cannot stat imatrix checkpoint %s: %s\n", path, strerror(errno));
+        return false;
+    }
+    if (resume != exists) {
+        fprintf(stderr, "ds4: imatrix checkpoint %s %s; %s\n", path,
+                exists ? "already exists" : "does not exist",
+                exists ? "pass --imatrix-resume or choose a new path" :
+                         "start without --imatrix-resume");
+        return false;
+    }
+    ck->path = path;
+    uint64_t *f = ck->expected;
+    f[IMCK_VERSION] = 1;
+    f[IMCK_DATASET_BYTES] = dataset_len;
+    f[IMCK_DATASET_HASH] = imatrix_checkpoint_hash(
+        UINT64_C(14695981039346656037), dataset, dataset_len);
+    f[IMCK_MODEL_DEV] = (uint64_t)model_st.st_dev;
+    f[IMCK_MODEL_INO] = (uint64_t)model_st.st_ino;
+    f[IMCK_MODEL_BYTES] = (uint64_t)model_st.st_size;
+#ifdef __APPLE__
+    f[IMCK_MODEL_MTIME_SEC] = (uint64_t)model_st.st_mtimespec.tv_sec;
+    f[IMCK_MODEL_MTIME_NSEC] = (uint64_t)model_st.st_mtimespec.tv_nsec;
+#else
+    f[IMCK_MODEL_MTIME_SEC] = (uint64_t)model_st.st_mtim.tv_sec;
+    f[IMCK_MODEL_MTIME_NSEC] = (uint64_t)model_st.st_mtim.tv_nsec;
+#endif
+    f[IMCK_FAMILY] = DS4_MODEL_FAMILY;
+    f[IMCK_LAYERS] = layers;
+    f[IMCK_EXPERTS] = DS4_N_EXPERT;
+    f[IMCK_EMBD] = DS4_N_EMBD;
+    f[IMCK_FF_EXP] = DS4_N_FF_EXP;
+    f[IMCK_EXPERT_USED] = DS4_N_EXPERT_USED;
+    f[IMCK_CTX] = (uint64_t)ctx_size;
+    f[IMCK_PREFILL_CAP] = c->cap_tokens;
+    f[IMCK_GATE_BYTES] = (uint64_t)DS4_N_LAYER * DS4_N_EXPERT * DS4_N_EMBD * sizeof(float);
+    f[IMCK_DOWN_BYTES] = (uint64_t)DS4_N_LAYER * DS4_N_EXPERT * DS4_N_FF_EXP * sizeof(float);
+    f[IMCK_COUNTS_BYTES] = sizeof(c->gate_up_count);
+    return true;
+}
+
+static bool imatrix_checkpoint_save(const ds4_imatrix_checkpoint *ck,
+        const ds4_imatrix_collector *c, size_t cursor_offset,
+        int prompts_done, int tokens_done) {
+    if (!ck->path) return true;
+    const size_t path_len = strlen(ck->path);
+    char *temporary = xmalloc(path_len + sizeof(".tmp.XXXXXX"));
+    snprintf(temporary, path_len + sizeof(".tmp.XXXXXX"), "%s.tmp.XXXXXX", ck->path);
+    const int fd = mkstemp(temporary);
+    if (fd < 0) {
+        fprintf(stderr, "ds4: cannot create imatrix checkpoint temporary file: %s\n", strerror(errno));
+        free(temporary);
+        return false;
+    }
+    FILE *fp = fdopen(fd, "wb");
+    if (!fp) {
+        fprintf(stderr, "ds4: cannot stream imatrix checkpoint: %s\n", strerror(errno));
+        close(fd);
+        unlink(temporary);
+        free(temporary);
+        return false;
+    }
+    uint64_t f[IMCK_N_FIELDS];
+    memcpy(f, ck->expected, sizeof(f));
+    f[IMCK_CURSOR] = cursor_offset;
+    f[IMCK_PROMPTS] = (uint64_t)prompts_done;
+    f[IMCK_TOKENS] = (uint64_t)tokens_done;
+    f[IMCK_OBSERVED_TOKENS] = c->observed_tokens;
+    f[IMCK_OBSERVED_ROUTES] = c->observed_routes;
+    f[IMCK_CHUNKS] = c->chunks;
+    static const char magic[8] = "DS4IMC1";
+    uint64_t hash = UINT64_C(14695981039346656037);
+    bool ok = imatrix_checkpoint_io(fp, (void *)magic, sizeof(magic), true, &hash) &&
+        imatrix_checkpoint_io(fp, f, sizeof(f), true, &hash) &&
+        imatrix_checkpoint_io(fp, c->gate_up_sum2, (size_t)f[IMCK_GATE_BYTES], true, &hash) &&
+        imatrix_checkpoint_io(fp, c->down_sum2, (size_t)f[IMCK_DOWN_BYTES], true, &hash) &&
+        imatrix_checkpoint_io(fp, (void *)c->gate_up_count, sizeof(c->gate_up_count), true, &hash) &&
+        imatrix_checkpoint_io(fp, (void *)c->down_count, sizeof(c->down_count), true, &hash) &&
+        fwrite(&hash, sizeof(hash), 1, fp) == 1 &&
+        fflush(fp) == 0 && fsync(fd) == 0;
+    if (fclose(fp) != 0) ok = false;
+    if (ok && rename(temporary, ck->path) != 0) ok = false;
+    if (!ok) {
+        fprintf(stderr, "ds4: failed to save imatrix checkpoint %s: %s\n",
+                ck->path, strerror(errno));
+        unlink(temporary);
+    } else {
+        fprintf(stderr, "ds4: imatrix checkpoint saved: prompts=%d tokens=%d path=%s\n",
+                prompts_done, tokens_done, ck->path);
+    }
+    free(temporary);
+    return ok;
+}
+
+static bool imatrix_checkpoint_load(const ds4_imatrix_checkpoint *ck,
+        ds4_imatrix_collector *c, const char *dataset, size_t dataset_len,
+        size_t *cursor_offset, int *prompts_done, int *tokens_done) {
+    FILE *fp = fopen(ck->path, "rb");
+    if (!fp) {
+        fprintf(stderr, "ds4: cannot open imatrix checkpoint %s: %s\n", ck->path, strerror(errno));
+        return false;
+    }
+    char magic[8];
+    uint64_t f[IMCK_N_FIELDS], hash = UINT64_C(14695981039346656037), saved_hash;
+    static const char expected_magic[8] = "DS4IMC1";
+    bool ok = imatrix_checkpoint_io(fp, magic, sizeof(magic), false, &hash) &&
+        memcmp(magic, expected_magic, sizeof(magic)) == 0 &&
+        imatrix_checkpoint_io(fp, f, sizeof(f), false, &hash);
+    static const char *const fields[IMCK_CURSOR] = {
+        "format version", "dataset size", "dataset hash", "model device",
+        "model inode", "model size", "model mtime seconds", "model mtime nanoseconds",
+        "model family", "layer count", "expert count", "embedding width",
+        "expert width", "active expert count", "context size", "prefill capacity",
+    };
+    for (int i = 0; ok && i < IMCK_CURSOR; i++) {
+        if (f[i] != ck->expected[i]) {
+            fprintf(stderr, "ds4: imatrix checkpoint %s mismatch: saved=%llu current=%llu (%s)\n",
+                fields[i], (unsigned long long)f[i],
+                (unsigned long long)ck->expected[i], ck->path);
+            fclose(fp);
+            return false;
+        }
+    }
+    if (ok && (f[IMCK_GATE_BYTES] != ck->expected[IMCK_GATE_BYTES] ||
+               f[IMCK_DOWN_BYTES] != ck->expected[IMCK_DOWN_BYTES] ||
+               f[IMCK_COUNTS_BYTES] != ck->expected[IMCK_COUNTS_BYTES] ||
+               f[IMCK_CURSOR] > dataset_len || f[IMCK_PROMPTS] > INT_MAX ||
+               f[IMCK_TOKENS] > INT_MAX || f[IMCK_CHUNKS] > UINT32_MAX ||
+               f[IMCK_OBSERVED_TOKENS] != f[IMCK_TOKENS] * f[IMCK_LAYERS] ||
+               (f[IMCK_CURSOR] != dataset_len && f[IMCK_CURSOR] != 0 &&
+                (dataset_len - f[IMCK_CURSOR] <
+                     sizeof("===== DS4_IMATRIX_PROMPT") - 1 ||
+                 strncmp(dataset + f[IMCK_CURSOR], "===== DS4_IMATRIX_PROMPT",
+                         sizeof("===== DS4_IMATRIX_PROMPT") - 1) != 0))))
+        ok = false;
+    if (ok) ok = imatrix_checkpoint_io(fp, c->gate_up_sum2,
+            (size_t)f[IMCK_GATE_BYTES], false, &hash) &&
+        imatrix_checkpoint_io(fp, c->down_sum2,
+            (size_t)f[IMCK_DOWN_BYTES], false, &hash) &&
+        imatrix_checkpoint_io(fp, c->gate_up_count,
+            sizeof(c->gate_up_count), false, &hash) &&
+        imatrix_checkpoint_io(fp, c->down_count,
+            sizeof(c->down_count), false, &hash) &&
+        fread(&saved_hash, sizeof(saved_hash), 1, fp) == 1 &&
+        saved_hash == hash && fgetc(fp) == EOF && !ferror(fp);
+    if (fclose(fp) != 0) ok = false;
+    uint64_t routes = 0;
+    for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+        for (uint32_t expert = 0; expert < DS4_N_EXPERT; expert++) {
+            if (c->gate_up_count[il][expert] != c->down_count[il][expert]) {
+                ok = false;
+                break;
+            }
+            routes += c->gate_up_count[il][expert];
+        }
+    }
+    if (ok && routes != f[IMCK_OBSERVED_ROUTES]) ok = false;
+    if (!ok) {
+        fprintf(stderr, "ds4: imatrix checkpoint is incompatible, truncated, or corrupt: %s\n", ck->path);
+        return false;
+    }
+    c->observed_tokens = f[IMCK_OBSERVED_TOKENS];
+    c->observed_routes = f[IMCK_OBSERVED_ROUTES];
+    c->chunks = (uint32_t)f[IMCK_CHUNKS];
+    *cursor_offset = (size_t)f[IMCK_CURSOR];
+    *prompts_done = (int)f[IMCK_PROMPTS];
+    *tokens_done = (int)f[IMCK_TOKENS];
+    fprintf(stderr, "ds4: resumed imatrix checkpoint: prompts=%d tokens=%d path=%s\n",
+            *prompts_done, *tokens_done, ck->path);
+    return true;
+}
+
 static float *imatrix_gate_up_ptr(ds4_imatrix_collector *c, uint32_t il, uint32_t expert) {
     return c->gate_up_sum2 + ((size_t)il * DS4_N_EXPERT + expert) * DS4_N_EMBD;
 }
@@ -37446,6 +37693,8 @@ static bool imatrix_collect_tensor_batch(
         }
     }
     c->observed_tokens += n_tokens;
+    /* Legacy footer counts collection calls, not tokens. One batched call
+     * observes every row in a layer, including multiple isolated prompts. */
     c->chunks++;
     return true;
 }
@@ -40931,6 +41180,7 @@ typedef struct {
     uint32_t ctx, pos, prefill_cap, carry_cap;
     uint64_t allocation_bytes;
     bool valid, streaming, encoder_resident, compact_carry, prefill_alias, quality;
+    bool batch_mid_f16;
     uint32_t tp_world, tp_rank;
     ds4_gpu_tensor *tp_logits_half;
     ds4_gpu_tensor **tp_out, **tp_in;
@@ -41976,7 +42226,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
     const uint64_t gate_row = routed_expert_row_bytes(l->ffn_gate_exps);
     const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
     bool mid_f16 = false;
-    return ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
+    const bool ok = ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
         ds41_route_batch(g, m, l, count) &&
         ((shared_owner && g->tp_rank != (il & 1u)) ||
         (ds41_matmul_batch(b->shared_gate, m, l->ffn_gate_shexp, b->norm, count, true) &&
@@ -42006,6 +42256,8 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
         (!shared_owner || g->tp_rank != (il & 1u) ||
             ds4_gpu_add_tensor(b->routed, b->routed, b->shared, count * DS4_N_EMBD)) &&
         ds41_sum_partial_batch(g, b->routed, il, count);
+    if (ok) g->batch_mid_f16 = mid_f16;
+    return ok;
 }
 
 static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model *m,
@@ -42129,11 +42381,13 @@ static bool ds41_tp_batch_enabled(const ds41_gpu_graph *g) {
 
 static uint32_t ds41_prefill_count(const ds41_gpu_graph *g, uint32_t remaining) {
     /* TP batches use the bulk protocol; row-gate ablations stay token-major. */
-    if (!ds41_tp_batch_enabled(g) || g->imatrix ||
+    if (!ds41_tp_batch_enabled(g) ||
         getenv("DS4_METAL_DISABLE_V41_LAYER_PREFILL")) return 1;
     uint32_t minimum = 256u;
+    /* Collect even short prompts in batches; tiny tails keep the row path. */
+    if (g->imatrix) minimum = 32u;
 #ifdef __APPLE__
-    minimum = g->tp_world == 2 &&
+    if (!g->imatrix) minimum = g->tp_world == 2 &&
         !getenv("DS4_METAL_DISABLE_V41_TP_SMALL_PREFILL") ? 32u : 256u;
 #endif
     /* Resident appends do not pay for an SSD layer sweep. In particular,
@@ -42142,11 +42396,15 @@ static uint32_t ds41_prefill_count(const ds41_gpu_graph *g, uint32_t remaining) 
 #if defined(__APPLE__) && !defined(DS4_NO_GPU)
     /* With at least half the experts cached, warm short appends beat a full
      * disk sweep. Leave a token-major tail to warm the following decode too. */
-    if (g->streaming && g->pos &&
+    if (!g->imatrix && g->streaming && g->pos &&
         ds4_gpu_stream_expert_cache_configured_count() >= DS4_N_LAYER * DS4_N_EXPERT / 2u)
         minimum = 1024u;
 #endif
     if (remaining < minimum) return 1;
+    /* Calibration has no decode suffix to preserve: sweep up to the graph's
+     * full prefill capacity so each routed activation is seen once. */
+    if (g->imatrix)
+        return remaining < g->prefill_cap ? remaining : g->prefill_cap;
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
     /* Keep a medium SSD append in one layer sweep without changing its
      * 2048-row arithmetic partitions. Tiny tails retain the exact row path. */
@@ -42395,10 +42653,76 @@ static bool ds41_engram_prefetch_start(ds41_engram_prefetch *p, ds41_gpu_graph *
 }
 
 static uint32_t ds41_encoder_chunk_cap(const ds41_gpu_graph *g, uint32_t count) {
+    if (g->imatrix) return g->prefill_cap;
     if (count < 8192u && g->prefill_cap > 2048u) return 2048u;
     /* Keep the decoder suffix optimization for 8k prompts. */
     if (count < 16384u && g->prefill_cap > 4096u) return 4096u;
     return g->prefill_cap;
+}
+
+/* Engram n-grams must not include tokens from another prompt in the pack. */
+static bool ds41_hash_packed_tokens(ds41_gpu_graph *g, ds4_engram_history *history,
+                                     const int *tokens, const uint32_t *lengths,
+                                     uint32_t n_prompts) {
+    uint32_t off = 0;
+    for (uint32_t p = 0; p < n_prompts; p++) {
+        ds4_engram_history_reset(history);
+        if (!ds41_hash_tokens(g, history, tokens + off, lengths[p], &g->prefill_ids[off][0][0]))
+            return false;
+        off += lengths[p];
+    }
+    return true;
+}
+
+/* Calibration-only packing. Each prompt starts at position zero. Cache rows
+ * are partitioned by the number of published keys, not token offsets (odd
+ * prompt lengths must never form a compressor pair across a boundary).
+ * Raw windows and temporary index scratch can be reused: commands for each
+ * prompt are ordered, and no prompt has a prefix from an earlier sweep. */
+static bool ds41_attention_packed(ds41_gpu_graph *g, const ds4_model *m,
+                                  const ds4_layer_weights *l, uint32_t il,
+                                  const uint32_t *lengths, uint32_t n_prompts) {
+    uint32_t off = 0, cache_off[4] = {0};
+    for (uint32_t p = 0; p < n_prompts; p++) {
+        ds41_gpu_graph s = *g;
+        const uint32_t count = lengths[p];
+        s.pos = 0;
+        s.rows_view = g->rows_view + off;
+        memset(&s.batch, 0, sizeof(s.batch));
+        memset(s.compressed, 0, sizeof(s.compressed));
+        memset(s.index_cache, 0, sizeof(s.index_cache));
+        bool ok = true;
+#define DS41_PACK_VIEW(name, width) \
+        if (ok) ok = (s.batch.name = ds4_gpu_tensor_view(g->batch.name, \
+            (uint64_t)off * (width) * sizeof(float), \
+            (uint64_t)count * (width) * sizeof(float))) != NULL;
+        DS41_PREFILL_ROWS(DS41_PACK_VIEW)
+#undef DS41_PACK_VIEW
+        for (uint32_t owner = 0; ok && owner < 4; owner++) {
+            const uint32_t rows = count / (owner < 3 ? 2u : 1u);
+            /* A singleton publishes no ratio-2 key; give it a harmless view. */
+            const uint32_t span = rows ? rows : 1u;
+            s.compressed[owner] = ds4_gpu_tensor_view(g->compressed[owner],
+                (uint64_t)cache_off[owner] * DS4_N_HEAD_DIM * sizeof(float),
+                (uint64_t)span * DS4_N_HEAD_DIM * sizeof(float));
+            s.index_cache[owner] = ds4_gpu_tensor_view(g->index_cache[owner],
+                (uint64_t)cache_off[owner] * DS4_N_INDEXER_HEAD_DIM * sizeof(float),
+                (uint64_t)span * DS4_N_INDEXER_HEAD_DIM * sizeof(float));
+            ok = s.compressed[owner] && s.index_cache[owner];
+            cache_off[owner] += rows;
+        }
+        if (ok) ok = ds41_attention_batch(&s, m, l, il, count);
+#define DS41_PACK_FREE(name, width) ds4_gpu_tensor_free(s.batch.name);
+        DS41_PREFILL_ROWS(DS41_PACK_FREE)
+#undef DS41_PACK_FREE
+        for (uint32_t owner = 0; owner < 4; owner++) {
+            ds4_gpu_tensor_free(s.compressed[owner]);
+            ds4_gpu_tensor_free(s.index_cache[owner]);
+        }
+        if (!ok) return false;
+        off += count;
+    }
+    return true;
 }
 
 /* Process rows in causal order within each layer. Selection/candidate rows
@@ -42409,25 +42733,41 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                               const ds4_weights *w, const int *tokens, uint32_t total_count,
                               ds4_session_progress_fn progress, void *progress_ud,
                               int total, ds4_session_cancel_fn cancel, void *cancel_ud,
-                              bool encoder_only, bool resume_encoder) {
+                              bool encoder_only, bool resume_encoder,
+                              const uint32_t *prompt_lengths, uint32_t n_prompts) {
     const uint32_t encoder_chunk = ds41_encoder_chunk_cap(g, total_count);
     const bool wide = total_count > encoder_chunk;
     if ((!g->valid && !resume_encoder) || !total_count || (wide && total_count > g->carry_cap) ||
-        total_count > g->ctx - g->pos || g->imatrix || !ds41_tp_batch_enabled(g))
+        total_count > g->ctx - g->pos || !ds41_tp_batch_enabled(g))
         return false;
     const bool profile = getenv("DS4_METAL_GRAPH_PREFILL_PROFILE") != NULL;
     const bool stage_profile = getenv("DS4_METAL_V41_STAGE_PROFILE") != NULL;
-    const bool batch_moe = !getenv("DS4_METAL_DISABLE_V41_BATCH_MOE");
+    const bool batch_moe = g->imatrix || !getenv("DS4_METAL_DISABLE_V41_BATCH_MOE");
     const bool batch_attention = !getenv("DS4_METAL_DISABLE_V41_BATCH_ATTN");
     const bool batch_core = batch_attention && !getenv("DS4_METAL_DISABLE_V41_BATCH_CORE");
     const bool batch_hc = batch_attention && batch_moe &&
         !getenv("DS4_METAL_DISABLE_V41_BATCH_HC");
-    const bool decoder_suffix = wide && total_count >= 8192u &&
+    if (n_prompts) {
+        uint64_t sum = 0;
+        if (!prompt_lengths || !g->imatrix || g->pos || wide || g->image_count ||
+            g->tp_world != 1 || !batch_core || !batch_hc || encoder_only || resume_encoder)
+            return false;
+        for (uint32_t p = 0; p < n_prompts; p++) {
+            if (!prompt_lengths[p]) return false;
+            sum += prompt_lengths[p];
+        }
+        if (sum != total_count) return false;
+    }
+    /* Calibration needs every token's routed activation in every layer. */
+    const bool decoder_suffix = !g->imatrix && wide && total_count >= 8192u &&
         !getenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX");
     if ((encoder_only || resume_encoder) && !decoder_suffix) return false;
     uint32_t (*ids)[2][DS4_ENGRAM_COLS] = g->prefill_ids;
     ds4_engram_history next_history = g->history;
-    if (!ds41_hash_tokens(g, &next_history, tokens, total_count, &ids[0][0][0]))
+    if (n_prompts) {
+        if (!ds41_hash_packed_tokens(g, &next_history, tokens, prompt_lengths, n_prompts))
+            return false;
+    } else if (!ds41_hash_tokens(g, &next_history, tokens, total_count, &ids[0][0][0]))
         return false;
     const uint32_t initial_start = g->pos;
     g->valid = false;
@@ -42610,7 +42950,9 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                 const ds4_layer_weights *l = &w->layer[il];
                 ok = ds41_attention_project_batch(g, m, l, count);
                 DS41_STAGE("attention projections");
-                if (ok && batch_core) ok = ds41_attention_batch(g, m, l, il, count);
+                if (ok && batch_core) ok = n_prompts ?
+                    ds41_attention_packed(g, m, l, il, prompt_lengths, n_prompts) :
+                    ds41_attention_batch(g, m, l, il, count);
                 for (uint32_t t = 0; ok && !batch_core && t < count; t++) {
                     row.pos = start + t;
 #define DS41_USE_ATTN_ROW(name, width) row.name = g->rows_view[t].name;
@@ -42678,6 +43020,10 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             const double t_encoded = profile ? now_sec() : 0;
             if (ds4_gpu_commands_active() && !ds4_gpu_end_commands()) ok = false;
             if (g->tp_world == 2 && ds4_gpu_tp_failed()) ok = false;
+            /* Read the current layer before the batch scratch is reused. */
+            if (ok && g->imatrix)
+                ok = imatrix_collect_tensor_batch(g->imatrix, g->batch.norm,
+                    g->batch.mid, g->batch.selected, g->batch_mid_f16, il, count);
             const double t_done = profile ? now_sec() : 0;
             if (ok && !encoder_only && off + count == total_count)
                 ok = ds41_prefill_seed(g, m, &w->layer[il], il, count);
@@ -42720,6 +43066,8 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     }
     g->pos = initial_start;
     if (ok) { g->pos += total_count; g->history = next_history; g->valid = !encoder_only; }
+    /* Packed caches are not a continuation-capable single session. */
+    if (n_prompts) g->valid = false;
     return ok;
 }
 
@@ -42728,7 +43076,7 @@ static bool ds41_graph_prefill(ds41_gpu_graph *g, const ds4_model *m,
                               ds4_session_progress_fn progress, void *progress_ud,
                               int total, ds4_session_cancel_fn cancel, void *cancel_ud) {
     return ds41_graph_prefill_sweep(g, m, w, tokens, count, progress, progress_ud,
-                                   total, cancel, cancel_ud, false, false);
+                                   total, cancel, cancel_ud, false, false, NULL, 0);
 }
 static ds41_gpu_graph *ds41_batch_workspace(ds41_gpu_graph *const *graphs, int count) {
     if (!graphs || count < 2 || count > DS4_TP_BATCH_MAX_ROWS) return NULL;
@@ -64873,6 +65221,83 @@ static char *imatrix_find_marker(char *dataset, char *cursor, const char *marker
     return NULL;
 }
 
+typedef struct {
+    token_vec tokens;
+    uint32_t *lengths;
+    uint32_t count, capacity;
+    size_t next_offset;
+} ds4_imatrix_batch;
+
+static void imatrix_batch_free(ds4_imatrix_batch *batch) {
+    token_vec_free(&batch->tokens);
+    free(batch->lengths);
+    memset(batch, 0, sizeof(*batch));
+}
+
+typedef void (*imatrix_tokenize_fn)(void *ctx, const char *text, token_vec *tokens);
+
+static void imatrix_tokenize_prompt(void *ctx, const char *text, token_vec *tokens) {
+    ds4_tokenize_rendered_chat(ctx, text, tokens);
+}
+
+/* Read a pack without changing the corpus. Only accepted prompts advance the
+ * byte cursor; an oversized first prompt runs alone, and a non-fitting next
+ * prompt remains available to the next pack. Limits are remaining budgets;
+ * zero means unlimited (or independent prompts for batch_tokens). */
+static void imatrix_batch_read(ds4_imatrix_batch *batch,
+        char *dataset, size_t dataset_len, size_t offset,
+        int ctx_size, int max_prompts, int max_tokens, int batch_tokens,
+        imatrix_tokenize_fn tokenize, void *tokenize_ctx) {
+    const char *marker_lit = "===== DS4_IMATRIX_PROMPT";
+    batch->tokens.len = 0;
+    batch->count = 0;
+    batch->next_offset = offset;
+    while (offset < dataset_len &&
+           (max_prompts <= 0 || batch->count < (uint32_t)max_prompts) &&
+           (max_tokens <= 0 || batch->tokens.len < max_tokens)) {
+        char *start = dataset + offset;
+        char *marker = imatrix_find_marker(dataset, start, marker_lit);
+        if (marker) {
+            char *nl = strchr(marker, '\n');
+            if (!nl) { batch->next_offset = dataset_len; break; }
+            start = nl + 1;
+        } else if (offset) {
+            batch->next_offset = dataset_len;
+            break;
+        }
+        char *next = imatrix_find_marker(dataset, start, marker_lit);
+        char *end = next ? next : dataset + dataset_len;
+        while (start < end && isspace((unsigned char)*start)) start++;
+        while (end > start && isspace((unsigned char)end[-1])) end--;
+        const char saved = *end;
+        *end = '\0';
+        token_vec prompt = {0};
+        if (*start) tokenize(tokenize_ctx, start, &prompt);
+        *end = saved;
+        if (prompt.len > ctx_size) prompt.len = ctx_size;
+        if (max_tokens > 0 && prompt.len > max_tokens - batch->tokens.len)
+            prompt.len = max_tokens - batch->tokens.len;
+        if (prompt.len && batch->count &&
+            prompt.len > batch_tokens - batch->tokens.len) {
+            token_vec_free(&prompt);
+            break;
+        }
+        if (prompt.len) {
+            if (batch->count == batch->capacity) {
+                batch->capacity = batch->capacity ? 2u * batch->capacity : 16u;
+                batch->lengths = xrealloc(batch->lengths,
+                    (size_t)batch->capacity * sizeof(*batch->lengths));
+            }
+            batch->lengths[batch->count++] = (uint32_t)prompt.len;
+            for (int t = 0; t < prompt.len; t++) token_vec_push(&batch->tokens, prompt.v[t]);
+        }
+        token_vec_free(&prompt);
+        offset = next ? (size_t)(next - dataset) : dataset_len;
+        batch->next_offset = offset;
+        if (batch->count && batch->tokens.len >= batch_tokens) break;
+    }
+}
+
 static int ds4_engine_collect_sequential_imatrix(
         ds4_engine *e,
         char       *dataset,
@@ -64882,7 +65307,11 @@ static int ds4_engine_collect_sequential_imatrix(
         int         ctx_size,
         int         max_prompts,
         int         max_tokens,
-        int         min_expert_samples) {
+        int         min_expert_samples,
+        const char *checkpoint_path,
+        bool        resume_checkpoint,
+        int         checkpoint_every,
+        int         batch_tokens) {
     ds4_glm_gpu_graph g = {0};
     const bool v41 = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41;
     const char *name = v41 ? "V4.1" : "GLM";
@@ -64909,7 +65338,13 @@ static int ds4_engine_collect_sequential_imatrix(
     const uint32_t layers = v41 ? DS4_N_LAYER : g.normal_layers;
 
     ds4_imatrix_collector collector;
-    if (!imatrix_collector_init(&collector, 1, dataset_path)) {
+    if (!imatrix_collector_init(&collector,
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+                               v41 ? d.prefill_cap : 1u,
+#else
+                               1u,
+#endif
+                               dataset_path)) {
         fprintf(stderr, "ds4: failed to allocate %s imatrix collector\n", name);
         imatrix_collector_free(&collector);
         glm_graph_free(&g);
@@ -64919,113 +65354,140 @@ static int ds4_engine_collect_sequential_imatrix(
         return 1;
     }
     g.imatrix = &collector;
-#ifdef __APPLE__
+#ifdef DS4_HAS_DEEPSEEK41_GPU
     d.imatrix = &collector;
 #endif
 
-    fprintf(stderr,
-            "ds4: collecting %s routed imatrix from %s "
-            "(layers=%u experts=%u ctx=%d)\n",
-            name, dataset_path, DS4_N_LAYER, DS4_N_EXPERT, ctx_size);
-
     bool ok = true;
+    ds4_imatrix_batch batch = {0};
     int prompts_done = 0;
     int tokens_done = 0;
     bool sample_target_reached = false;
-    char *cursor = dataset;
-    const char *marker_lit = "===== DS4_IMATRIX_PROMPT";
-    while (ok && *cursor) {
-        char *start = cursor;
-        char *marker = imatrix_find_marker(dataset, cursor, marker_lit);
-        if (marker) {
-            char *nl = strchr(marker, '\n');
-            if (!nl) break;
-            start = nl + 1;
-        } else if (prompts_done != 0) {
+    int interrupted = 0;
+    size_t cursor_offset = 0;
+    ds4_imatrix_checkpoint checkpoint;
+    ok = imatrix_checkpoint_prepare(&checkpoint, checkpoint_path, resume_checkpoint,
+            e->model_path, dataset_path, output_path, dataset, dataset_len,
+            &collector, layers, ctx_size);
+    if (ok && resume_checkpoint)
+        ok = imatrix_checkpoint_load(&checkpoint, &collector, dataset, dataset_len,
+                                     &cursor_offset, &prompts_done, &tokens_done);
+    if (ok && checkpoint_path && !resume_checkpoint)
+        ok = imatrix_checkpoint_save(&checkpoint, &collector, 0, 0, 0);
+    if (!ok) goto imatrix_done;
+    if (min_expert_samples > 0 && prompts_done > 0)
+        sample_target_reached = imatrix_collector_min_samples(&collector,
+            &e->weights, layers) >= (uint32_t)min_expert_samples;
+
+    fprintf(stderr,
+            "ds4: collecting %s routed imatrix from %s "
+            "(layers=%u experts=%u ctx=%d, resumed_prompts=%d)\n",
+            name, dataset_path, DS4_N_LAYER, DS4_N_EXPERT, ctx_size, prompts_done);
+
+    char *cursor = dataset + cursor_offset;
+    int pack_limit = batch_tokens < ctx_size ? batch_tokens : ctx_size;
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+    if (v41 && pack_limit > (int)d.prefill_cap) pack_limit = (int)d.prefill_cap;
+#endif
+    while (ok && !sample_target_reached && *cursor &&
+           (max_prompts <= 0 || prompts_done < max_prompts)) {
+        if (checkpoint.path && g_imatrix_stop_signal) {
+            interrupted = g_imatrix_stop_signal;
             break;
         }
-
-        char *next = imatrix_find_marker(dataset, start, marker_lit);
-        char *end = next ? next : dataset + dataset_len;
-        const char saved = *end;
-        char *prompt_text = imatrix_trim_block(start, end);
-        if (prompt_text[0] != '\0') {
-            token_vec prompt = {0};
-            ds4_tokenize_rendered_chat(e, prompt_text, &prompt);
-            if (prompt.len > ctx_size) prompt.len = ctx_size;
-            if (max_tokens > 0 && prompt.len > max_tokens - tokens_done) {
-                prompt.len = max_tokens - tokens_done;
-            }
-            if (prompt.len > 0) {
+        imatrix_batch_read(&batch, dataset, dataset_len, (size_t)(cursor - dataset),
+            ctx_size, max_prompts > 0 ? max_prompts - prompts_done : 0,
+            max_tokens > 0 ? max_tokens - tokens_done : 0, pack_limit,
+            imatrix_tokenize_prompt, e);
+        if (!batch.count) { cursor = dataset + batch.next_offset; break; }
+        token_vec prompt = batch.tokens;
+        const int batch_prompts = (int)batch.count;
+        const double batch_start = now_sec();
+        fprintf(stderr, "ds4: %s imatrix starting batch: prompts=%d tokens=%d\n",
+                name, batch_prompts, prompt.len);
 #ifdef DS4_HAS_DEEPSEEK41_GPU
-                if (v41) ds41_graph_reset(&d);
-                else
+        if (v41) ds41_graph_reset(&d);
+        else
 #endif
-                if (!glm_graph_reset_kda_state(&g)) {
-                    fprintf(stderr, "ds4: failed to reset %s imatrix state\n", name);
-                    ok = false;
-                }
-                for (int pos = 0; ok && pos < prompt.len; pos++) {
-#ifdef DS4_HAS_DEEPSEEK41_GPU
-                    if (v41) ok = ds41_graph_step(&d, &e->model, &e->weights,
-                                                   prompt.v[pos], NULL);
-                    else
-#endif
-                    ok = glm_graph_forward_token(&g,
-                                                 &e->model,
-                                                 &e->weights,
-                                                 prompt.v[pos],
-                                                 NULL,
-                                                 (uint32_t)pos,
-                                                 NULL,
-                                                 NULL,
-                                                 false);
-                    if (ok && ((pos + 1) % 16 == 0 || pos + 1 == prompt.len)) {
-                        fprintf(stderr, "ds4: %s imatrix prompt %d: %d/%d tokens\r",
-                                name, prompts_done + 1, pos + 1, prompt.len);
-                        fflush(stderr);
-                    }
-                }
-                if (!ok) {
-                    fprintf(stderr, "ds4: %s imatrix failed at prompt %d\n",
-                            name, prompts_done + 1);
-                } else {
-                    prompts_done++;
-                    tokens_done += prompt.len;
-                    fprintf(stderr,
-                            "ds4: %s imatrix prompts=%d tokens=%d routes=%llu "
-                            "min_samples=%u\r",
-                            name, prompts_done,
-                            tokens_done,
-                            (unsigned long long)collector.observed_routes,
-                            imatrix_collector_min_samples(&collector,
-                                                         &e->weights,
-                                                         layers));
-                    fflush(stderr);
-                    sample_target_reached = min_expert_samples > 0 &&
-                        imatrix_collector_min_samples(&collector,
-                                                     &e->weights,
-                                                     layers) >=
-                            (uint32_t)min_expert_samples;
-                }
-            }
-            token_vec_free(&prompt);
+        if (!glm_graph_reset_kda_state(&g)) {
+            fprintf(stderr, "ds4: failed to reset %s imatrix state\n", name);
+            ok = false;
         }
-        *end = saved;
+        for (int pos = 0; ok && pos < prompt.len;) {
+#ifdef DS4_HAS_DEEPSEEK41_GPU
+            if (v41) {
+                if (batch_prompts > 1) {
+                    ok = ds41_graph_prefill_sweep(&d, &e->model, &e->weights,
+                        prompt.v, (uint32_t)prompt.len, NULL, NULL, prompt.len,
+                        NULL, NULL, false, false, batch.lengths, batch.count);
+                    pos = prompt.len;
+                } else {
+                    const uint32_t count = ds41_prefill_count(&d, (uint32_t)(prompt.len - pos));
+                    ok = count > 1u ?
+                        ds41_graph_prefill(&d, &e->model, &e->weights,
+                            prompt.v + pos, count, NULL, NULL, prompt.len, NULL, NULL) :
+                        ds41_graph_step(&d, &e->model, &e->weights, prompt.v[pos], NULL);
+                    pos += (int)count;
+                }
+            } else
+#endif
+            {
+                ok = glm_graph_forward_token(&g, &e->model, &e->weights,
+                    prompt.v[pos], NULL, (uint32_t)pos, NULL, NULL, false);
+                pos++;
+            }
+            if (ok && (v41 || pos % 16 == 0 || pos == prompt.len)) {
+                fprintf(stderr, "ds4: %s imatrix batch starting at prompt %d: %d/%d tokens\r",
+                        name, prompts_done + 1, pos, prompt.len);
+                fflush(stderr);
+            }
+        }
+        if (!ok) {
+            fprintf(stderr, "ds4: %s imatrix failed at batch starting at prompt %d\n",
+                    name, prompts_done + 1);
+            break; /* Never checkpoint partially collected layers. */
+        }
+        prompts_done += batch_prompts;
+        tokens_done += prompt.len;
+        const uint32_t min_samples = imatrix_collector_min_samples(&collector, &e->weights, layers);
+        const double elapsed = now_sec() - batch_start;
+        fprintf(stderr, "ds4: %s imatrix prompts=%d tokens=%d routes=%llu min_samples=%u\n",
+                name, prompts_done, tokens_done, (unsigned long long)collector.observed_routes, min_samples);
+        fprintf(stderr, "ds4: %s imatrix batch prompts=%d tokens=%d elapsed=%.3f s rate=%.2f tok/s\n",
+                name, batch_prompts, prompt.len, elapsed, elapsed > 0 ? prompt.len / elapsed : 0);
+        sample_target_reached = min_expert_samples > 0 && min_samples >= (uint32_t)min_expert_samples;
+        cursor = dataset + batch.next_offset;
+        if (ok && checkpoint.path &&
+            ((prompts_done / checkpoint_every != (prompts_done - batch_prompts) / checkpoint_every) ||
+             g_imatrix_stop_signal))
+            ok = imatrix_checkpoint_save(&checkpoint, &collector,
+                    (size_t)(cursor - dataset), prompts_done, tokens_done);
+        if (!ok) break;
+        if (checkpoint.path && g_imatrix_stop_signal) {
+            interrupted = g_imatrix_stop_signal;
+            break;
+        }
         if (sample_target_reached) break;
-        if (!next) break;
-        cursor = next;
+        if (batch.next_offset == dataset_len) break;
         if (max_prompts > 0 && prompts_done >= max_prompts) break;
         if (max_tokens > 0 && tokens_done >= max_tokens) break;
     }
     fputc('\n', stderr);
+    if (ok && checkpoint.path && !interrupted)
+        ok = imatrix_checkpoint_save(&checkpoint, &collector,
+                (size_t)(cursor - dataset), prompts_done, tokens_done);
+    if (interrupted)
+        fprintf(stderr, "ds4: imatrix stopped after checkpoint at prompt %d (signal %d)\n",
+                prompts_done, interrupted);
 
+imatrix_done:
+    imatrix_batch_free(&batch);
     g.imatrix = NULL;
-    if (tokens_done == 0) {
+    if (ok && !interrupted && tokens_done == 0) {
         fprintf(stderr, "ds4: imatrix dataset contains no usable tokens\n");
         ok = false;
     }
-    if (ok) {
+    if (ok && !interrupted) {
         imatrix_collector_report_coverage(&collector,
                                           &e->weights,
                                           layers);
@@ -65037,10 +65499,10 @@ static int ds4_engine_collect_sequential_imatrix(
             ok = false;
         }
     }
-    if (ok) {
+    if (ok && !interrupted) {
         ok = imatrix_collector_save(&collector, &e->weights, output_path);
     }
-    if (ok) {
+    if (ok && !interrupted) {
         fprintf(stderr,
                 "ds4: wrote %s imatrix %s from %d prompts, %d tokens, "
                 "%llu routes\n",
@@ -65054,7 +65516,7 @@ static int ds4_engine_collect_sequential_imatrix(
 #ifdef DS4_HAS_DEEPSEEK41_GPU
     ds41_graph_free(&d);
 #endif
-    return ok ? 0 : 1;
+    return interrupted ? 128 + interrupted : (ok ? 0 : 1);
 }
 #endif
 
@@ -65065,18 +65527,46 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
                                int max_prompts,
                                int max_tokens,
                                int min_expert_samples) {
+    const ds4_imatrix_options options = {
+        .dataset_path = dataset_path, .output_path = output_path,
+        .ctx_size = ctx_size, .max_prompts = max_prompts,
+        .max_tokens = max_tokens, .min_expert_samples = min_expert_samples,
+    };
+    return ds4_engine_collect_imatrix_with_options(e, &options);
+}
+
+int ds4_engine_collect_imatrix_with_options(ds4_engine *e,
+                                           const ds4_imatrix_options *options) {
 #ifdef DS4_NO_GPU
     (void)e;
-    (void)dataset_path;
-    (void)output_path;
-    (void)ctx_size;
-    (void)max_prompts;
-    (void)max_tokens;
-    (void)min_expert_samples;
+    (void)options;
     fprintf(stderr, "ds4: imatrix collection requires a graph backend build\n");
     return 1;
 #else
-    if (!e || !dataset_path || !output_path) return 1;
+    if (!e || !options || !options->dataset_path || !options->output_path) return 1;
+    const char *dataset_path = options->dataset_path, *output_path = options->output_path;
+    const char *checkpoint_path = options->checkpoint_path;
+    const bool resume_checkpoint = options->resume_checkpoint;
+    const int max_prompts = options->max_prompts, max_tokens = options->max_tokens;
+    const int min_expert_samples = options->min_expert_samples;
+    const int batch_tokens = options->batch_tokens;
+    int ctx_size = options->ctx_size, checkpoint_every = options->checkpoint_every;
+    if (imatrix_checkpoint_same_file(output_path, e->model_path) ||
+        imatrix_checkpoint_same_file(output_path, dataset_path)) {
+        fprintf(stderr, "ds4: imatrix output must differ from model and dataset\n");
+        return 1;
+    }
+    if (batch_tokens < 0 || batch_tokens > 8192 ||
+        (batch_tokens && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK41)) {
+        fprintf(stderr, "ds4: imatrix prompt packing requires V4.1 and a 0..8192 token budget\n");
+        return 1;
+    }
+    if ((resume_checkpoint && !checkpoint_path) ||
+        (checkpoint_path && max_tokens > 0)) {
+        fprintf(stderr, "ds4: imatrix checkpoint requires a path and forbids partial-prompt token limits\n");
+        return 1;
+    }
+    if (checkpoint_every <= 0) checkpoint_every = 16;
     if (e->backend != DS4_BACKEND_METAL || !e->metal_ready) {
         fprintf(stderr, "ds4: imatrix collection currently requires --metal\n");
         return 1;
@@ -65089,6 +65579,26 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
 
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA ||
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41) {
+        struct sigaction stop_action = {0}, old_int = {0}, old_term = {0};
+        bool installed = false;
+        if (checkpoint_path) {
+            stop_action.sa_handler = imatrix_stop_handler;
+            stop_action.sa_flags = SA_RESTART;
+            sigemptyset(&stop_action.sa_mask);
+            g_imatrix_stop_signal = 0;
+            if (sigaction(SIGINT, &stop_action, &old_int) != 0) {
+                fprintf(stderr, "ds4: cannot install imatrix SIGINT handler: %s\n", strerror(errno));
+                free(dataset);
+                return 1;
+            }
+            if (sigaction(SIGTERM, &stop_action, &old_term) != 0) {
+                fprintf(stderr, "ds4: cannot install imatrix SIGTERM handler: %s\n", strerror(errno));
+                sigaction(SIGINT, &old_int, NULL);
+                free(dataset);
+                return 1;
+            }
+            installed = true;
+        }
         const int rc = ds4_engine_collect_sequential_imatrix(e,
                                                       dataset,
                                                       dataset_len,
@@ -65097,9 +65607,22 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
                                                       ctx_size,
                                                       max_prompts,
                                                       max_tokens,
-                                                      min_expert_samples);
+                                                      min_expert_samples,
+                                                      checkpoint_path,
+                                                      resume_checkpoint,
+                                                      checkpoint_every,
+                                                      batch_tokens);
+        if (installed) {
+            sigaction(SIGINT, &old_int, NULL);
+            sigaction(SIGTERM, &old_term, NULL);
+        }
         free(dataset);
         return rc;
+    }
+    if (checkpoint_path) {
+        fprintf(stderr, "ds4: imatrix checkpoint is currently supported for V4.1 and GLM sequential collection\n");
+        free(dataset);
+        return 1;
     }
 
     const ds4_model *model = &e->model;
@@ -76659,7 +77182,7 @@ static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, c
                 (defer_decoder || decoder_pending ?
                  ds41_graph_prefill_sweep(g, &e->model, &e->weights, prompt->v + i, count,
                     s->progress, s->progress_ud, prompt->len, s->cancel, s->cancel_ud,
-                    defer_decoder, decoder_pending) :
+                    defer_decoder, decoder_pending, NULL, 0) :
                  ds41_graph_prefill(g, &e->model, &e->weights, prompt->v + i, count,
                     s->progress, s->progress_ud, prompt->len, s->cancel, s->cancel_ud)) :
                 ds41_graph_step(g, &e->model, &e->weights, prompt->v[i], NULL);

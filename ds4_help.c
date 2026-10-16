@@ -288,8 +288,12 @@ static void print_cli_diagnostics(FILE *fp, const help_colors *c) {
     opt(fp, c, "--perplexity-file FILE", "Score raw text with teacher-forced NLL.");
     opt(fp, c, "--imatrix-dataset FILE", "Rendered prompt dataset for imatrix collection.");
     opt(fp, c, "--imatrix-out FILE", "Write llama-compatible routed-MoE imatrix .dat.");
+    opt(fp, c, "--imatrix-checkpoint FILE", "Atomically save raw calibration state every 16 prompts (or chosen interval).");
+    opt(fp, c, "--imatrix-resume", "Resume from --imatrix-checkpoint; validates model, corpus, and geometry.");
+    opt(fp, c, "--imatrix-checkpoint-every N", "Checkpoint every N prompts, rounded up to a completed pack (default: 16).");
     opt(fp, c, "--imatrix-max-prompts N", "Stop imatrix collection after N prompts.");
     opt(fp, c, "--imatrix-max-tokens N", "Stop imatrix collection after N prompt tokens.");
+    opt(fp, c, "--imatrix-batch-tokens N", "V4.1: pack whole prompts up to N tokens with isolated attention (0=off, max 8192).");
     opt(fp, c, "--imatrix-min-expert-samples N", "Continue until every routed expert has N samples.");
     opt(fp, c, "--head-test", "Run the output HC/logits head after the native slice.");
     opt(fp, c, "--first-token-test", "Run exact CPU whole-model pass for the first prompt token.");

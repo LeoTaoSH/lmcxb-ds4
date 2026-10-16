@@ -100,7 +100,8 @@ static int check_dispatch(void) {
             (remaining[i] >= 8 && remaining[i] < 256 ? remaining[i] : cold[i]));
     ds4_imatrix_collector imatrix = {0};
     g.imatrix = &imatrix;
-    CHECK(ds41_prefill_count(&g, 65536) == 1);
+    CHECK(ds41_prefill_count(&g, 65536) == 8192);
+    CHECK(ds41_encoder_chunk_cap(&g, 8192) == 8192);
     g.imatrix = NULL;
     g.carry_cap = 0;
     CHECK(ds41_prefill_count(&g, 65536) == 2048);

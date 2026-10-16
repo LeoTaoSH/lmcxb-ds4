@@ -347,6 +347,24 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
                                int max_prompts,
                                int max_tokens,
                                int min_expert_samples);
+
+/* Zero-initialize before use. The legacy entry point above keeps independent
+ * prompts without checkpointing. Checkpoints and packing are opt-in here. */
+typedef struct {
+    const char *dataset_path;
+    const char *output_path;
+    int ctx_size;            /* 0: 32768 */
+    int max_prompts;         /* 0: entire corpus */
+    int max_tokens;          /* 0: unlimited; incompatible with checkpointing */
+    int min_expert_samples;  /* 0: no minimum coverage requirement */
+    const char *checkpoint_path; /* V4.1 / GLM only; NULL: disabled */
+    bool resume_checkpoint;
+    int checkpoint_every;    /* 0: 16 prompts, rounded up to a pack boundary */
+    int batch_tokens;        /* V4.1 only; 0: independent, otherwise 1..8192 */
+} ds4_imatrix_options;
+
+int ds4_engine_collect_imatrix_with_options(ds4_engine *e,
+                                           const ds4_imatrix_options *options);
 void ds4_engine_dump_tokens(ds4_engine *e, const ds4_tokens *tokens);
 int ds4_dump_text_tokenization(const char *model_path, const char *text, FILE *fp);
 int ds4_dump_chat_tokenization(const char *model_path,

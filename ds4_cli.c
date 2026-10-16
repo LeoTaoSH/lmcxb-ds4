@@ -81,8 +81,12 @@ typedef struct {
     const char *perplexity_file_path;
     const char *imatrix_dataset_path;
     const char *imatrix_output_path;
+    const char *imatrix_checkpoint_path;
+    bool imatrix_resume;
+    int imatrix_checkpoint_every;
     int imatrix_max_prompts;
     int imatrix_max_tokens;
+    int imatrix_batch_tokens;
     int imatrix_min_expert_samples;
     ds4_think_mode think_mode;
     bool head_test;
@@ -2150,10 +2154,22 @@ static cli_config parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--imatrix-out")) {
             c.gen.imatrix_output_path = need_arg(&i, argc, argv, arg);
             c.engine.backend = DS4_BACKEND_METAL;
+        } else if (!strcmp(arg, "--imatrix-checkpoint")) {
+            c.gen.imatrix_checkpoint_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--imatrix-resume")) {
+            c.gen.imatrix_resume = true;
+        } else if (!strcmp(arg, "--imatrix-checkpoint-every")) {
+            c.gen.imatrix_checkpoint_every = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--imatrix-max-prompts")) {
             c.gen.imatrix_max_prompts = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--imatrix-max-tokens")) {
             c.gen.imatrix_max_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--imatrix-batch-tokens")) {
+            c.gen.imatrix_batch_tokens = parse_nonnegative_int(need_arg(&i, argc, argv, arg), arg);
+            if (c.gen.imatrix_batch_tokens > 8192) {
+                fprintf(stderr, "ds4: --imatrix-batch-tokens must be between 0 and 8192\n");
+                exit(2);
+            }
         } else if (!strcmp(arg, "--imatrix-min-expert-samples")) {
             c.gen.imatrix_min_expert_samples =
                 parse_int(need_arg(&i, argc, argv, arg), arg);
@@ -2219,6 +2235,23 @@ static cli_config parse_options(int argc, char **argv) {
     }
     if (c.gen.imatrix_dataset_path && !c.gen.imatrix_output_path) {
         fprintf(stderr, "ds4: --imatrix-dataset requires --imatrix-out\n");
+        exit(2);
+    }
+    if ((c.gen.imatrix_resume || c.gen.imatrix_checkpoint_every) &&
+        !c.gen.imatrix_checkpoint_path) {
+        fprintf(stderr, "ds4: --imatrix-resume/--imatrix-checkpoint-every require --imatrix-checkpoint\n");
+        exit(2);
+    }
+    if (c.gen.imatrix_checkpoint_path && !c.gen.imatrix_output_path) {
+        fprintf(stderr, "ds4: --imatrix-checkpoint requires --imatrix-out\n");
+        exit(2);
+    }
+    if (c.gen.imatrix_batch_tokens && !c.gen.imatrix_output_path) {
+        fprintf(stderr, "ds4: --imatrix-batch-tokens requires --imatrix-out\n");
+        exit(2);
+    }
+    if (c.gen.imatrix_checkpoint_path && c.gen.imatrix_max_tokens > 0) {
+        fprintf(stderr, "ds4: checkpoints cannot be combined with --imatrix-max-tokens (which can split a prompt)\n");
         exit(2);
     }
     if (c.gen.imatrix_min_expert_samples < 0) {
@@ -2414,13 +2447,19 @@ int main(int argc, char **argv) {
     if (cfg.inspect) {
         ds4_engine_summary(engine);
     } else if (cfg.gen.imatrix_output_path) {
-        rc = ds4_engine_collect_imatrix(engine,
-                                        cfg.gen.imatrix_dataset_path,
-                                        cfg.gen.imatrix_output_path,
-                                        cfg.gen.ctx_size,
-                                        cfg.gen.imatrix_max_prompts,
-                                        cfg.gen.imatrix_max_tokens,
-                                        cfg.gen.imatrix_min_expert_samples);
+        const ds4_imatrix_options options = {
+            .dataset_path = cfg.gen.imatrix_dataset_path,
+            .output_path = cfg.gen.imatrix_output_path,
+            .ctx_size = cfg.gen.ctx_size,
+            .max_prompts = cfg.gen.imatrix_max_prompts,
+            .max_tokens = cfg.gen.imatrix_max_tokens,
+            .min_expert_samples = cfg.gen.imatrix_min_expert_samples,
+            .checkpoint_path = cfg.gen.imatrix_checkpoint_path,
+            .resume_checkpoint = cfg.gen.imatrix_resume,
+            .checkpoint_every = cfg.gen.imatrix_checkpoint_every,
+            .batch_tokens = cfg.gen.imatrix_batch_tokens,
+        };
+        rc = ds4_engine_collect_imatrix_with_options(engine, &options);
     } else if (cfg.gen.perplexity_file_path) {
         rc = run_perplexity_file(engine, &cfg);
     } else if (cfg.gen.prompt == NULL) {
