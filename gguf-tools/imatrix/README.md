@@ -4,6 +4,9 @@ This directory contains the calibration dataset and instructions used to build
 activation importance matrices for DeepSeek V4 Flash and Pro GGUF
 quantization.
 
+For implementation ownership, validation history, artifact interpretation, and
+remaining checks, see the [imatrix handoff](HANDOFF.md).
+
 The current imatrix target is the routed MoE path.  Flash has 43 layers and
 256 routed experts per layer.  Pro has 61 layers and 384 routed experts per
 layer. V4.1 Flash has 40 layers and 384 routed experts per layer. These variants
