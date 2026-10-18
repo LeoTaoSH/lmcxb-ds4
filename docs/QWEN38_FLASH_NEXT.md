@@ -69,6 +69,81 @@ replays the retained prefix on the next evaluation. The native context is
 262144 tokens; `DS4_QWEN4_YARN_FACTOR=2` or `=4` enables static YaRN for
 longer contexts, with a possible quality cost on shorter prompts.
 
+## API client setup and diagnosis
+
+Check the complete serving and client configuration before comparing answer
+quality. The following single-session Metal example uses Q4 on a machine with
+enough memory for its resident weights and a native 262144-token context:
+
+```sh
+unset DS4_QWEN4_YARN_FACTOR
+./ds4-server -m gguf/Qwen3.8-Flash-Next-Q4.gguf \
+  --host 127.0.0.1 --port 8000 --ctx 262144 --tokens 131072 \
+  --prefill-chunk 1024 --mtp --mtp-exact-sampling \
+  --kv-disk-dir /tmp/ds4-qwen38-native-kv --kv-disk-space-mb 8192
+```
+
+This is a large-memory example, not a replacement for the smaller-Mac or
+Spark settings above. The cache budget is a disk quota. Use a separate cache
+directory when changing context scaling, and check startup logs for the loaded
+model, backend, context, prefill chunk and cache options. `GET /v1/models`
+also reports the served model IDs and context length. Add the matching
+`--vision` encoder from the vision section when sending images.
+
+For example, a Chat Completions client can make the sampling and output
+allowance explicit:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' --data-binary @- <<'JSON'
+{
+  "model": "qwen3.8-flash-next",
+  "messages": [{"role": "user", "content": "What is 17 + 23?"}],
+  "reasoning_effort": "low",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "max_tokens": 4096,
+  "stream": false
+}
+JSON
+```
+
+These sampling values were used by a local API integration; they are not a
+controlled demonstration of better answer quality. At nonzero temperature,
+`--mtp` alone uses opportunistic acceptance. Add `--mtp-exact-sampling` when
+the comparison needs the target sampling distribution, as described in
+[speculative decoding](SPECULATIVE_DECODING.md#sampling-and-reproducibility).
+Exact sampling does not promise identical text across execution schedules.
+
+For multi-turn Chat Completions, retain the returned assistant `content`,
+`reasoning_content` and `tool_calls` when constructing the next request.
+Preserve tool-call IDs and pair them with their tool results. A streaming
+client must accumulate reasoning and tool-call deltas as well as visible
+content. Do not turn a reasoning-only response into an empty assistant turn.
+Reasoning can remain internal to the client while still being replayed.
+The Qwen renderer already accepts supplied assistant reasoning; changing
+whether it is replayed changes the rendered history and can affect reuse.
+
+`max_tokens` covers reasoning and visible output together. Inspect
+`finish_reason`: `length` means the allowance was exhausted, not that the
+model completed an answer. Budget the complete rendered input, including
+tools and replayed reasoning, plus the output allowance within `--ctx`.
+Use the native context first when investigating quality; longer windows and
+YaRN are a separate comparison with their own memory and quality costs.
+
+Diagnose latency separately from answer quality. Inspect cached-token usage
+and the server's prefill/cache logs. A fast decode rate can coexist with a
+long wait for the first token if the entire prompt is evaluated again.
+Place stable instructions, tool schemas and completed history before changing
+per-turn evidence when the application's message semantics permit it; cache
+reuse still requires a matching retained checkpoint and compatible state.
+Compare the same prompts, model quant, reasoning effort, sampling settings
+and context scaling, and record cold and warm timings separately. See
+[disk KV cache](SERVER.md#disk-kv-cache) and [contributing](../CONTRIBUTING.md)
+for cache controls and regression requirements.
+
 ## DGX Spark performance
 
 Measured on a single Spark with resident weights and disk-only n-grams:
