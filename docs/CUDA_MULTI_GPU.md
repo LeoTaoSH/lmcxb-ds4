@@ -63,8 +63,8 @@ This correctness-first path uses token-major prefill and serial session
 execution, not fused multi-session batches; live KV reuse and checkpoint
 read/restore use the same authoritative shared state. It is not an optimized
 parallel-throughput path. Local placement cannot be combined with SSD
-streaming or network tensor parallelism. Optional network tensor parallelism
-still has exactly two single-GPU ranks. `--cuda-tensor-parallel` and the
+streaming, network tensor parallelism, or DSpark/MTP speculation. Optional
+network tensor parallelism still has exactly two single-GPU ranks. `--cuda-tensor-parallel` and the
 paired tensor/expert path below remain V4 Flash-only.
 
 `--decode-consistency N` checks incremental decode against a fresh prefill.
