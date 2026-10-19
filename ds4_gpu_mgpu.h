@@ -103,6 +103,13 @@ extern int         g_gpu_peer_ok[DS4_MAX_GPUS][DS4_MAX_GPUS];
  * ds4_gpu.h) is a thin shim that builds a single-device config for
  * device 0 and calls this. */
 int ds4_gpu_init_multi(const ds4_gpu_config *cfg);
+/* Serial managed-state pipelines require faultable managed pages on every
+ * configured device, including devices without peer access. */
+int ds4_gpu_managed_pipeline_supported(void);
+/* Serial shared state: managed if all peers validate; portable mapped host
+ * storage otherwise, so implicit managed migration cannot use broken links. */
+ds4_gpu_tensor *ds4_gpu_tensor_alloc_pipeline(uint64_t bytes);
+uint64_t ds4_gpu_selected_working_set_size(const ds4_gpu_config *cfg);
 
 /* Caller-supplied struct alloc on a specific device. Returns 0 on
  * success, nonzero on error. Pair with ds4_gpu_tensor_free_in_place. */

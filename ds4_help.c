@@ -283,7 +283,7 @@ static void print_cli_diagnostics(FILE *fp, const help_colors *c) {
     opt(fp, c, "--dump-logits FILE", "Write full next-token logits as JSON.");
     opt(fp, c, "--dump-logprobs FILE", "Write greedy continuation top-logprobs as JSON.");
     opt(fp, c, "--logprobs-top-k N", "Alternatives stored by --dump-logprobs. Default: 20");
-    opt(fp, c, "--decode-consistency N", "Compare N-token decode logits with a fresh full prefill.");
+    opt(fp, c, "--decode-consistency N", "Compare N-token decode logits with a fresh full prefill; reject nonfinite/constant logits.");
     opt(fp, c, "--expert-profile FILE", "Metal-only: write routed expert locality/cache simulation JSON.");
     opt(fp, c, "--perplexity-file FILE", "Score raw text with teacher-forced NLL.");
     opt(fp, c, "--imatrix-dataset FILE", "Rendered prompt dataset for imatrix collection.");

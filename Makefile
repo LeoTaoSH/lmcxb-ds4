@@ -295,6 +295,8 @@ help:
 	@echo "  make strix-halo          Build ROCm for Strix Halo / gfx1151"
 	@echo "  make rocm                Alias for make strix-halo"
 	@echo "  make test-mxfp4-rocm     Build and run the synthetic ROCm MXFP4 MoE test"
+	@echo "  make test-deepseek41-cuda CUDA V4.1 synthetic kernel checks (no model needed)"
+	@echo "  make test-deepseek41-multigpu CUDA V4.1 four-GPU state/ownership checks (no model needed)"
 	@echo "  make test-rocm           Core regression suite on ROCm-only hosts"
 	@echo "  make cpu                 Build CPU-only ./ds4, ./ds4-server, ./ds4-bench, ./ds4-eval, and ./ds4-agent"
 	@echo "  make test                Build and run tests"
@@ -668,6 +670,16 @@ tests/test_deepseek41_rocm.o: tests/test_deepseek41_metal.c ds4_gpu.h ds4_deepse
 tests/test_deepseek41_rocm: tests/test_deepseek41_rocm.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_image.o $(ROCM_MMQ_OBJS)
 	$(HIPCC) $(ROCM_CFLAGS) -o $@ $^ $(ROCM_LDLIBS)
 
+tests/test_deepseek41_multigpu.o: tests/test_deepseek41_multigpu.c ds4.c ds4_gpu.h ds4_gpu_mgpu.h
+	$(CC) $(CFLAGS) -I. -c -o $@ $<
+
+tests/test_deepseek41_multigpu: tests/test_deepseek41_multigpu.o $(filter-out ds4.o,$(CORE_OBJS))
+	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
+
+.PHONY: test-deepseek41-multigpu
+test-deepseek41-multigpu: tests/test_deepseek41_multigpu
+	./tests/test_deepseek41_multigpu
+
 tests/test_cuda_q8_scratch: tests/test_cuda_q8_scratch.o $(CORE_OBJS)
 	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
 
@@ -745,7 +757,7 @@ test-qwen4-cuda: tests/test_qwen4_cuda
 	./tests/test_qwen4_cuda
 endif
 
-ds4.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_copy.h ds4_gpu_tp.h ds4_deepseek41_gpu.h ds4_deepseek41_dspark.h ds4_linux_memory.h ds4_engram.h
+ds4.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h ds4_gpu_copy.h ds4_gpu_tp.h ds4_gpu_mgpu.h ds4_deepseek41_gpu.h ds4_deepseek41_dspark.h ds4_linux_memory.h ds4_engram.h
 	$(CC) $(CFLAGS) -c -o $@ ds4.c
 
 ds4_image.o: ds4_image.c ds4_image.h third_party/iris/jpeg.h third_party/iris/png.h
@@ -756,6 +768,20 @@ ds4_ssd.o: ds4_ssd.c ds4_ssd.h
 
 ds4_engram.o: ds4_engram.c ds4_engram.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) -c -o $@ ds4_engram.c
+
+tests/test_decode_consistency.o: tests/test_decode_consistency.c ds4_cli.c ds4.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I. -c -o $@ $<
+
+tests/test_decode_consistency: tests/test_decode_consistency.o ds4_help.o ds4_prompt_prefix.o linenoise.o ds4_gpu_args.o $(CORE_OBJS)
+ifeq ($(UNAME_S),Darwin)
+	$(CC) $(CFLAGS) -o $@ $^ $(METAL_LDLIBS)
+else
+	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
+endif
+
+.PHONY: test-decode-consistency
+test-decode-consistency: tests/test_decode_consistency
+	./tests/test_decode_consistency
 
 ds4_cli.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h linenoise.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_cli.c
@@ -1347,6 +1373,7 @@ ds4_cpu_test_hooks.o ds4_cuda_test_hooks.o tests/test_session_state.o \
 tests/test_session_state_gpu.o: ds4_tool_text.h
 
 clean:
+	rm -f tests/test_decode_consistency
 	rm -f tests/test_mmvq_cuda tests/test_mmvq_rocm
 	rm -f tests/test_qwen4_ngrams
 	rm -f tests/test_qwen4_ngram_state
@@ -1355,6 +1382,7 @@ clean:
 	rm -f tests/test_metal_command_memory
 	rm -f tests/test_deepseek41_metal
 	rm -f tests/test_deepseek41_cuda
+	rm -f tests/test_deepseek41_multigpu
 	rm -f tests/test_cuda_q8_rows
 	rm -f tests/test_cuda_q8_pair
 	rm -f tests/test_cuda_reductions

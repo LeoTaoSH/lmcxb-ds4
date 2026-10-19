@@ -1257,6 +1257,11 @@ static int check_tp_attention(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--quantization")) {
+        const int ok = ds4_gpu_init() && check_quantization();
+        ds4_gpu_cleanup();
+        return ok ? 0 : 1;
+    }
     if (argc == 2 && !strcmp(argv[1], "--embedding")) {
         const int ok = ds4_gpu_init() && check_embedding();
         ds4_gpu_cleanup();
