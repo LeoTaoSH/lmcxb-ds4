@@ -45069,14 +45069,30 @@ static void encode_chat_prompt(
         token_vec_push(out, vocab->im_start_id);
         bpe_tokenize_text(vocab, "system", out);
         token_vec_push(out, vocab->message_id);
-        bpe_tokenize_text(vocab, "You are a helpful AI assistant.\n\n", out);
+        bpe_tokenize_text(vocab,
+            "You are a helpful AI assistant.\n\n"
+            "Knowledge cutoff: 2026-01-04.\n\n", out);
+        time_t now = time(NULL);
+        struct tm local_tm;
+        char current_date[32];
+        if (localtime_r(&now, &local_tm) &&
+            strftime(current_date, sizeof(current_date), "%Y-%m-%d", &local_tm) > 0) {
+            bpe_tokenize_text(vocab, "Current date: ", out);
+            bpe_tokenize_text(vocab, current_date, out);
+            bpe_tokenize_text(vocab, ".\n\n", out);
+        }
         if (system && system[0]) {
             bpe_tokenize_text(vocab, system, out);
             bpe_tokenize_text(vocab, "\n\n", out);
         }
         bpe_tokenize_text(vocab, "Reasoning strength: ", out);
         bpe_tokenize_text(vocab, reasoning, out);
-        bpe_tokenize_text(vocab, ".\n\nUse the appropriate recipient for each message: self for reasoning, user for the final answer.", out);
+        bpe_tokenize_text(vocab,
+            ".\n\nUse the appropriate recipient for each message:\n\n"
+            "- \"self\": private reasoning and tool planning.\n"
+            "- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n"
+            "- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n"
+            "# Valid recipients: \"self\", \"commentary\", \"user\".", out);
         token_vec_push(out, vocab->eos_id);
         token_vec_push(out, vocab->im_start_id);
         bpe_tokenize_text(vocab, "user", out);
@@ -45130,6 +45146,10 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         const char *text;
         int token;
     } specials[] = {
+        {"<|begin_of_text|>",     vocab->bos_id},
+        {"<|start|>",             vocab->im_start_id},
+        {"<|message|>",           vocab->message_id},
+        {"<|eot|>",               vocab->eos_id},
         {"<｜begin▁of▁sentence｜>", vocab->bos_id},
         {"<｜end▁of▁sentence｜>",   vocab->eos_id},
         {"[gMASK]",                vocab->bos_id},
@@ -60598,11 +60618,14 @@ static bool muse_graph_forward_tokens(ds4_muse_gpu_graph *g, const ds4_model *m,
         ok = last && ds4_gpu_rms_norm_weight_rows_tensor(g->norm, last, m->map, m->size,
                     w->output_norm->abs_offset, E, 1, DS4_RMS_EPS) != 0 &&
              muse_graph_matmul(g->logits, m, w->output, g->norm, 1) &&
-             ds4_gpu_muse_logits_tensor(g->logits, DS4_N_VOCAB, DS4_LOGIT_SCALE, DS4_FINAL_LOGIT_SOFTCAP) &&
-             ds4_gpu_tensor_read(g->logits, 0, logits_out, (uint64_t)DS4_N_VOCAB * sizeof(float));
+             ds4_gpu_muse_logits_tensor(g->logits, DS4_N_VOCAB, DS4_LOGIT_SCALE, DS4_FINAL_LOGIT_SOFTCAP);
         ds4_gpu_tensor_free(last);
     }
     if (!ds4_gpu_end_commands()) ok = false;
+    if (ok && logits_out) {
+        ok = ds4_gpu_tensor_read(g->logits, 0, logits_out,
+                                 (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
+    }
     if (ok) g->pos += T;
     return ok;
 }

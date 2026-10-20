@@ -3631,7 +3631,18 @@ static char *render_muse_chat_prompt_text(const chat_msgs *msgs,
     default: break;
     }
     buf out = {0};
-    buf_puts(&out, "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\n");
+    buf_puts(&out,
+        "<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\n\n"
+        "Knowledge cutoff: 2026-01-04.\n\n");
+    time_t now = time(NULL);
+    struct tm local_tm;
+    char current_date[32];
+    if (localtime_r(&now, &local_tm) &&
+        strftime(current_date, sizeof(current_date), "%Y-%m-%d", &local_tm) > 0) {
+        buf_puts(&out, "Current date: ");
+        buf_puts(&out, current_date);
+        buf_puts(&out, ".\n\n");
+    }
     for (int i = 0; msgs && i < msgs->len; i++) {
         const chat_msg *m = &msgs->v[i];
         if (!role_is_system(m->role)) continue;
@@ -3645,7 +3656,12 @@ static char *render_muse_chat_prompt_text(const chat_msgs *msgs,
     }
     buf_puts(&out, "Reasoning strength: ");
     buf_puts(&out, strength);
-    buf_puts(&out, ".\n\nUse the appropriate recipient for each message: self for reasoning, user for the final answer.");
+    buf_puts(&out,
+        ".\n\nUse the appropriate recipient for each message:\n\n"
+        "- \"self\": private reasoning and tool planning.\n"
+        "- \"commentary\": user-visible intermediate updates while the assistant will continue working, including messages sent to the user before or between tool calls.\n"
+        "- \"user\": messages that end the assistant turn, such as a completed response or clarification question that waits for the user's reply; do not use for pre-tool updates or partial responses.\n\n"
+        "# Valid recipients: \"self\", \"commentary\", \"user\".");
     buf_puts(&out, "<|eot|>");
     for (int i = 0; msgs && i < msgs->len; i++) {
         const chat_msg *m = &msgs->v[i];
@@ -14051,6 +14067,14 @@ decode_again:
             if (!j->req.top_k_set) top_k = 0;
             if (!j->req.top_p_set) top_p = DS4_DEFAULT_TOP_P;
             if (!j->req.min_p_set) min_p = DS4_DEFAULT_MIN_P;
+        }
+        if (ds4_engine_is_muse_spark(s->engine)) {
+            /* Meta's Muse defaults deliberately sample the full distribution.
+             * The generic 0.05 min-p filter can trap this model in repetitive
+             * private reasoning before it emits the user-facing turn. */
+            if (!j->req.temperature_set) temperature = 1.0f;
+            if (!j->req.top_p_set) top_p = 1.0f;
+            if (!j->req.min_p_set) min_p = 0.0f;
         }
         const bool greedy_tool_syntax = !thinking.inside && in_tool_call &&
             !dsml_decode_state_uses_payload_sampling(dsml_state);

@@ -61,11 +61,12 @@ kernel void kernel_muse_attn_prep(
         for (uint i = 0; i < npt; i++) row[lane * npt + i] *= r * q_norm[lane * npt + i];
         simdgroup_barrier(mem_flags::mem_threadgroup);
         if (args.use_rope && lane < args.n_rot / 2u) {
-            const uint j = lane + args.n_rot / 2u;
+            const uint i = 2u * lane;
+            const uint j = i + 1u;
             const float theta = (float)pos * pow(args.rope_base, -2.0f * (float)lane / (float)args.n_rot);
             const float c = cos(theta), s = sin(theta);
-            const float x0 = row[lane], x1 = row[j];
-            row[lane] = x0 * c - x1 * s;
+            const float x0 = row[i], x1 = row[j];
+            row[i] = x0 * c - x1 * s;
             row[j] = x0 * s + x1 * c;
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -94,11 +95,12 @@ kernel void kernel_muse_attn_prep(
     for (uint i = 0; i < npt; i++) row[lane * npt + i] *= r * k_norm[lane * npt + i];
     simdgroup_barrier(mem_flags::mem_threadgroup);
     if (args.use_rope && lane < args.n_rot / 2u) {
-        const uint j = lane + args.n_rot / 2u;
+        const uint i = 2u * lane;
+        const uint j = i + 1u;
         const float theta = (float)pos * pow(args.rope_base, -2.0f * (float)lane / (float)args.n_rot);
         const float c = cos(theta), s = sin(theta);
-        const float x0 = row[lane], x1 = row[j];
-        row[lane] = x0 * c - x1 * s;
+        const float x0 = row[i], x1 = row[j];
+        row[i] = x0 * c - x1 * s;
         row[j] = x0 * s + x1 * c;
     }
     simdgroup_barrier(mem_flags::mem_threadgroup);

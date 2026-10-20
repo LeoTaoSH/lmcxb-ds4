@@ -1006,7 +1006,15 @@ static agent_config parse_options(int argc, char **argv) {
 static void agent_apply_model_sampling_defaults(
         ds4_engine               *engine,
         agent_generation_options *gen) {
-    if (!engine || !gen || !ds4_engine_is_glm_dsa(engine)) return;
+    if (!engine || !gen) return;
+
+    if (ds4_engine_is_muse_spark(engine)) {
+        if (!gen->temperature_set) gen->temperature = 1.0f;
+        if (!gen->top_p_set) gen->top_p = 1.0f;
+        if (!gen->min_p_set) gen->min_p = 0.0f;
+        return;
+    }
+    if (!ds4_engine_is_glm_dsa(engine)) return;
 
     if (!gen->temperature_set) gen->temperature = 1.0f;
     if (!gen->top_p_set) gen->top_p = 0.95f;
