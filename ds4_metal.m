@@ -48335,8 +48335,10 @@ static bool qwen4_moe_mv_specialize(uint32_t type) {
         (ds4_gpu_device_name_contains("M3 Ultra") || ds4_gpu_device_is_m5_apple_silicon());
 }
 
-static uint32_t qwen4_moe_mv_rows(void) {
-    return (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NR", 1u, 1u, 4u);
+static uint32_t qwen4_moe_mv_rows(uint32_t type) {
+    char name[40];
+    snprintf(name, sizeof(name), "DS4_QWEN4_MOE_MV_NR_%u", type);
+    return (uint32_t)ds4_gpu_env_u64(name, ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NR", 1u, 1u, 4u), 1u, 4u);
 }
 
 static uint32_t qwen4_moe_mv_groups(uint32_t type) {
@@ -48345,7 +48347,9 @@ static uint32_t qwen4_moe_mv_groups(uint32_t type) {
     const uint32_t default_nsg =
         ((type == 10u || type == 39u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
         (type == 39u && ds4_gpu_device_is_m5_apple_silicon()) ? 16u : 8u;
-    return (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NSG", default_nsg, 1u, 16u);
+    char name[40];
+    snprintf(name, sizeof(name), "DS4_QWEN4_MOE_MV_NSG_%u", type);
+    return (uint32_t)ds4_gpu_env_u64(name, ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NSG", default_nsg, 1u, 16u), 1u, 16u);
 }
 
 /* resident: buffers the kernel reaches through GPU addresses rather than
@@ -48361,7 +48365,7 @@ static int qwen4_dispatch_resident(int kernel, const void *args, size_t args_len
         if (kernel == QWEN4_K_MOE_MID || kernel == QWEN4_K_MOE_MID_IQ2XXS || kernel == QWEN4_K_MOE_DOWN || kernel == QWEN4_K_MOE_DOWN_MXFP4_PF) {
             const qwen4_moe_args *a = args;
             const bool specialize = qwen4_moe_mv_specialize(a->weight_type);
-            const uint32_t values[] = {a->weight_type, a->shared_type, specialize ? a->in_dim : 0u, specialize ? qwen4_moe_mv_rows() : 0u};
+            const uint32_t values[] = {a->weight_type, a->shared_type, specialize ? a->in_dim : 0u, specialize ? qwen4_moe_mv_rows(a->weight_type) : 0u};
             NSString *key = [NSString stringWithFormat:@"%s_type=%u_shared=%u_dim=%u_rows=%u",
                              qwen4_kernel_names[kernel], values[0], values[1], values[2], values[3]];
             pipeline = [g_pipeline_cache objectForKey:key];
@@ -49565,7 +49569,7 @@ int ds4_gpu_qwen4_moe_mid_tensor(
     const bool specialize = !q4k && qwen4_moe_mv_specialize(weight_type);
     const uint64_t nr_env = q4k ?
         ds4_gpu_env_u64("DS4_QWEN4_Q4K_MID_NR", default_nr, 1u, UINT64_MAX) :
-        (specialize ? qwen4_moe_mv_rows() : 2u);
+        (specialize ? qwen4_moe_mv_rows(weight_type) : 2u);
     const uint32_t nr = nr_env >= 1u && nr_env <= (q4k ? 2u : 4u) ? (uint32_t)nr_env : default_nr;
     /* NR2 without an NSG override restores the former ordered dispatch. */
     const uint32_t default_nsg = nr != 1u ? 2u : m3_ultra ? 8u : m5_single ? 4u : 2u;
@@ -49612,7 +49616,7 @@ int ds4_gpu_qwen4_moe_down_tensor(
         b[4] = b[0];
     }
     const uint32_t nsg = qwen4_moe_mv_specialize(weight_type) ? qwen4_moe_mv_groups(weight_type) : 4u;
-    const uint32_t rows_per_tg = nsg * (qwen4_moe_mv_specialize(weight_type) ? qwen4_moe_mv_rows() : 2u);
+    const uint32_t rows_per_tg = nsg * (qwen4_moe_mv_specialize(weight_type) ? qwen4_moe_mv_rows(weight_type) : 2u);
     /* MXFP4 rows with four blocks per lane requested ahead (same lane map and
      * chain order, byte-identical); M5 default, DS4_QWEN4_MOE_DOWN_PREFETCH=0/1
      * overrides on any device. */

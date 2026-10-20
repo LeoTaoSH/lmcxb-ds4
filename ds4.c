@@ -59427,7 +59427,7 @@ static bool qwen4_graph_moe(ds4_qwen4_gpu_graph *g, const ds4_model *m, const ds
     return ok;
 }
 
-/* host side: embedding rows tiled into R and the PLE n-gram gather */
+/* host side: embedding rows tiled into R */
 static bool qwen4_graph_stage_inputs(ds4_qwen4_gpu_graph *g, const ds4_model *m, const ds4_weights *w,
                                      const int *tokens, uint32_t T) {
     const uint32_t E = DS4_N_EMBD, hc = DS4_N_HC, hc_dim = E * hc;
@@ -59446,9 +59446,16 @@ static bool qwen4_graph_stage_inputs(ds4_qwen4_gpu_graph *g, const ds4_model *m,
         if (t == 0 && g->snap_after_first) g->snap_mrope_delta = g->mrope_delta;
         if (t == 1u && g->snap_after_second) g->snap2_mrope_delta = g->mrope_delta;
     }
-    if (!ds4_gpu_tensor_write(g->R, 0, row, (uint64_t)T * hc_dim * sizeof(float)) ||
-        !ds4_gpu_tensor_write(g->pos3, (uint64_t)g->pos * 16u, g->host_pos3, (uint64_t)T * 16u))
-        return false;
+    return ds4_gpu_tensor_write(g->R, 0, row, (uint64_t)T * hc_dim * sizeof(float)) &&
+           ds4_gpu_tensor_write(g->pos3, (uint64_t)g->pos * 16u, g->host_pos3, (uint64_t)T * 16u);
+}
+
+/* host side: the PLE n-gram gather.  Only layer DS4_N_PLE_LAYER reads it, so
+ * the caller commits the layers before it first and the GPU runs them while
+ * the rows come from disk. */
+static bool qwen4_graph_stage_ple(ds4_qwen4_gpu_graph *g, const ds4_model *m, const int *tokens, uint32_t T) {
+    const uint32_t E = DS4_N_EMBD;
+    float *row = g->host_row;
     uint32_t ids[256 * DS4_MAX_PLE_HEADS];
     for (uint32_t t = 0; t < T; t++) {
         qwen4_ple_step(tokens[t], g->ple_prev, ids + (t % 256u) * DS4_N_PLE_HEADS);
@@ -59528,7 +59535,9 @@ static bool qwen4_graph_forward_tokens(ds4_qwen4_gpu_graph *g, const ds4_model *
     for (uint32_t il = 0; il < n_trunk && ok; il++) {
         const ds4_layer_weights *l = &w->layer[il];
         if (ds4_qwen4_layer_is_ple(il)) {
-            ok = qwen4_gemv(g->ple_key, m, l->ple_key, g->ple_emb, T) &&
+            if (il > 0u) ok = ds4_gpu_flush_commands() != 0;
+            ok = ok && qwen4_graph_stage_ple(g, m, tokens, T) &&
+                 qwen4_gemv(g->ple_key, m, l->ple_key, g->ple_emb, T) &&
                  qwen4_gemv(g->ple_val, m, l->ple_value, g->ple_emb, T) &&
                  ds4_gpu_qwen4_ple_gate_tensor(g->ple_gated, g->ple_normed, g->R, g->ple_key, g->ple_val,
                                                m->map, m->size, l->ple_norm_key->abs_offset,
@@ -59582,7 +59591,10 @@ static bool qwen4_graph_forward_tokens(ds4_qwen4_gpu_graph *g, const ds4_model *
         /* Submit this prefix while the host encodes the remaining layers.
          * Flush keeps the same ordered queue and retains pending buffers;
          * end_commands below waits for both batches before inputs are reused. */
-        if (ok && il + 1u == flush_layer) ok = ds4_gpu_flush_commands() != 0;
+        /* The PLE flush leaves the GPU only layer 1 while the host encodes
+         * the rest; a second flush hands it the next layers as well. */
+        if (ok && flush_layer && (il + 1u == flush_layer || il + 1u == 2u * flush_layer))
+            ok = ds4_gpu_flush_commands() != 0;
     }
     if (prof_on) {
         fprintf(stderr, "ds4: Qwen3.8 prefill stage ms/chunk (pos=%u T=%u ok=%d): "
