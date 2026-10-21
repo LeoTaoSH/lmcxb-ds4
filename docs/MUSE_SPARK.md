@@ -8,6 +8,38 @@ weights and therefore requires a Mac with at least 256 GiB of unified memory.
 Model weights are not included in this repository. Supply the six GGUF shards
 locally, beginning with `Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00001-of-00006.gguf`.
 
+## Run the model
+
+Build the native server and coding agent:
+
+```sh
+make -j8 ds4-server ds4-agent
+```
+
+Point `-m` at the first shard; DwarfStar discovers the other five shards
+automatically. A 16K context is a practical starting point for the 256 GB M3
+Ultra configuration.
+
+Start the OpenAI-compatible server at `http://127.0.0.1:8000`:
+
+```sh
+MUSE=/path/to/UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00001-of-00006.gguf
+
+./ds4-server --metal -m "$MUSE" --ctx 16384 \
+  --host 127.0.0.1 --port 8000
+```
+
+Or start the native terminal coding agent directly. It operates in the current
+working directory and does not require the server:
+
+```sh
+./ds4-agent --metal -m "$MUSE" --ctx 16384
+```
+
+Prompt lookup is enabled automatically and can accelerate repetitive code. To
+measure ordinary single-token decoding, prefix either command with
+`DS4_MUSE_NO_PROMPT_LOOKUP=1`.
+
 ## Current performance
 
 Measured on an Apple M3 Ultra with 256 GiB of unified memory:
