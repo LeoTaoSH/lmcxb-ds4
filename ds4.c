@@ -3613,9 +3613,9 @@ static ds4_support_kind support_model_detect(
 }
 
 static bool support_model_checkpoint_compatible(const ds4_model *m) {
-    ds4_str arch = {0};
-    if (model_get_string(m, "general.architecture", &arch) &&
-        ds4_streq(arch, "muse-spark-dspark")) {
+    ds4_str muse_arch = {0};
+    if (model_get_string(m, "general.architecture", &muse_arch) &&
+        ds4_streq(muse_arch, "muse-spark-dspark")) {
         if (ds4_model_is_muse_spark()) return true;
         fprintf(stderr, "ds4: Muse DSpark support model requires Muse Spark Open as its target\n");
         return false;
