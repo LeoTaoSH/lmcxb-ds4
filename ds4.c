@@ -45466,6 +45466,18 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
     if (!role) role = "user";
     if (!content) content = "";
 
+    if (ds4_model_is_muse_spark()) {
+        const char *name = (!strcmp(role, "system") || !strcmp(role, "developer")) ? "system" :
+                           (!strcmp(role, "assistant")) ? "assistant" :
+                           (!strcmp(role, "tool") || !strcmp(role, "function")) ? "tool" : "user";
+        token_vec_push(tokens, vocab->im_start_id);
+        bpe_tokenize_text(vocab, name, tokens);
+        token_vec_push(tokens, vocab->message_id);
+        bpe_tokenize_text(vocab, content, tokens);
+        token_vec_push(tokens, vocab->eos_id);
+        return;
+    }
+
     if (ds4_model_is_qwen4()) {
         if (!strcmp(role, "tool") || !strcmp(role, "function")) {
             qwen4_chat_open(vocab, "user", tokens);
@@ -45532,6 +45544,11 @@ void ds4_chat_append_message(ds4_engine *e, ds4_tokens *tokens, const char *role
 }
 
 void ds4_chat_append_assistant_prefix(ds4_engine *e, ds4_tokens *tokens, ds4_think_mode think_mode) {
+    if (ds4_model_is_muse_spark()) {
+        token_vec_push(tokens, e->vocab.im_start_id);
+        bpe_tokenize_text(&e->vocab, "assistant", tokens);
+        return;
+    }
     if (ds4_model_is_qwen4()) {
         qwen4_chat_assistant_prefix(&e->vocab, think_mode, tokens);
         return;

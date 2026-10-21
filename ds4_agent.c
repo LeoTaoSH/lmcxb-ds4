@@ -410,6 +410,9 @@ static int agent_read_default_lines(agent_worker *w);
 static int agent_compact_reserve_tokens(agent_worker *w);
 
 static agent_tool_syntax agent_tool_syntax_for_engine(ds4_engine *engine) {
+    /* Muse currently uses its native recipient/message chat framing; the
+     * generic DSML parser is not its ATEM tool-call decoder. */
+    if (ds4_engine_is_muse_spark(engine)) return AGENT_TOOL_SYNTAX_DSML;
     if (ds4_engine_is_qwen4(engine)) return AGENT_TOOL_SYNTAX_QWEN;
     return ds4_engine_is_glm_dsa(engine) ? AGENT_TOOL_SYNTAX_GLM
          : ds4_engine_is_deepseek41(engine) ? AGENT_TOOL_SYNTAX_DSML41
@@ -1561,7 +1564,9 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
      * supplied -sys text: arbitrary user text containing <｜User｜>, <think>, or
      * ｜DSML｜ must remain plain content, not control tokens. */
     char *tools_prompt = agent_build_tools_prompt(engine, edit_upto);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
+    if (ds4_engine_is_muse_spark(engine))
+        ds4_chat_append_message(engine, tokens, "system", tools_prompt);
+    else if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
         ds4_chat_append_message(engine, tokens, "system", tools_prompt);
     else {
         if (ds4_engine_is_deepseek41(engine))
@@ -1618,7 +1623,9 @@ static void agent_worker_maybe_append_system_prompt_reminder(agent_worker *w) {
     agent_publish_system_status(w, "Re-injecting system prompt reminder...");
     agent_trace(w, "system prompt reminder injected at transcript=%d",
                 w->transcript.len);
-    if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(w->engine))) {
+    if (ds4_engine_is_muse_spark(w->engine)) {
+        ds4_chat_append_message(w->engine, &w->transcript, "system", reminder);
+    } else if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(w->engine))) {
         ds4_chat_append_message(w->engine, &w->transcript, "system", reminder);
     } else {
         ds4_tokenize_rendered_chat(w->engine, reminder, &w->transcript);
