@@ -22,20 +22,21 @@ struct ds4_metal_args_muse_attn_prep {
     uint32_t use_rope;
     float rope_base;
     float eps;
+    float q_scale;
     uint32_t pad0;
-    uint32_t pad1;
 };
 
+/* Gate is not read here. Sigmoid consumes the gate projection directly, so
+ * this kernel has no hazard on it. The old body stored gateproj into
+ * gate_out with a plain copy. */
 kernel void kernel_muse_attn_prep(
         constant ds4_metal_args_muse_attn_prep &args,
         device const float *qproj,
         device const float *kproj,
         device const float *vproj,
-        device const float *gateproj,
         device const float *q_norm,
         device const float *k_norm,
         device float *q_out,
-        device float *gate_out,
         device half *k_cache,
         device half *v_cache,
         uint3 tgpig [[threadgroup_position_in_grid]],
@@ -58,7 +59,7 @@ kernel void kernel_muse_attn_prep(
         }
         ss = simd_sum(ss);
         const float r = rsqrt(ss / (float)D + args.eps);
-        for (uint i = 0; i < npt; i++) row[lane * npt + i] *= r * q_norm[lane * npt + i];
+        for (uint i = 0; i < npt; i++) row[lane * npt + i] *= r * q_norm[lane * npt + i] * args.q_scale;
         simdgroup_barrier(mem_flags::mem_threadgroup);
         if (args.use_rope && lane < args.n_rot / 2u) {
             const uint i = 2u * lane;
@@ -71,12 +72,9 @@ kernel void kernel_muse_attn_prep(
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
         device float *dst = q_out + ((uint64_t)tok * args.n_head + slot) * D;
-        device const float *gs = gateproj + ((uint64_t)tok * args.n_head + slot) * D;
-        device float *gd = gate_out + ((uint64_t)tok * args.n_head + slot) * D;
         for (uint i = 0; i < npt; i++) {
             const uint j = lane * npt + i;
             dst[j] = row[j];
-            gd[j] = gs[j];
         }
         return;
     }
@@ -156,6 +154,108 @@ kernel void kernel_muse_weight_mul(
     if ((uint64_t)gid < n) out[gid] = x[gid] * weight[gid % args.dim];
 }
 
+/* Muse post-FFN normalization is RMSNorm(weight * x), rather than the usual
+ * weight * RMSNorm(x). For the fixed 8192-wide residual, each of 1024 threads
+ * owns two float4s, keeping the weighted values live across the reduction.
+ * This fuses the old elementwise multiply and plain RMSNorm without changing
+ * their reduction or multiply order. */
+kernel void kernel_muse_weighted_rms_8192(
+        constant ds4_metal_args_muse_rows &args,
+        device const float *x,
+        device const float *weight,
+        device float *out,
+        threadgroup float *shmem_f32 [[threadgroup(0)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort3 tpitg [[thread_position_in_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    const uint tok = tgpig.x;
+    if (tok >= args.n_tokens || args.dim != 8192u) return;
+    if (sgitg == 0) shmem_f32[tiisg] = 0.0f;
+    device const float4 *xr = (device const float4 *)(x + (uint64_t)tok * args.dim);
+    device const float4 *wr = (device const float4 *)weight;
+    device float4 *yr = (device float4 *)(out + (uint64_t)tok * args.dim);
+    const uint i0 = (uint)tpitg.x;
+    const uint i1 = i0 + ntg.x;
+    const float4 v0 = xr[i0] * wr[i0];
+    const float4 v1 = xr[i1] * wr[i1];
+    float sumf = dot(v0, v0);
+    sumf += dot(v1, v1);
+    sumf = simd_sum(sumf);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tiisg == 0) shmem_f32[sgitg] = sumf;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    sumf = simd_sum(shmem_f32[tiisg]);
+    const float scale = 1.0f / sqrt(sumf / (float)args.dim + args.alpha);
+    yr[i0] = v0 * scale;
+    yr[i1] = v1 * scale;
+}
+
+struct ds4_metal_args_muse_expert_finalize {
+    uint32_t n_tokens;
+    uint32_t n_slots;
+    uint32_t dim;
+    float eps;
+};
+
+/* Weight-first RMSNorm for every routed expert row, followed by the fp32
+ * top-k weighted sum. This is Muse's post-expert finalize contract. */
+kernel void kernel_muse_expert_finalize(
+        constant ds4_metal_args_muse_expert_finalize &args,
+        device const float *part,
+        device const float *route_weight,
+        device const float *norm_weight,
+        device float *out,
+        uint tok [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort sg [[simdgroup_index_in_threadgroup]],
+        ushort nsg [[simdgroups_per_threadgroup]]) {
+    if (tok >= args.n_tokens || args.n_slots > 8u || (args.dim & 3u)) return;
+    threadgroup float partial[8][32];
+    threadgroup float inv[8];
+    for (uint i = tid; i < 8u * 32u; i += 256u)
+        partial[i / 32u][i % 32u] = 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint n4 = args.dim / 4u;
+    float sums[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    for (uint s = 0; s < args.n_slots; s++) {
+        device const float4 *x4 = (device const float4 *)(part +
+                ((ulong)tok * args.n_slots + s) * args.dim);
+        device const float4 *w4 = (device const float4 *)norm_weight;
+        float sum = 0.0f;
+        for (uint d4 = tid; d4 < n4; d4 += 256u) {
+            const float4 v = x4[d4] * w4[d4];
+            sum += dot(v, v);
+        }
+        sums[s] = simd_sum(sum);
+        if (lane == 0u) partial[s][sg] = sums[s];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = 0; s < args.n_slots; s++) {
+        float sum = lane < nsg ? partial[s][lane] : 0.0f;
+        sum = simd_sum(sum);
+        if (tid == 0u) inv[s] = rsqrt(sum / (float)args.dim + args.eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    device const float4 *w4 = (device const float4 *)norm_weight;
+    device float4 *o4 = (device float4 *)(out + (ulong)tok * args.dim);
+    for (uint d4 = tid; d4 < n4; d4 += 256u) {
+        float4 acc = float4(0.0f);
+        const float4 nw = w4[d4];
+        for (uint s = 0; s < args.n_slots; s++) {
+            device const float4 *x4 = (device const float4 *)(part +
+                    ((ulong)tok * args.n_slots + s) * args.dim);
+            acc += route_weight[(ulong)tok * args.n_slots + s] *
+                   (x4[d4] * nw * inv[s]);
+        }
+        o4[d4] = acc;
+    }
+}
+
 struct ds4_metal_args_muse_router {
     uint32_t n_tokens;
     uint32_t n_expert;
@@ -169,37 +269,70 @@ kernel void kernel_muse_router_topk(
         device const float *bias,
         device int32_t *selected,
         device float *weights,
-        uint tok [[thread_position_in_grid]]) {
+        uint tok [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort ntg [[threads_per_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort sg [[simdgroup_index_in_threadgroup]]) {
     if (tok >= args.n_tokens) return;
     device const float *lg = logits + (uint64_t)tok * args.n_expert;
-    float best_v[16];
-    float best_w[16];
-    int best_i[16];
-    for (uint k = 0; k < args.n_used; k++) {
-        best_v[k] = -INFINITY;
-        best_w[k] = 0.0f;
-        best_i[k] = 0x7fffffff;
-    }
-    for (uint e = 0; e < args.n_expert; e++) {
-        const float w = muse_sigmoid(lg[e]);
-        const float v = w + bias[e];
-        uint at = args.n_used;
-        for (uint k = 0; k < args.n_used; k++) {
-            if (v > best_v[k] || (v == best_v[k] && (int)e < best_i[k])) { at = k; break; }
+    const uint nsg = ntg / 32u;
+    threadgroup float group_v[16];
+    threadgroup int group_i[16];
+    threadgroup int winners[16];
+    threadgroup float winner_w[16];
+
+    /* One lane owns at most two experts for the supported <=512 shape.  The
+     * old kernel evaluated the same values serially in one lane; parallel
+     * repeated argmax keeps its value ordering and lowest-index tie break. */
+    float mine_v[2] = {-INFINITY, -INFINITY};
+    int mine_i[2] = {0x7fffffff, 0x7fffffff};
+    for (uint j = 0; j < 2u; j++) {
+        const uint e = (uint)tid + j * (uint)ntg;
+        if (e < args.n_expert) {
+            const float w = muse_sigmoid(lg[e]);
+            mine_v[j] = w + bias[e];
+            mine_i[j] = (int)e;
         }
-        if (at < args.n_used) {
-            for (uint k = args.n_used - 1u; k > at; k--) {
-                best_v[k] = best_v[k - 1u]; best_w[k] = best_w[k - 1u]; best_i[k] = best_i[k - 1u];
+    }
+
+    for (uint r = 0; r < args.n_used; r++) {
+        float best_v = mine_v[0];
+        int best_i = mine_i[0];
+        if (mine_v[1] > best_v || (mine_v[1] == best_v && mine_i[1] < best_i)) {
+            best_v = mine_v[1];
+            best_i = mine_i[1];
+        }
+        const float simd_v = simd_max(best_v);
+        const int simd_i = simd_min(best_v == simd_v ? best_i : 0x7fffffff);
+        if (lane == 0) {
+            group_v[sg] = simd_v;
+            group_i[sg] = simd_i;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sg == 0) {
+            best_v = lane < nsg ? group_v[lane] : -INFINITY;
+            best_i = lane < nsg ? group_i[lane] : 0x7fffffff;
+            const float top_v = simd_max(best_v);
+            const int top_i = simd_min(best_v == top_v ? best_i : 0x7fffffff);
+            if (lane == 0) {
+                winners[r] = top_i;
+                winner_w[r] = muse_sigmoid(lg[top_i]);
             }
-            best_v[at] = v; best_w[at] = w; best_i[at] = (int)e;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint j = 0; j < 2u; j++) {
+            if (mine_i[j] == winners[r]) mine_v[j] = -INFINITY;
         }
     }
-    float sum = 0.0f;
-    for (uint k = 0; k < args.n_used; k++) sum += best_w[k];
-    const float inv = 1.0f / max(sum, 6.103515625e-5f);
-    for (uint k = 0; k < args.n_used; k++) {
-        selected[(uint64_t)tok * args.n_used + k] = best_i[k];
-        weights[(uint64_t)tok * args.n_used + k] = best_w[k] * inv;
+    if (tid == 0) {
+        float sum = 0.0f;
+        for (uint k = 0; k < args.n_used; k++) sum += winner_w[k];
+        const float inv = 1.0f / max(sum, 6.103515625e-5f);
+        for (uint k = 0; k < args.n_used; k++) {
+            selected[(uint64_t)tok * args.n_used + k] = winners[k];
+            weights[(uint64_t)tok * args.n_used + k] = winner_w[k] * inv;
+        }
     }
 }
 
