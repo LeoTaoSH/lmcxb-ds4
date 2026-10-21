@@ -43858,6 +43858,7 @@ struct ds4_vocab {
     int im_start_id;
     int im_end_id;
     int message_id;
+    int eom_id;
     int endoftext_id;
     str_i32_table token_to_id;
     str_i32_table merge_rank;
@@ -45009,6 +45010,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
     vocab->im_start_id = -1;
     vocab->im_end_id = -1;
     vocab->message_id = -1;
+    vocab->eom_id = -1;
     vocab->endoftext_id = -1;
 
     if (ds4_model_is_muse_spark()) {
@@ -45016,6 +45018,7 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         vocab->eos_id = vocab_lookup(vocab, "<|eot|>");
         vocab->im_start_id = vocab_lookup(vocab, "<|start|>");
         vocab->message_id = vocab_lookup(vocab, "<|message|>");
+        vocab->eom_id = vocab_lookup_optional(vocab, "<|eom|>");
         vocab->im_end_id = vocab->eos_id;
         vocab->endoftext_id = vocab_lookup_optional(vocab, "<|end_of_text|>");
         vocab->system_id = vocab->user_id = vocab->assistant_id = -1;
@@ -45026,7 +45029,8 @@ static void vocab_load(ds4_vocab *vocab, const ds4_model *model) {
         vocab->arg_key_start_id = vocab->arg_key_end_id = -1;
         vocab->arg_value_start_id = vocab->arg_value_end_id = -1;
         vocab->dsml_id = -1;
-        if (vocab->bos_id < 0 || vocab->eos_id < 0 || vocab->im_start_id < 0 || vocab->message_id < 0)
+        if (vocab->bos_id < 0 || vocab->eos_id < 0 || vocab->im_start_id < 0 ||
+            vocab->message_id < 0 || vocab->eom_id < 0)
             ds4_die("Muse Spark tokenizer is missing required message markers");
         return;
     }
@@ -45323,6 +45327,7 @@ static bool special_token_at(const ds4_vocab *vocab, const char *p, int *token, 
         {"<|begin_of_text|>",     vocab->bos_id},
         {"<|start|>",             vocab->im_start_id},
         {"<|message|>",           vocab->message_id},
+        {"<|eom|>",               vocab->eom_id},
         {"<|eot|>",               vocab->eos_id},
         {"<｜begin▁of▁sentence｜>", vocab->bos_id},
         {"<｜end▁of▁sentence｜>",   vocab->eos_id},
@@ -60845,7 +60850,8 @@ static bool muse_graph_forward_tokens(ds4_muse_gpu_graph *g, const ds4_model *m,
                  g->qproj, g->kproj, g->vproj, g->gateproj, m->map, m->size,
                  l->attn_q_norm->abs_offset, l->attn_k_norm->abs_offset, T, H, HKV, D,
                  DS4_N_ROT, pos0, g->ctx_cap, g_ds4_compress_ratios[il] != 0,
-                 DS4_ROPE_FREQ_BASE, DS4_RMS_EPS, 5.4730064863875f) &&
+                 /* The GGUF conversion folds Muse's metap scale into Q norm. */
+                 DS4_ROPE_FREQ_BASE, DS4_RMS_EPS, 1.0f) &&
              (g_ds4_compress_ratios[il] ?
                 ds4_gpu_muse_swa_indices_tensor(g->swa_indices, g->swa_counts, T, pos0, DS4_N_SWA, DS4_N_SWA) : 1) &&
              ds4_gpu_qwen4_attn_decode_tensor(g->attn, g->q, g->zero_gate,
