@@ -41582,10 +41582,12 @@ static bool ds41_tp_kslice_round_in_on(void) {
 }
 
 /* TP decode: the rank's shared-expert half and the FFN HC mixer ride the
- * routed experts' concurrent encoder (DS4_METAL_DISABLE_V41_TP_CONCURRENT_FFN=1: serial). */
+ * routed experts' concurrent encoder (DS4_METAL_DISABLE_V41_TP_CONCURRENT_FFN=1: serial).
+ * That encoder needs the fixed-route experts, so their switch turns it off too. */
 static bool ds41_tp_concurrent_ffn_on(void) {
-    static int cache = -1;
-    return !metal_graph_env_flag("DS4_METAL_DISABLE_V41_TP_CONCURRENT_FFN", &cache);
+    static int cache = -1, fixed_off = -1;
+    if (fixed_off < 0) fixed_off = getenv("DS4_METAL_DISABLE_V41_TP_FIXED_ROUTE") != NULL;
+    return !fixed_off && !metal_graph_env_flag("DS4_METAL_DISABLE_V41_TP_CONCURRENT_FFN", &cache);
 }
 
 static bool ds41_short_sweep_off(void) {
