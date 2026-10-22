@@ -43349,11 +43349,12 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
     const uint32_t encoder_chunk = ds41_encoder_chunk_cap(g, total_count);
     /* Short sweeps prune the decoder suffix inside the plain schedule's
      * chunks too, with the same kernels per row, so the output is unchanged
-     * (DS4_METAL_DISABLE_V41_SUFFIX_ALL=1: whole tiles only). */
+     * (DS4_METAL_DISABLE_V41_SUFFIX_ALL=1: whole tiles only). Fresh prompts
+     * of 384-511 rows changed the output, so pruning starts at 512. */
     static int suffix_all_off = -1;
     if (suffix_all_off < 0) suffix_all_off = getenv("DS4_METAL_DISABLE_V41_SUFFIX_ALL") != NULL;
     const bool suffix_all = !suffix_all_off && !g->quality && g->tp_world == 1 && !g->streaming &&
-        !g->image_count && total_count >= 384u && total_count < 8192u && total_count <= g->carry_cap;
+        !g->image_count && total_count >= 512u && total_count < 8192u && total_count <= g->carry_cap;
     const bool wide = total_count > encoder_chunk || suffix_all;
     if ((!g->valid && !resume_encoder) || !total_count || (wide && total_count > g->carry_cap) ||
         total_count > g->ctx - g->pos || g->imatrix || !ds41_tp_batch_enabled(g))
