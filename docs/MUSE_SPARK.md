@@ -36,6 +36,28 @@ working directory and does not require the server:
 ./ds4-agent --metal -m "$MUSE" --ctx 16384
 ```
 
+### Install the `muse` command
+
+After building `ds4-agent`, run the repository's portable launcher once with
+the first GGUF shard:
+
+```sh
+./muse --install /path/to/UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00001-of-00006.gguf
+```
+
+This saves the model location in `~/.config/ds4/muse-model` and creates
+`~/bin/muse`. If `~/bin` is not already on `PATH`, the installer prints the
+single line to add to the shell profile. After that, run Muse from any project:
+
+```sh
+cd /path/to/project
+muse
+```
+
+The command launches DwarfStar's native chat agent in the current directory
+with Metal and a 16K context. Override the context with `CTX=8192 muse`, or
+temporarily override the saved model with `MUSE_MODEL=/path/to/model.gguf muse`.
+
 Prompt lookup is enabled automatically and can accelerate repetitive code. To
 measure ordinary single-token decoding, prefix either command with
 `DS4_MUSE_NO_PROMPT_LOOKUP=1`.

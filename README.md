@@ -194,7 +194,8 @@ See [Qwen setup](docs/QWEN38_FLASH_NEXT.md) for details.
 
 Muse Spark Open's UD-IQ2_XXS release runs resident on a 256 GB Apple Silicon
 Mac. See the [Muse Spark guide](docs/MUSE_SPARK.md) for setup, measured speed,
-current bottlenecks, and useful optimization targets.
+the one-time `muse` command installer, current bottlenecks, and useful
+optimization targets.
 
 Speculative decoding is opt-in. GLM and Qwen use `--mtp`; V4 Flash DSpark needs a matching
 support GGUF. It can improve generation, but not every workload benefits.
