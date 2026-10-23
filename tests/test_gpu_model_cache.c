@@ -108,6 +108,28 @@ int main(void) {
         CHECK(dev_gap == 0, "gap fallback device");
     }
 
+    /* Tiny HC scales must not misalign the following projection. Exercise
+     * both packing within one append and alignment after slab growth. */
+    ds4_tensor_range odd[] = {
+        {280 * 1024, 12, 0},
+        {320 * 1024, 96, 0},
+        {352 * 1024, 512, 0},
+    };
+    CHECK(ds4_gpu_device_cache_tensors(0, odd, 2) == 0, "cache tiny tensors");
+    CHECK(ds4_gpu_device_cache_tensors(0, odd + 2, 1) == 0, "grow after tiny tensors");
+    for (int i = 0; i < 3; i++) {
+        void *ptr = NULL;
+        unsigned char actual[512];
+        CHECK(ds4_gpu_lookup_cache(odd[i].source_offset, odd[i].bytes, &dev, &ptr) == 1,
+              "lookup tiny tensor append");
+        CHECK(dev == 0 && ((uintptr_t)ptr & 255u) == 0,
+              "each tensor retains arena alignment after growth");
+        CHECK(cudaMemcpy(actual, ptr, odd[i].bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+              "read aligned tensor");
+        CHECK(memcmp(actual, bytes + odd[i].source_offset, odd[i].bytes) == 0,
+              "aligned packing preserves payload");
+    }
+
     if (dev_count >= 2) {
         /* Cache a different range on device 1. */
         ds4_tensor_range r2;

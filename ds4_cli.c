@@ -946,6 +946,34 @@ static void print_diag_top(FILE *fp, ds4_engine *engine, const char *label,
     fputc('\n', fp);
 }
 
+static bool diagnostic_logits_range(const float *logits, int vocab,
+                                     float *minimum, float *maximum) {
+    if (!logits || vocab < 2) return false;
+    float lo = logits[0], hi = logits[0];
+    for (int i = 0; i < vocab; i++) {
+        if (!isfinite(logits[i])) return false;
+        if (logits[i] < lo) lo = logits[i];
+        if (logits[i] > hi) hi = logits[i];
+    }
+    if (minimum) *minimum = lo;
+    if (maximum) *maximum = hi;
+    return hi > lo;
+}
+
+static bool copy_diagnostic_logits(ds4_session *session, float *logits,
+                                   int vocab, const char *label) {
+    float lo, hi;
+    if (ds4_session_copy_logits(session, logits, vocab) != vocab ||
+        !diagnostic_logits_range(logits, vocab, &lo, &hi)) {
+        fprintf(stderr, "ds4: decode-consistency invalid %s logits "
+                        "(must be finite and nonconstant)\n", label);
+        return false;
+    }
+    fprintf(stderr, "ds4: decode-consistency %s logits min=%.9g max=%.9g\n",
+            label, lo, hi);
+    return true;
+}
+
 static int run_decode_consistency(ds4_engine *engine, const cli_config *cfg,
                                   const ds4_tokens *prompt) {
     if (cfg->dist && cfg->dist->role != DS4_DISTRIBUTED_NONE) {
@@ -1004,8 +1032,23 @@ static int run_decode_consistency(ds4_engine *engine, const cli_config *cfg,
 
     fprintf(stderr, "ds4: decode-consistency prompt_tokens=%d check_after=%d\n",
             prompt->len, cfg->gen.decode_consistency_tokens);
+    if (!copy_diagnostic_logits(live, live_logits, vocab, "prompt")) {
+        ds4_session_free(live);
+        ds4_tokens_free(&prefix);
+        free(live_logits);
+        free(fresh_logits);
+        return 1;
+    }
     for (int i = 0; i < cfg->gen.decode_consistency_tokens; i++) {
         int token = ds4_session_argmax(live);
+        if (token < 0 || token >= vocab) {
+            fprintf(stderr, "ds4: invalid token during consistency check\n");
+            ds4_session_free(live);
+            ds4_tokens_free(&prefix);
+            free(live_logits);
+            free(fresh_logits);
+            return 1;
+        }
         fprintf(stderr, "ds4: decode-consistency selected[%d]=", i);
         print_diag_token(stderr, engine, token);
         fputc('\n', stderr);
@@ -1018,19 +1061,18 @@ static int run_decode_consistency(ds4_engine *engine, const cli_config *cfg,
             free(fresh_logits);
             return 1;
         }
+        if (!copy_diagnostic_logits(live, live_logits, vocab, "incremental")) {
+            ds4_session_free(live);
+            ds4_tokens_free(&prefix);
+            free(live_logits);
+            free(fresh_logits);
+            return 1;
+        }
         if (ds4_token_is_stop(engine, token)) break;
     }
 
     ds4_token_score live_top[10];
     int live_top_n = ds4_session_top_logprobs(live, live_top, 10);
-    if (ds4_session_copy_logits(live, live_logits, vocab) != vocab) {
-        fprintf(stderr, "ds4: failed to copy live logits\n");
-        ds4_session_free(live);
-        ds4_tokens_free(&prefix);
-        free(live_logits);
-        free(fresh_logits);
-        return 1;
-    }
     ds4_session_free(live);
     live = NULL;
 
@@ -1062,8 +1104,7 @@ static int run_decode_consistency(ds4_engine *engine, const cli_config *cfg,
 
     ds4_token_score fresh_top[10];
     int fresh_top_n = ds4_session_top_logprobs(fresh, fresh_top, 10);
-    if (ds4_session_copy_logits(fresh, fresh_logits, vocab) != vocab) {
-        fprintf(stderr, "ds4: failed to copy fresh logits\n");
+    if (!copy_diagnostic_logits(fresh, fresh_logits, vocab, "fresh")) {
         ds4_session_free(fresh);
         ds4_tokens_free(&prefix);
         free(live_logits);

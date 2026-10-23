@@ -76,6 +76,7 @@ The startup line reports both figures.
 | Metal, GLM 5.3 | Native batching through 2051 visible tokens; ordered fallback afterward |
 | Metal, Qwen3.8 Flash Next | Native batching of the shared work; recurrent state, caches and PLE history stay per session |
 | CUDA, supported multi-GPU Flash TP layout | Native grouped decode and mixed prefill/decode |
+| CUDA, resident local multi-GPU V4.1 Flash | Ordered fallback |
 | Single-GPU CUDA, including Spark | Ordered fallback |
 
 Fallback executes the rows separately. It provides concurrency and scheduling

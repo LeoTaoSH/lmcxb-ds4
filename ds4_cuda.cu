@@ -3160,6 +3160,27 @@ extern "C" ds4_gpu_tensor *ds4_gpu_tensor_alloc_managed(uint64_t bytes) {
     return t;
 }
 
+extern "C" ds4_gpu_tensor *ds4_gpu_tensor_alloc_pipeline(uint64_t bytes) {
+    bool peers = true;
+    for (int i = 0; i < g_n_gpus; i++)
+        for (int j = 0; j < g_n_gpus; j++)
+            peers = peers && g_gpu_peer_ok[i][j];
+    if (peers) return ds4_gpu_tensor_alloc_managed(bytes);
+    ds4_gpu_tensor *t = (ds4_gpu_tensor *)calloc(1, sizeof(*t));
+    if (!t) return NULL;
+    if (!bytes) bytes = 1;
+    if (!cuda_ok(cudaHostAlloc(&t->ptr, bytes,
+                              cudaHostAllocMapped | cudaHostAllocPortable),
+                 "pipeline host tensor alloc")) {
+        free(t);
+        return NULL;
+    }
+    t->bytes = bytes;
+    t->owner = 2;
+    t->device_id = 0;
+    return t;
+}
+
 /* Heap-allocated tensor on a specific logical tier.
  *
  * Mirrors the legacy ds4_gpu_tensor_alloc ABI (returns ds4_gpu_tensor *)
@@ -4243,6 +4264,47 @@ extern "C" int ds4_gpu_set_current_device(int logical_tier) {
     return -1;
 }
 
+extern "C" int ds4_gpu_managed_pipeline_supported(void) {
+    for (int tier = 0; tier < g_n_gpus; tier++) {
+        int managed = 0, concurrent = 0;
+        const int device = g_gpu[tier].device_id;
+        if (cudaDeviceGetAttribute(&managed, cudaDevAttrManagedMemory, device) != cudaSuccess ||
+            cudaDeviceGetAttribute(&concurrent, cudaDevAttrConcurrentManagedAccess, device) != cudaSuccess ||
+            !managed || !concurrent) {
+            fprintf(stderr, "ds4: serial managed-state pipeline requires managed memory "
+                            "and concurrent managed access on CUDA device %d\n", device);
+            return 0;
+        }
+    }
+    for (int i = 0; i < g_n_gpus; i++)
+        for (int j = 0; j < g_n_gpus; j++)
+            if (!g_gpu_peer_ok[i][j]) {
+                fprintf(stderr, "ds4: serial pipeline uses mapped pinned-host state "
+                                "because peer validation failed; weights stay GPU-resident\n");
+                return 1;
+            }
+    return g_n_gpus > 0;
+}
+
+extern "C" uint64_t ds4_gpu_selected_working_set_size(const ds4_gpu_config *cfg) {
+    int current = 0;
+    if (cudaGetDevice(&current) != cudaSuccess) return 0;
+    const int count = cfg && cfg->n_gpus > 0 ? cfg->n_gpus : 1;
+    if (count > DS4_MAX_GPUS) return 0;
+    uint64_t bytes = 0;
+    for (int i = 0; i < count; i++) {
+        cudaDeviceProp prop;
+        const int device = cfg && cfg->n_gpus > 0 ? cfg->device_indices[i] : current;
+        if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) return 0;
+        uint64_t budget = prop.totalGlobalMem;
+        if (cfg && cfg->n_gpus > 0 && cfg->vram_bytes[i] < budget)
+            budget = cfg->vram_bytes[i];
+        if (bytes > UINT64_MAX - budget) return 0;
+        bytes += budget;
+    }
+    return bytes;
+}
+
 /* Fenced device switch for sequential cross-device pipelines (GLM
  * per-layer placement): work queued on the next device's default stream
  * waits for everything queued so far on the previous device's default
@@ -4327,13 +4389,17 @@ extern "C" int ds4_gpu_device_cache_tensors(int device_id,
         if (nb == 0) continue;
         if (off > g_model_registered_size) return 8;
         if (nb > g_model_registered_size - off) return 9;
-        /* Accumulate into want_bytes with overflow check. */
-        if (want_bytes > UINT64_MAX - nb) return 10;
-        want_bytes += nb;
+        /* Match the single-device arena alignment. Small HC scale tensors
+         * otherwise misalign later F16 projections and can change cuBLAS dispatch. */
+        if (nb > UINT64_MAX - 255u) return 10;
+        const uint64_t padded = (nb + 255u) & ~UINT64_C(255);
+        if (want_bytes > UINT64_MAX - padded) return 10;
+        want_bytes += padded;
     }
     if (want_bytes == 0) return 0;
 
     cuda_device_cache &c = g_dev_cache[device_id];
+    if (want_bytes > SIZE_MAX - c.bytes) return 10;
 
     int prev_device = -1;
     if (cudaGetDevice(&prev_device) != cudaSuccess) prev_device = -1;
@@ -4422,7 +4488,7 @@ extern "C" int ds4_gpu_device_cache_tensors(int device_id,
     const char *host_base = (const char *)g_model_host_base;
     size_t write_off = c.bytes - want_bytes;
     for (int i = 0; i < n_ranges; i++) {
-        if (ranges[i].target_device != device_id) continue;
+        if (ranges[i].target_device != device_id || ranges[i].bytes == 0) continue;
         char *dev_ptr = (char *)c.base + write_off;
         cudaError_t e = cudaMemcpy(dev_ptr,
                                    host_base + ranges[i].source_offset,
@@ -4439,7 +4505,7 @@ extern "C" int ds4_gpu_device_cache_tensors(int device_id,
         ent.device_id     = device_id;
         ent.device_ptr    = dev_ptr;
         g_cache_ranges.push_back(ent);
-        write_off += ranges[i].bytes;
+        write_off += (ranges[i].bytes + 255u) & ~UINT64_C(255);
     }
 
     /* Keep sorted by source_offset for binary-search lookup. */
@@ -10094,7 +10160,18 @@ static int attention_decode_score_split_launch(
     if (score_tile_disabled < 0) {
         score_tile_disabled = getenv("DS4_CUDA_NO_SCORE_TILE") != NULL ? 1 : 0;
     }
+    const size_t tile_shmem =
+        (size_t)(DS4_SCORE_TILE_HEADS + DS4_SCORE_TILE_ROWS) *
+        DS4_SCORE_TILE_STRIDE * sizeof(float);
+    int tile_device = 0, tile_shmem_limit = 0;
+    if (!score_tile_disabled) {
+        if (!cuda_ok(cudaGetDevice(&tile_device), "attention score tile device") ||
+            !cuda_ok(cudaDeviceGetAttribute(&tile_shmem_limit,
+                cudaDevAttrMaxSharedMemoryPerBlockOptin, tile_device),
+                "attention score tile shared-memory limit")) return -1;
+    }
     if (!score_tile_disabled &&
+        tile_shmem <= (size_t)tile_shmem_limit &&
         head_dim == 512u &&
         !use_ldg_scores &&
         !use_vec4_plain_scores &&
@@ -10102,9 +10179,6 @@ static int attention_decode_score_split_launch(
         /* cudaFuncSetAttribute() applies to the current device only, so opt in
          * to >48KB dynamic shared memory once per device. */
         static int tile_shmem_ready[DS4_MAX_GPUS] = {0};
-        const size_t tile_shmem =
-            (size_t)(DS4_SCORE_TILE_HEADS + DS4_SCORE_TILE_ROWS) *
-            DS4_SCORE_TILE_STRIDE * sizeof(float);
         int tile_dev = 0;
         cudaGetDevice(&tile_dev);
         if (tile_dev >= 0 && tile_dev < DS4_MAX_GPUS &&

@@ -89,6 +89,7 @@
 /tests/test_image_decode
 /tests/test_deepseek41_metal
 /tests/test_deepseek41_cuda
+/tests/test_deepseek41_multigpu
 /tests/test_cuda_q8_rows
 /tests/test_cuda_reductions
 /tests/test_cuda_shared
@@ -101,6 +102,7 @@
 /tests/test_deepseek41_graph
 /tests/test_deepseek41_prefill
 /tests/test_deepseek41_cli
+/tests/test_decode_consistency
 /tests/test_engram
 *.o
 *.dSYM/
