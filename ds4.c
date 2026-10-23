@@ -75439,10 +75439,13 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
         goto fail;
     }
     void *network_slab;
-#ifdef DS4_HAS_DEEPSEEK41_GPU
-    /* Discrete CUDA ranks keep the transport slab in host memory; the ROCm
-     * build also reports DS4_BACKEND_CUDA, so gate on the v4.1 GPU macro
-     * rather than the backend enum. */
+#if defined(DS4_HAS_DEEPSEEK41_GPU) && !defined(DS4_ROCM_BUILD)
+    /* Discrete CUDA ranks keep the transport slab in host memory. The ROCm
+     * build also reports DS4_BACKEND_CUDA, so keep host_slab NULL there and
+     * bind the unified-memory slab directly: with a host slab every row-gate
+     * exchange queues a stream-ordered ds4_gpu_tensor_read behind the gate's
+     * own spin kernel, which deadlocks the first decode row gate (the merge
+     * briefly let this branch build for ROCm via the v4.1 GPU macro). */
     if (e->backend == DS4_BACKEND_CUDA && !shared_cuda_slab) {
         e->tp.host_slab = calloc(1, (size_t)slab_bytes);
         network_slab = e->tp.host_slab;
