@@ -42169,7 +42169,18 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
      * layer mapped, using the same admitted reserve as layer-major prefill. */
     const bool layer_resident = g->streaming && g->quality;
     if (layer_resident && !ds4_gpu_end_commands()) ok = false;
-    const bool queue_layers = g->tp_world == 2 && !g->imatrix &&
+    /* Single-host decode would pay a full wait per layer. Committing each
+     * layer's command buffer without waiting keeps the GPU queue fed while
+     * the CPU encodes the next layer; the drains at layer 13 (Engram table
+     * handoff) and at the final layer bound the queue and preserve the buffer
+     * hazards. The disable switch exists for A/B measurements only. */
+#ifdef __APPLE__
+    const bool queue_single = g->tp_world != 2 && !g->streaming && !g->imatrix &&
+        getenv("DS4_METAL_DISABLE_V41_DECODE_PIPELINE") == NULL;
+#else
+    const bool queue_single = false;
+#endif
+    const bool queue_layers = (g->tp_world == 2 || queue_single) && !g->imatrix &&
         !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE");
     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
         const ds4_layer_weights *l = &w->layer[il];
@@ -42191,7 +42202,11 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model 
          * before overwriting the first Engram table's shared input at layer
          * 14, and before publishing the completed token to the CPU. */
         const bool drain = !queue_layers || il == 13 || il + 1u == DS4_N_LAYER;
-        if (drain && !ds4_gpu_end_commands()) ok = false;
+        if (drain) {
+            if (!ds4_gpu_end_commands()) ok = false;
+        } else if (queue_single && !ds4_gpu_flush_commands()) {
+            ok = false;
+        }
         if (g->tp_world == 2 && ds4_gpu_tp_failed()) ok = false;
         if (ok && g->imatrix)
             ok = imatrix_collect_tensor_batch(g->imatrix, g->norm, g->mid,
@@ -42943,6 +42958,17 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
     if (!g) return false;
     const uint32_t rows = (uint32_t)count;
     const bool prefill_only = prefill_rows == rows && !g->verify_prefix;
+    /* Overlap CPU layer encoding with GPU execution for single-host batched
+     * decode. The Engram drain at layer 13 stays as it is; TP keeps its own
+     * command-buffer gating. SSD streaming is excluded: its expert cache is
+     * filled and evicted per layer, so a layer must not still be executing
+     * while the cache is reconfigured. Disable switch for A/B only. */
+#ifdef __APPLE__
+    const bool batch_queue = g->tp_world != 2 && !g->streaming &&
+        getenv("DS4_METAL_DISABLE_V41_BATCH_DECODE_PIPELINE") == NULL;
+#else
+    const bool batch_queue = false;
+#endif
     const bool shared_owner = g->tp_world == 2 &&
         !getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER");
     ds41_prefill_row active = {0};
@@ -43039,6 +43065,8 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step_batch(ds41_gpu_graph *const *graphs
             ds4_gpu_dsv41_quantize(active.residual, DS4_N_EMBD * DS4_N_HC, rows, DS4_V41_BF16);
         /* The second Engram upload reuses the first one's input storage. */
         if (ok && il == 13) ok = ds4_gpu_end_commands() && ds4_gpu_begin_commands();
+        else if (ok && batch_queue && il + 1u < DS4_N_LAYER &&
+                 !ds4_gpu_flush_commands()) ok = false;
     }
     const uint64_t logits_bytes = (uint64_t)DS4_N_VOCAB * sizeof(float) /
                                   (g->tp_logits_half ? 2u : 1u);
