@@ -3842,9 +3842,7 @@ int ds4_tp_gate_exchange(ds4_tp *tp, uint32_t layer, uint32_t gate, uint64_t seq
     if (ph.magic != DS4_TP_MAGIC || ph.layer != layer || ph.gate != gate || ph.seq != seq) {
         fprintf(stderr, "ds4-tp: gate desync: got l=%u g=%u seq=%llu, want l=%u g=%u seq=%llu\n",
                 ph.layer, ph.gate, (unsigned long long)ph.seq,
-                (unsigned long long)ph.bytes,
-                layer, gate, (unsigned long long)seq,
-                (unsigned long long)tp->vec_bytes);
+                layer, gate, (unsigned long long)seq);
         return 0;
     }
     return 1;
