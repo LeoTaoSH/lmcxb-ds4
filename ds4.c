@@ -75343,7 +75343,9 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
         snprintf(err, errlen, "tensor parallelism requires the ROCm graph backend");
         return 0;
     }
-#endif
+#else
+    /* Upstream's model gating for Metal/CUDA; the ROCm build takes its own
+     * checks below (GLM opt-in, Q8_0 layout) instead of this one. */
     const bool cuda_model = DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ||
         (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK4 &&
          DS4_MODEL_VARIANT == DS4_VARIANT_FLASH);
@@ -75352,6 +75354,7 @@ int ds4_engine_tp_bind(ds4_engine *e, struct ds4_tp *tp, char *err, size_t errle
         snprintf(err, errlen, "tensor parallelism requires Metal or V4/V4.1 Flash CUDA");
         return 0;
     }
+#endif
     if (e->tp.ctx) {
         snprintf(err, errlen, "tensor parallelism already bound");
         return 0;
