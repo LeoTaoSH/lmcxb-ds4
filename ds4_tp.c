@@ -278,7 +278,8 @@ typedef struct {
     uint64_t seq;     /* exchange sequence, identical on both ranks */
 } ds4_tp_odl_hdr;
 #define DS4_TP_ODL_CHUNK (DS4_TP_ODL_MAX_MSG - sizeof(ds4_tp_odl_hdr))
-#define DS4_TP_ODL_WINDOW 4u        /* chunks in flight per direction */
+#define DS4_TP_ODL_WINDOW 4u        /* default chunks in flight per direction */
+#define DS4_TP_ODL_WINDOW_MAX 8u    /* env ceiling; bounds the early stash too */
 #define DS4_TP_ODL_MAX_CHUNKS 4096u /* 4 GiB per exchange */
 
 typedef struct {
@@ -315,8 +316,8 @@ typedef struct {
     uint64_t xseq;                     /* current (or last finished) exchange */
     ds4_tp_odl_tx tx[2];               /* indexed by xseq & 1: current, previous */
     uint8_t *rx;                       /* one message of receive scratch */
-    uint8_t *early[DS4_TP_ODL_WINDOW]; /* next exchange's chunks that arrived early */
-    uint32_t early_len[DS4_TP_ODL_WINDOW];
+    uint8_t *early[DS4_TP_ODL_WINDOW_MAX]; /* next exchange's chunks that arrived early */
+    uint32_t early_len[DS4_TP_ODL_WINDOW_MAX];
     uint32_t n_early;
     uint64_t drop_every;               /* DS4_TP_ODL_DROP_TEST=N drops every Nth data send */
     uint64_t sends;
@@ -2523,9 +2524,9 @@ static int tp_odl_open(ds4_tp *tp, char *err, size_t errlen) {
     }
     pthread_mutex_init(&o->lock, NULL);
     o->rx = malloc(DS4_TP_ODL_MAX_MSG);
-    for (uint32_t i = 0; i < DS4_TP_ODL_WINDOW; i++)
+    for (uint32_t i = 0; i < DS4_TP_ODL_WINDOW_MAX; i++)
         o->early[i] = malloc(DS4_TP_ODL_MAX_MSG);
-    if (!o->rx || !o->early[DS4_TP_ODL_WINDOW - 1u]) {
+    if (!o->rx || !o->early[DS4_TP_ODL_WINDOW_MAX - 1u]) {
         tp_set_err(err, errlen, "tp odl: out of memory for message buffers");
         return 0;
     }
@@ -2574,14 +2575,57 @@ static int tp_odl_frame(ds4_tp_odl_tx *tx, uint64_t seq, const void *out,
     return 1;
 }
 
+/* Both ranks spin in the exchange loop below while the peer is still
+ * computing; an unthrottled poll costs a stream_recv ioctl plus a
+ * clock_gettime per iteration on each machine.  A short pause burst
+ * between polls cuts that rate by an order of magnitude for at most a
+ * few microseconds of extra detection latency per gate. */
+#if defined(__x86_64__) || defined(__i386__)
+#define TP_ODL_CPU_PAUSE() __builtin_ia32_pause()
+#elif defined(__aarch64__) || defined(__arm__)
+static inline void TP_ODL_CPU_PAUSE(void) { __asm__ volatile("yield"); }
+#else
+#define TP_ODL_CPU_PAUSE() do {} while (0)
+#endif
+#define TP_ODL_IDLE_PAUSES 96u
+
+/* Send window in chunks, overridable for bulk-heavy runs; the early stash
+ * is sized for the maximum, so a larger window never overflows it. */
+static uint32_t tp_odl_window(void) {
+    static uint32_t cached = 0u;
+    if (cached == 0u) {
+        uint32_t v = DS4_TP_ODL_WINDOW;
+        const char *e = getenv("DS4_TP_ODL_WINDOW");
+        if (e && e[0]) {
+            const long parsed = strtol(e, NULL, 10);
+            if (parsed >= 1 && parsed <= (long)DS4_TP_ODL_WINDOW_MAX)
+                v = (uint32_t)parsed;
+        }
+        cached = v;
+    }
+    return cached;
+}
+
 static int tp_odl_send_msg(ds4_tp *tp, const void *msg, uint32_t len) {
     ds4_tp_odl *o = &tp->odl;
-    if (o->api.stream_send(o->dev, o->my_sid, o->peer_sid, msg, len) < 0) {
-        fprintf(stderr, "ds4-tp: odl stream_send(%u bytes) failed: %s\n",
-                len, strerror(errno));
+    const double give_up = tp_now_sec() + 0.25;
+    for (;;) {
+        const int rc = o->api.stream_send(o->dev, o->my_sid, o->peer_sid,
+                                          msg, len);
+        if (rc >= 0) return 1;
+        /* A full driver ring under a raised send window reports EAGAIN;
+         * wait briefly for the link to drain instead of failing the
+         * exchange (the fixed window never filled the ring). */
+        if ((rc == -EAGAIN || rc == -EWOULDBLOCK || rc == -EINTR ||
+             errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) &&
+            tp_now_sec() < give_up) {
+            for (uint32_t p = 0; p < TP_ODL_IDLE_PAUSES; p++) TP_ODL_CPU_PAUSE();
+            continue;
+        }
+        fprintf(stderr, "ds4-tp: odl stream_send(%u bytes) failed: rc=%d (%s)\n",
+                len, rc, strerror(errno));
         return 0;
     }
-    return 1;
 }
 
 static int tp_odl_send_chunk(ds4_tp *tp, const ds4_tp_odl_tx *tx, uint32_t i) {
@@ -2660,9 +2704,9 @@ static int tp_odl_serve_nack(ds4_tp *tp, uint64_t seq, uint32_t idx) {
  * park it (the peer's send window bounds how many) for replay. */
 static int tp_odl_stash_early(ds4_tp *tp, uint32_t len) {
     ds4_tp_odl *o = &tp->odl;
-    if (o->n_early >= DS4_TP_ODL_WINDOW) {
+    if (o->n_early >= DS4_TP_ODL_WINDOW_MAX) {
         fprintf(stderr, "ds4-tp: odl peer ran more than %u chunks ahead\n",
-                DS4_TP_ODL_WINDOW);
+                DS4_TP_ODL_WINDOW_MAX);
         return 0;
     }
     o->early_len[o->n_early] = len;
@@ -2719,7 +2763,7 @@ static int tp_odl_exchange(ds4_tp *tp, const void *out, void *in,
      * chunks of the next exchange while it runs. */
     const uint32_t n_early = o->n_early;
     double last_progress = t0, last_nack = 0.0;
-    while (sent < n && sent < DS4_TP_ODL_WINDOW) {
+    while (sent < n && sent < tp_odl_window()) {
         if (!tp_odl_send_chunk(tp, tx, sent)) return 0;
         sent++;
     }
@@ -2746,7 +2790,15 @@ static int tp_odl_exchange(ds4_tp *tp, const void *out, void *in,
                 return 0;
             }
             const double now = tp_now_sec();
-            if (now - last_progress > retry && now - last_nack > retry) {
+            /* With nothing received yet the peer may simply not have reached
+             * this gate: prefill chunk boundaries sit out several decode
+             * rounds of interleave (~230 ms at long contexts), which used to
+             * trip the 50 ms bulk timer and burn a 1 MiB chunk-0
+             * retransmission per boundary.  In-order delivery makes an
+             * interior gap a real loss (keep the fast timer); an empty
+             * frontier waits far longer before asking. */
+            const double idle_retry = ngot == 0u ? 0.50 : retry;
+            if (now - last_progress > idle_retry && now - last_nack > idle_retry) {
                 uint32_t miss = 0;
                 while (got[miss >> 6] & (1ull << (miss & 63u))) miss++;
                 if (!tp_odl_send_nack(tp, seq, miss)) return 0;
@@ -2761,6 +2813,7 @@ static int tp_odl_exchange(ds4_tp *tp, const void *out, void *in,
                         ngot, n);
                 return 0;
             }
+            for (uint32_t p = 0; p < TP_ODL_IDLE_PAUSES; p++) TP_ODL_CPU_PAUSE();
             continue;
         }
         if (h.kind == DS4_TP_ODL_NACK) {
@@ -2850,7 +2903,7 @@ static void tp_odl_close(ds4_tp *tp) {
     }
     free(o->rx);
     o->rx = NULL;
-    for (uint32_t i = 0; i < DS4_TP_ODL_WINDOW; i++) {
+    for (uint32_t i = 0; i < DS4_TP_ODL_WINDOW_MAX; i++) {
         free(o->early[i]);
         o->early[i] = NULL;
     }
