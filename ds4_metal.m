@@ -2643,6 +2643,14 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
     return pipeline;
 }
 
+/* Dispatch-time switch for the fused FP8 max schedule; absent means the
+ * original tree, allowing same-engine bitwise and throughput comparisons. */
+static id<MTLComputePipelineState> ds4_gpu_get_fp8_kv_max_pipeline(void) {
+    return ds4_gpu_get_pipeline(getenv("DS4_METAL_FP8_KV_SIMD_MAX") ?
+        "kernel_dsv4_qkv_rms_norm_kv_rope_fp8_store_f32_simd_max" :
+        "kernel_dsv4_qkv_rms_norm_kv_rope_fp8_store_f32");
+}
+
 static int ds4_gpu_disable_hot_pipeline_statics(void) {
     static int initialized;
     static int disabled;
@@ -22547,7 +22555,7 @@ int ds4_gpu_kv_norm_task_flush(void) {
     id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
     if (!cb) return 0;
     id<MTLComputePipelineState> pipeline =
-        ds4_gpu_get_pipeline("kernel_dsv4_qkv_rms_norm_kv_rope_fp8_store_f32");
+        ds4_gpu_get_fp8_kv_max_pipeline();
     if (!pipeline) return 0;
     id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
     [enc setComputePipelineState:pipeline];
@@ -22574,7 +22582,7 @@ int ds4_gpu_kv_norm_task_flush(void) {
 int ds4_gpu_kv_norm_task_begin_concurrent(void) {
     if (!g_kv_task.pending || !g_batch_cb || g_batch_encoder_concurrent) return 0;
     id<MTLComputePipelineState> pipeline =
-        ds4_gpu_get_pipeline("kernel_dsv4_qkv_rms_norm_kv_rope_fp8_store_f32");
+        ds4_gpu_get_fp8_kv_max_pipeline();
     if (!pipeline) return 0;
     g_kv_task.pending = 0;
     ds4_gpu_close_batch_encoder();
@@ -22679,7 +22687,7 @@ int ds4_gpu_dsv4_qkv_rms_norm_kv_rope_fp8_store_tensor(
         if (!kv_wbuf) return 0;
 
         id<MTLComputePipelineState> pipeline =
-            ds4_gpu_get_pipeline("kernel_dsv4_qkv_rms_norm_kv_rope_fp8_store_f32");
+            ds4_gpu_get_fp8_kv_max_pipeline();
         if (!pipeline) return 0;
 
         ds4_gpu_qkv_rms_norm_args args = {
