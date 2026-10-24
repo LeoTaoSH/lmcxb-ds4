@@ -874,6 +874,24 @@ static void test_fill_q8_0_weights(uint8_t *weights,
     }
 }
 
+/* A GPU backend may keep state keyed by the host address of the model map:
+ * ROCm host-registers the pages it maps and caches device ranges per offset.
+ * Point the backend at a long-lived dummy map before freeing a test's model
+ * buffer, so it drops that state while the pages are still valid. Otherwise a
+ * later allocation can come back at the same address and hit the stale
+ * registrations: failed host copies, or ranges served from the old buffer
+ * when the next model buffer has the same address and size. */
+static void test_free_model_map(void *model_raw) {
+    static void *dummy_map;
+    if (!model_raw) return;
+    const size_t page = (size_t)getpagesize();
+    if (!dummy_map && posix_memalign(&dummy_map, page, page) == 0) {
+        memset(dummy_map, 0, page);
+    }
+    if (dummy_map) (void)ds4_gpu_set_model_map(dummy_map, page);
+    free(model_raw);
+}
+
 static void test_metal_f16_matvec_fast_nr0_4(void) {
     /*
      * This is the short regression for the long-context repetition failure.
@@ -949,7 +967,7 @@ static void test_metal_f16_matvec_fast_nr0_4(void) {
     free(out_host);
     ds4_gpu_tensor_free(x);
     ds4_gpu_tensor_free(out);
-    free(weights_raw);
+    test_free_model_map(weights_raw);
 }
 
 static void test_metal_f16_prefill_matmul(void) {
@@ -1040,7 +1058,7 @@ static void test_metal_f16_prefill_matmul(void) {
     free(out_host);
     ds4_gpu_tensor_free(x);
     ds4_gpu_tensor_free(out);
-    free(weights_raw);
+    test_free_model_map(weights_raw);
 }
 
 static void test_metal_q8_0_prefill_matmul(void) {
@@ -1134,7 +1152,7 @@ static void test_metal_q8_0_prefill_matmul(void) {
     free(out_host);
     ds4_gpu_tensor_free(x);
     ds4_gpu_tensor_free(out);
-    free(weights_raw);
+    test_free_model_map(weights_raw);
 }
 
 static void test_metal_pack_slot_rows_f32(void) {
@@ -1395,7 +1413,7 @@ static void test_metal_q8_0_decode_pair_exact_case(
     ds4_gpu_tensor_free(ref1);
     ds4_gpu_tensor_free(pair0);
     ds4_gpu_tensor_free(pair1);
-    free(weights_raw);
+    test_free_model_map(weights_raw);
 }
 
 static void test_metal_q8_0_decode_pair_exact(void) {
@@ -1777,7 +1795,7 @@ static void test_metal_f16_compressor_pair_state_store_exact_case(
     ds4_gpu_tensor_free(ref_score);
     ds4_gpu_tensor_free(ref_kv);
     ds4_gpu_tensor_free(x);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 
 static void test_metal_f16_compressor_pair_state_store_exact(void) {
@@ -2067,7 +2085,7 @@ static void test_metal_compressor_ape_add_exact_case(
     TEST_ASSERT(state_kv_stats.mismatch_count == 0);
     TEST_ASSERT(state_score_stats.mismatch_count == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(poison_host);
     free(fused_state_score_host);
     free(fused_state_kv_host);
@@ -2335,7 +2353,7 @@ static void test_metal_compressor_ratio4_replay_pack_exact_case(
     TEST_ASSERT(state_kv_stats.mismatch_count == 0);
     TEST_ASSERT(state_score_stats.mismatch_count == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(fused_state_score_host);
     free(ref_state_score_host);
     free(fused_state_kv_host);
@@ -2643,7 +2661,7 @@ static void test_metal_compressor_ratio4_direct_pool_exact_case(
     TEST_ASSERT(state_kv_stats.mismatch_count == 0);
     TEST_ASSERT(state_score_stats.mismatch_count == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(direct_state_score_host);
     free(ref_state_score_host);
     free(direct_state_kv_host);
@@ -3513,7 +3531,7 @@ static void test_metal_contiguous_compressed_f16_attention_exact(void) {
             stats.max_abs);
     TEST_ASSERT(stats.mismatch_count == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(compute_host);
     free(blit_host);
     free(q_host);
@@ -3823,7 +3841,7 @@ static void test_metal_persistent_zero_attention_mask_exact_case(
     TEST_ASSERT(pad_stats.mismatch_count == 0);
     TEST_ASSERT(after_mask_stats.mismatch_count == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(after_mask_host);
     free(pad_legacy_host);
     free(masked_host);
@@ -4134,7 +4152,7 @@ static void test_metal_zero_prefix_prefill_mask_cache_exact_kind(
     TEST_ASSERT(total_mismatches == 0);
     TEST_ASSERT(max_ulp == 0);
 
-    free(model_raw);
+    test_free_model_map(model_raw);
     free(masked_actual);
     free(actual);
     free(ref_b);
@@ -4353,7 +4371,7 @@ static void test_metal_hc_split_weighted_sum_norm_batch_exact(void) {
     ds4_gpu_tensor_free(fused_out);
     ds4_gpu_tensor_free(ref_norm);
     ds4_gpu_tensor_free(fused_norm);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 
 static void test_metal_output_hc_weights4_exact(void) {
@@ -4488,7 +4506,7 @@ static void test_metal_output_hc_weights4_exact(void) {
     ds4_gpu_tensor_free(candidate);
     ds4_gpu_tensor_free(reference);
     ds4_gpu_tensor_free(pre);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 
 static void test_metal_hc_rms_scale_project_f16_exact_shape(
@@ -4701,7 +4719,7 @@ static void test_metal_hc_rms_scale_project_f16_exact_shape(
     ds4_gpu_tensor_free(ref_out);
     ds4_gpu_tensor_free(ref_norm);
     ds4_gpu_tensor_free(x);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 
 static void test_metal_hc_rms_scale_project_f16_exact(void) {
@@ -4975,7 +4993,7 @@ static void test_metal_router_simd_finalize_exact(void) {
     ds4_gpu_tensor_free(simd_selected);
     ds4_gpu_tensor_free(ref_selected);
     ds4_gpu_tensor_free(logits);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 
 static void test_metal_router_weights_batch_exact(void) {
@@ -5237,7 +5255,7 @@ static void test_metal_router_weights_batch_exact(void) {
     ds4_gpu_tensor_free(ref_selected);
     ds4_gpu_tensor_free(tokens);
     ds4_gpu_tensor_free(logits);
-    free(model_raw);
+    test_free_model_map(model_raw);
 }
 #endif
 
