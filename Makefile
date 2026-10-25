@@ -1077,7 +1077,7 @@ test-mxfp4-rocm: tests/test_mxfp4_rocm
 tests/test_iq2_signs_rocm.o: tests/test_iq2_signs_rocm.c ds4_gpu.h
 	$(CC) $(filter-out -ffast-math,$(CFLAGS)) $(ROCM_HOST_CFLAGS) -DDS4_ROCM_BUILD -I. -c -o $@ $<
 
-tests/test_iq2_signs_rocm: tests/test_iq2_signs_rocm.o ds4_rocm.o ds4_image.o $(ROCM_MMQ_OBJS)
+tests/test_iq2_signs_rocm: tests/test_iq2_signs_rocm.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_image.o $(ROCM_MMQ_OBJS)
 	$(HIPCC) $(ROCM_CFLAGS) -o $@ $^ $(ROCM_LDLIBS)
 
 test-iq2-signs-rocm: tests/test_iq2_signs_rocm
